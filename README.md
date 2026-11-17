@@ -64,6 +64,7 @@ pnpm test
 pnpm build
 pnpm exec playwright install chromium
 pnpm test:browser
+pnpm exec playwright test --config=playwright.presentation.config.ts
 ```
 
 `pnpm check` runs Vite+ formatting, type-aware lint and type checks, plus separate strictest client/server/tool TypeScript configurations. Client/shared imports are restricted from Node and SDK/server modules. `pnpm-workspace.yaml` holds pnpm tool policies only; this is a single package, not a workspace monorepo.
@@ -74,10 +75,13 @@ All external contributors require workflow approval in repository settings. Revi
 
 Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenCode Go credential/request succeeds. These checks need no provider secrets. Browser traces may contain conversation text; local tests use synthetic data only.
 
+The separate presentation browser configuration uses Vite on port 5173 (reusing the live client when available) and synthetic API state. It does not submit to the running conversation and can run while the application owns port 3000. It covers loading/empty presentation, ambiguous-delivery retry with a newer draft, and the default theme; it does not replace the full SDK/browser suite.
+
 ## Read next
 
 - [Problem and learning](docs/problem-and-learning.md): the needs and experiences behind the reset.
 - [Design direction](docs/design.md): settled baseline, proposals and unresolved questions.
 - [pi-durable feature inventory](docs/pi-durable-features.md): SDK capabilities, current chat coverage and possible enrichment choices.
+- [Chat component mapping](docs/chat-components.md): accepted presentation, reusable boundaries and incremental delivery status.
 - [Documentation conventions](docs/CONTRIBUTING.md): where material belongs and how to maintain it.
 - [Agent entrypoint](AGENTS.md): scoped instructions for agents changing this repository.

@@ -1,14 +1,14 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
-import { Chat } from "./chat.tsx";
+import { ChatPage } from "./chat-page.tsx";
 import "./index.css";
 
 const rootRoute = createRootRoute();
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  component: Chat,
+  component: ChatPage,
 });
 const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute]) });
 
