@@ -18,6 +18,27 @@ const LiveSchema = z.looseObject({
     .optional(),
   runFailure: z.looseObject({ reason: z.string() }).optional(),
 });
+const InboxSchema = z.looseObject({
+  items: z
+    .array(
+      z.discriminatedUnion("mode", [
+        z.looseObject({
+          id: z.number(),
+          mode: z.enum(["steer", "followUp"]),
+          content: z.union([
+            z.string(),
+            z.array(z.looseObject({ type: z.string(), text: z.string().optional() })),
+          ]),
+        }),
+        z.looseObject({
+          id: z.number(),
+          mode: z.literal("write"),
+          entry: z.looseObject({ kind: z.string() }),
+        }),
+      ]),
+    )
+    .default([]),
+});
 
 function textOf(message: z.infer<typeof MessageSchema>): string {
   return typeof message.content === "string"
@@ -28,9 +49,33 @@ function textOf(message: z.infer<typeof MessageSchema>): string {
         .join("");
 }
 
-export function present(view: ConversationView): ChatState {
+export function present(view: ConversationView, canContinue = false): ChatState {
   const live = LiveSchema.parse(view.docs["pi.live"] ?? {});
+  const inbox = InboxSchema.parse(view.docs["pi.inbox"] ?? {});
   return {
+    controls: {
+      canContinue: live.run === undefined && canContinue,
+      resetPending: inbox.items.some(
+        (item) => item.mode === "write" && item.entry.kind === "pi.reset",
+      ),
+      queue: inbox.items.flatMap((item) =>
+        item.mode === "write"
+          ? []
+          : [
+              {
+                id: String(item.id),
+                mode: item.mode,
+                text:
+                  typeof item.content === "string"
+                    ? item.content
+                    : item.content
+                        .filter((part) => part.type === "text")
+                        .map((part) => part.text ?? "")
+                        .join(""),
+              },
+            ],
+      ),
+    },
     messages: view.entries.flatMap((entry) =>
       (entry.model ?? []).flatMap((raw, index) => {
         const result = MessageSchema.safeParse(raw);

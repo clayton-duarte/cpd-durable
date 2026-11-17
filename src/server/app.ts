@@ -1,12 +1,22 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { ConversationBusy, type Conversation } from "@earendil-works/pi-durable";
+import {
+  ConversationBusy,
+  ConversationIdle,
+  ResetEntry,
+  type ConversationView,
+  type SubmissionId,
+} from "@earendil-works/pi-durable";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
-import { InputSchema } from "../shared/chat.ts";
+import { ControlSchema, InputSchema, WithdrawSchema } from "../shared/chat.ts";
 import { present } from "./presentation.ts";
+import type { openChat } from "./chat.ts";
 
-export function createApp(conversation: Conversation) {
+export function createApp({
+  conversation,
+  withdraw,
+}: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw">) {
   const app = new Hono();
   const allowedHosts = new Set([
     "127.0.0.1:3000",
@@ -56,7 +66,8 @@ export function createApp(conversation: Conversation) {
           type: "input",
           content: result.data.text,
           requestId: result.data.requestId,
-          whenBusy: "reject",
+          whenBusy: result.data.mode ?? "reject",
+          ...(result.data.mode === "steer" ? { whenIdle: "reject" as const } : {}),
         },
         BACKGROUND_CONTEXT,
       );
@@ -65,14 +76,75 @@ export function createApp(conversation: Conversation) {
       if (error instanceof ConversationBusy) {
         return c.json({ error: "The conversation is busy." }, 409);
       }
+      if (error instanceof ConversationIdle) {
+        return c.json(
+          { error: "The response has ended. Choose Send now or Send after current response." },
+          409,
+        );
+      }
       throw error;
     }
+  });
+
+  app.post("/api/control", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = ControlSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid control." }, 400);
+    const control = result.data;
+    try {
+      // Same public reset entry as Conversation.reset(), admitted with a request ID for safe retry.
+      const submission = await conversation.submit(
+        control.type === "continue"
+          ? control
+          : {
+              type: "write",
+              requestId: control.requestId,
+              entry: {
+                kind: ResetEntry.kind,
+                head: "self",
+                ...(control.handoff
+                  ? {
+                      model: [
+                        { role: "user" as const, content: control.handoff, timestamp: Date.now() },
+                      ],
+                    }
+                  : {}),
+              },
+            },
+        BACKGROUND_CONTEXT,
+      );
+      return c.json({ id: String(submission.id) }, 202);
+    } catch (error) {
+      if (error instanceof ConversationBusy)
+        return c.json({ error: "The conversation is busy." }, 409);
+      throw error;
+    }
+  });
+
+  app.post("/api/withdraw", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = WithdrawSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid submission." }, 400);
+    const status = await withdraw(Number(result.data.id) as SubmissionId);
+    return c.json({ status });
   });
 
   app.post("/api/stop", async (c) => {
     await conversation.abort(BACKGROUND_CONTEXT);
     return c.body(null, 204);
   });
+
+  async function snapshot(view: ConversationView) {
+    const state = present(view);
+    if (!state.busy && state.controls && !state.controls.resetPending) {
+      const context = await conversation.context(BACKGROUND_CONTEXT);
+      const last = context.messages.findLast((message) => message.role !== "system");
+      state.controls.canContinue = last?.role === "user" || last?.role === "toolResult";
+    }
+    return state;
+  }
 
   app.get("/api/events", (c) =>
     streamSSE(
@@ -85,10 +157,16 @@ export function createApp(conversation: Conversation) {
             void watch.stop();
           });
           if (stream.aborted) return;
-          await stream.writeSSE({ event: "state", data: JSON.stringify(present(watch.value)) });
+          await stream.writeSSE({
+            event: "state",
+            data: JSON.stringify(await snapshot(watch.value)),
+          });
           watch.start(async (call) => {
             if (call.kind === "value") {
-              await stream.writeSSE({ event: "state", data: JSON.stringify(present(call.value)) });
+              await stream.writeSSE({
+                event: "state",
+                data: JSON.stringify(await snapshot(call.value)),
+              });
             }
           });
           heartbeat = setInterval(() => {

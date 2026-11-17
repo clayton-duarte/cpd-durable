@@ -38,13 +38,19 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
-The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. There are no tools, attachments, model selector, new-chat/reset control or LAN access. Send is disabled while busy; Stop explicitly aborts the response. Responses are rendered as plain text, not interpreted HTML. The stock shadcn dark theme is the default from initial page load, independent of system preference; no theme picker or custom palette is added.
+The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. There are no tools, attachments, model selector, new-conversation control or LAN access. Responses are rendered as plain text, not interpreted HTML. The stock shadcn dark theme is the default from initial page load, independent of system preference; no theme picker or custom palette is added.
+
+The composer offers **Send now**, **Send after current response** and **Steer current work**. Steering waits for an eligible run boundary; it does not interrupt generation immediately and is refused if the run has ended. Queued inputs have individual Withdraw actions. **Stop** aborts current foreground work and withdraws queued inputs. **Continue response** appears when active model context still needs an answer, without adding another user message.
+
+**Conversation actions → Reset model context** requires confirmation and optionally accepts handoff instructions. Stored history remains; only active model context restarts. While busy, reset waits for a boundary. Stop does not withdraw a queued reset. Handoff text becomes a user message; reset alone does not request an answer. See the [component mapping and semantics](docs/chat-components.md#delivery-status) for reuse and pending work.
 
 ## Persistence and recovery
 
 pi-durable's Node SQLite adapter owns the transcript and execution state in `data/session.sqlite` by default (`CPD_DATA_DIR` can change the directory). Browser refresh/reconnect reconstructs the latest view through SSE; the browser does not persist a transcript. The UI shows the SDK's recent-message window and labels omitted earlier history, which stays in storage.
 
-The server opens one Harness and resumes pending SDK work. A disconnect detaches observation, not execution. SDK request IDs deduplicate a retried submission; the client retains its retry ID only until refresh. After an ambiguous send followed by refresh, check the restored conversation before resending. Durability is not a guarantee of uninterrupted token streaming: the SDK can retry interrupted provider requests, and its documented progress-persistence window may lose recent partial output on a crash.
+The server opens one Harness and resumes pending SDK work. A disconnect detaches observation, not execution. SDK request IDs deduplicate retried input, Continue and reset admissions; the client retains retry identity only until refresh. While delivery is uncertain, retry the original action before another mutation; a newer composer draft remains editable and is not consumed by retrying a control. After an ambiguous action followed by refresh, inspect the restored state before repeating it. Durability is not a guarantee of uninterrupted token streaming: the SDK can retry interrupted provider requests, and its documented progress-persistence window may lose recent partial output on a crash.
+
+Stop targets current work rather than a request ID. If Stop cannot be confirmed, inspect current state before explicitly stopping again; the UI does not offer it as a supposedly safe original-action retry.
 
 Run only one application host against a data directory. The fixed loopback listener is acquired before writable storage opens, so a second application host fails without touching it. To restart, stop the existing host and start again with the same data directory. Do not edit or delete SQLite/sidecar files to resolve an error. Session-open failures leave existing data in place for inspection.
 
@@ -75,7 +81,7 @@ All external contributors require workflow approval in repository settings. Revi
 
 Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenCode Go credential/request succeeds. These checks need no provider secrets. Browser traces may contain conversation text; local tests use synthetic data only.
 
-The separate presentation browser configuration uses Vite on port 5173 (reusing the live client when available) and synthetic API state. It does not submit to the running conversation and can run while the application owns port 3000. It covers loading/empty presentation, ambiguous-delivery retry with a newer draft, and the default theme; it does not replace the full SDK/browser suite.
+The separate presentation browser configuration uses Vite on port 5173 (reusing the live client when available) and synthetic API state. It does not submit to the running conversation and can run while the application owns port 3000. It covers loading/empty presentation, send modes, queue/withdraw feedback, Continue/reset confirmation and retry, draft preservation and the default theme; it does not replace the full SDK/browser suite.
 
 ## Read next
 

@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { createRegistry, Harness, type SubmissionId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 
@@ -38,6 +38,8 @@ export async function openChat(dataDir: string, models: Models) {
     let closed = false;
     return {
       conversation,
+      withdraw: (id: SubmissionId) =>
+        harness.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {
         if (closed) return;
         closed = true;
