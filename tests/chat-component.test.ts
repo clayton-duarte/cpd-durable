@@ -28,6 +28,20 @@ describe("reusable chat presentation", () => {
     expect(html).not.toContain("No messages yet");
   });
 
+  it("does not expose mutation controls in a read-only embedding", () => {
+    const html = renderToStaticMarkup(
+      createElement(Chat, {
+        ...base,
+        state: { ...base.state!, controls: { canContinue: true, resetPending: false, queue: [] } },
+        onReset: () => Promise.resolve(true),
+        onContinue: () => Promise.resolve(true),
+      }),
+    );
+    expect(html).not.toContain("Conversation actions");
+    expect(html).not.toContain("Continue response");
+    expect(html).not.toContain("Send mode");
+  });
+
   it("escapes content, preserves message order and labels interruption", () => {
     const html = renderToStaticMarkup(
       createElement(Chat, {

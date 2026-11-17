@@ -1,5 +1,4 @@
-import { useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ArrowUpIcon, SquareIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Badge } from "@/components/ui/badge";
@@ -7,12 +6,6 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupTextarea,
-} from "@/components/ui/input-group";
 import { Message, MessageContent, MessageHeader, MessageFooter } from "@/components/ui/message";
 import {
   MessageScroller,
@@ -23,8 +16,9 @@ import {
   MessageScrollerViewport,
 } from "@/components/ui/message-scroller";
 import type { ChatState } from "../shared/chat.ts";
+import { ChatComposer, type ComposerActions } from "./chat-composer.tsx";
 
-export interface ChatProps {
+export interface ChatProps extends ComposerActions {
   title: string;
   description?: ReactNode;
   state: ChatState | null;
@@ -32,8 +26,10 @@ export interface ChatProps {
   pending?: boolean;
   error?: string | null;
   retryText?: string | null;
-  onSend?: (text: string) => Promise<boolean>;
-  onStop?: () => Promise<void>;
+  retryAction?: boolean;
+  onRetry?: () => Promise<boolean>;
+  uncertain?: boolean;
+  notice?: string | null;
 }
 
 // Instance-local presentation; the host owns transport, provider, routing and dimensions.
@@ -46,34 +42,26 @@ export function Chat({
   pending = false,
   error = null,
   retryText = null,
+  retryAction = false,
+  onRetry,
+  uncertain = false,
+  notice = null,
   onSend,
   onStop,
+  onContinue,
+  onReset,
+  onWithdraw,
 }: ChatProps) {
   const [text, setText] = useState("");
-  const formRef = useRef<HTMLFormElement>(null);
   const busy = state?.busy ?? false;
-  const canSend =
-    !!onSend &&
-    connected &&
-    state !== null &&
-    !busy &&
-    !pending &&
-    retryText === null &&
-    text.trim().length > 0;
 
   async function submit(draft: string) {
     const currentDraft = text;
-    if (await onSend?.(draft.trim())) {
+    if (await (onRetry ? onRetry() : onSend?.(draft.trim()))) {
       setText((current) =>
         current === currentDraft && current.trim() === draft.trim() ? "" : current,
       );
     }
-  }
-
-  async function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canSend) return;
-    await submit(text);
   }
 
   return (
@@ -109,7 +97,24 @@ export function Chat({
                   Retry submission
                 </Button>
               )}
+              {retryAction && onRetry && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!connected || pending}
+                  onClick={() => {
+                    void onRetry();
+                  }}
+                >
+                  Retry action
+                </Button>
+              )}
             </AlertDescription>
+          </Alert>
+        )}
+        {notice && (
+          <Alert>
+            <AlertDescription>{notice}</AlertDescription>
           </Alert>
         )}
         <div className="min-h-0 flex-1">
@@ -201,52 +206,19 @@ export function Chat({
           </MessageScroller>
         </div>
         {onSend && (
-          <div className="p-8 pt-0">
-            <form
-              ref={formRef}
-              onSubmit={(event) => {
-                void onSubmit(event);
-              }}
-            >
-              <InputGroup>
-                <InputGroupTextarea
-                  aria-label="Message"
-                  placeholder="Send a message…"
-                  value={text}
-                  onChange={(event) => setText(event.target.value)}
-                  maxLength={32_000}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === "Enter" &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing
-                    ) {
-                      event.preventDefault();
-                      formRef.current?.requestSubmit();
-                    }
-                  }}
-                />
-                <InputGroupAddon align="block-end">
-                  {busy && onStop ? (
-                    <InputGroupButton
-                      type="button"
-                      aria-label="Stop response"
-                      disabled={!connected || pending}
-                      onClick={() => {
-                        void onStop();
-                      }}
-                    >
-                      <SquareIcon /> Stop
-                    </InputGroupButton>
-                  ) : (
-                    <InputGroupButton type="submit" variant="default" disabled={!canSend}>
-                      {pending ? <Spinner aria-hidden="true" /> : <ArrowUpIcon />} Send
-                    </InputGroupButton>
-                  )}
-                </InputGroupAddon>
-              </InputGroup>
-            </form>
-          </div>
+          <ChatComposer
+            state={state}
+            connected={connected}
+            pending={pending}
+            uncertain={uncertain || retryText !== null}
+            text={text}
+            setText={setText}
+            onSend={onSend}
+            {...(onStop ? { onStop } : {})}
+            {...(onContinue ? { onContinue } : {})}
+            {...(onReset ? { onReset } : {})}
+            {...(onWithdraw ? { onWithdraw } : {})}
+          />
         )}
       </section>
     </MessageScrollerProvider>

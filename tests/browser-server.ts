@@ -30,7 +30,7 @@ const provider = testModels((call) => {
 });
 const directory = await mkdtemp(join(tmpdir(), "cpd-browser-test-"));
 const chat = await openChat(directory, provider.models);
-const app = createApp(chat.conversation);
+const app = createApp(chat);
 app.get("*", serveStatic({ root: "./dist/client" }));
 const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port: 3000 });
 const shutdown = () => {

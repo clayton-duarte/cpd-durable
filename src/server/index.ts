@@ -55,7 +55,7 @@ if (!config.success) {
       if (stopping) {
         await chat.close();
       } else {
-        app = createApp(chat.conversation);
+        app = createApp(chat);
         app.get("*", serveStatic({ root: "./dist/client" }));
         console.log("CPD Durable: http://127.0.0.1:3000");
       }
