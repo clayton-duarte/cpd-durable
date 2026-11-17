@@ -19,13 +19,13 @@ These needs motivate the [current design direction](design.md); they do not sele
 
 The following history is the User's account, recorded on 2026-11-17. It is not an independent benchmark of models or products.
 
-| Approach | Value experienced | Cost or unresolved need |
-| --- | --- | --- |
-| One frontier-model “super soldier” conversation | Planning and execution in one place | High execution cost, repeated grounding for new tickets, and overloaded context and coordination across a larger project |
-| Architect/builder | A frontier model planned while a lower-cost helper implemented, dramatically reducing cost | The architect could be blocked waiting; weak handoffs allowed scope creep or stalls; continuity and parallel work remained difficult |
-| Hermes Kanban | Cards and workers improved parallel execution | Nine states added cognitive burden; review was not always useful; triage or blocked work could lack a clear intervention owner |
-| Forked conversations | Tangents could leave the main chat | Excess context copying, duplicate parent execution, unclear ownership/status and manual coordination by the User |
-| CPD v0 | Valuable experimentation with continuity, ownership and delivery controls | Accumulated machinery overcomplicated the solution; the original problem remained |
+| Approach                                        | Value experienced                                                                          | Cost or unresolved need                                                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| One frontier-model “super soldier” conversation | Planning and execution in one place                                                        | High execution cost, repeated grounding for new tickets, and overloaded context and coordination across a larger project             |
+| Architect/builder                               | A frontier model planned while a lower-cost helper implemented, dramatically reducing cost | The architect could be blocked waiting; weak handoffs allowed scope creep or stalls; continuity and parallel work remained difficult |
+| Hermes Kanban                                   | Cards and workers improved parallel execution                                              | Nine states added cognitive burden; review was not always useful; triage or blocked work could lack a clear intervention owner       |
+| Forked conversations                            | Tangents could leave the main chat                                                         | Excess context copying, duplicate parent execution, unclear ownership/status and manual coordination by the User                     |
+| CPD v0                                          | Valuable experimentation with continuity, ownership and delivery controls                  | Accumulated machinery overcomplicated the solution; the original problem remained                                                    |
 
 V0 was not a total failure. Its useful lessons and evidence should survive without giving its mechanisms a presumption of necessity.
 
@@ -40,6 +40,8 @@ One accepted v0 observation was that procedural compliance displaced delivery: r
 Durable, attributable knowledge remains valuable. That does not establish a need for a universal operational Ledger, scheduler or state machine.
 
 ## Historical sources and interpretation
+
+Historical source links may require access to the original repository; making this repository public does not publish those sources.
 
 - [Original essence analysis](https://github.com/clayton-duarte/cpd/blob/5f17731283b891c98e1408d9b3dbc0801585d3da/docs/essence.md): User-approved historical text, left verbatim at its existing source.
 - [Accepted delivery principles](https://github.com/clayton-duarte/cpd/blob/5f17731283b891c98e1408d9b3dbc0801585d3da/docs/delivery-principles.md): the refinements and execution observations summarized above.
