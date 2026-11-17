@@ -1,22 +1,17 @@
 import { useRef, useState, type FormEvent } from "react";
+import { ComposerPrimitive } from "@assistant-ui/react";
 import { ArrowUpIcon, ChevronDownIcon, SquareIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-  InputGroupTextarea,
-} from "@/components/ui/input-group";
+import { paper } from "@/components/assistant-ui/elements/surfaces";
+import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
-import { Item, ItemContent, ItemTitle, ItemDescription, ItemActions } from "@/components/ui/item";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -89,46 +84,49 @@ export function ChatComposer({
   }
 
   return (
-    <div className="flex flex-col gap-2 p-8 pt-0">
+    <div className="flex min-w-0 flex-col gap-3">
       {controls?.resetPending && (
         <Badge variant="outline" className="whitespace-normal">
           Context reset pending; Stop does not withdraw it
         </Badge>
       )}
       {!!controls?.queue.length && (
-        <Collapsible>
-          <CollapsibleTrigger render={<Button variant="outline" />}>
+        <section aria-label="Queued inputs" className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
             Queued inputs <Badge variant="secondary">{controls.queue.length}</Badge>
-            <ChevronDownIcon />
-          </CollapsibleTrigger>
-          <CollapsibleContent className="max-h-48 overflow-y-auto">
+          </div>
+          <ul
+            data-slot="aui-durable-queue"
+            className="flex max-h-48 flex-col gap-2 overflow-y-auto"
+          >
             {controls.queue.map((item) => (
-              <Item key={item.id} variant="outline" size="sm">
-                <ItemContent>
-                  <ItemTitle>
+              <li key={item.id} className={cn(paper, "flex items-start gap-3 rounded-2xl p-3")}>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-muted-foreground">
                     {item.mode === "steer" ? "Steer requested" : "Follow-up queued"}
-                  </ItemTitle>
-                  <ItemDescription className="whitespace-pre-wrap">{item.text}</ItemDescription>
-                </ItemContent>
+                  </p>
+                  <p className="line-clamp-3 text-sm whitespace-pre-wrap wrap-break-word">
+                    {item.text}
+                  </p>
+                </div>
                 {onWithdraw && (
-                  <ItemActions>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      disabled={!available}
-                      aria-label={`Withdraw queued input ${item.id}`}
-                      onClick={() => {
-                        void onWithdraw(item.id);
-                      }}
-                    >
-                      Withdraw
-                    </Button>
-                  </ItemActions>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!available}
+                    aria-label={`Withdraw queued input ${item.id}`}
+                    onClick={() => {
+                      void onWithdraw(item.id);
+                    }}
+                  >
+                    Withdraw
+                  </Button>
                 )}
-              </Item>
+              </li>
             ))}
-          </CollapsibleContent>
-        </Collapsible>
+          </ul>
+        </section>
       )}
       <div className="flex flex-wrap gap-2">
         {onContinue && controls?.canContinue && (
@@ -165,76 +163,88 @@ export function ChatComposer({
         )}
       </div>
       {onSend && (
-        <form
+        <ComposerPrimitive.Root
           ref={formRef}
+          data-slot="aui-composer"
+          className={cn(
+            paper,
+            "flex min-w-0 flex-col gap-2 rounded-2xl p-3 focus-within:ring-1 focus-within:ring-ring",
+          )}
           onSubmit={(event) => {
             void submit(event);
           }}
         >
-          <InputGroup>
-            <InputGroupTextarea
-              aria-label="Message"
-              placeholder="Send a message…"
-              value={text}
-              maxLength={32_000}
-              onChange={(event) => setText(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                  event.preventDefault();
-                  formRef.current?.requestSubmit();
-                }
-              }}
-            />
-            <InputGroupAddon align="block-end" className="flex-wrap">
-              {modesEnabled && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <InputGroupButton
-                        type="button"
-                        disabled={pending || uncertain}
-                        aria-label="Send mode"
-                      />
-                    }
-                  >
-                    {modeLabel}
-                    <ChevronDownIcon />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent>
-                    <DropdownMenuItem onClick={() => setMode("reject")}>Send now</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setMode("followUp")}>
-                      Send after current response
-                    </DropdownMenuItem>
-                    <DropdownMenuItem disabled={!busy} onClick={() => setMode("steer")}>
-                      Steer current work
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-              {busy && onStop && (
-                <InputGroupButton
-                  type="button"
-                  aria-label="Stop response"
-                  disabled={!available}
-                  onClick={() => {
-                    void onStop();
-                  }}
+          <ComposerPrimitive.Input
+            aria-label="Message"
+            placeholder="Send a message…"
+            className="max-h-48 min-h-12 w-full resize-none bg-transparent px-1 text-base outline-none placeholder:text-muted-foreground"
+            rows={1}
+            submitMode="none"
+            cancelOnEscape={false}
+            addAttachmentOnPaste={false}
+            maxLength={32_000}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                formRef.current?.requestSubmit();
+              }
+            }}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            {modesEnabled && (
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={pending || uncertain}
+                      aria-label="Send mode"
+                    />
+                  }
                 >
-                  <SquareIcon />
-                  Stop
-                </InputGroupButton>
-              )}
-              <InputGroupButton
-                type="submit"
-                variant="default"
-                disabled={!canSend}
-                aria-label="Send"
+                  {modeLabel}
+                  <ChevronDownIcon />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onClick={() => setMode("reject")}>Send now</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setMode("followUp")}>
+                    Send after current response
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={!busy} onClick={() => setMode("steer")}>
+                    Steer current work
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {busy && onStop && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                aria-label="Stop response"
+                disabled={!available}
+                onClick={() => {
+                  void onStop();
+                }}
               >
-                {pending ? <Spinner aria-hidden="true" /> : <ArrowUpIcon />}{" "}
-                {mode === "steer" ? "Steer" : mode === "followUp" && busy ? "Queue" : "Send"}
-              </InputGroupButton>
-            </InputGroupAddon>
-          </InputGroup>
+                <SquareIcon />
+                Stop
+              </Button>
+            )}
+            <Button
+              type="submit"
+              variant="default"
+              size="sm"
+              className="ml-auto rounded-full"
+              disabled={!canSend}
+              aria-label="Send"
+            >
+              {pending ? <Spinner aria-hidden="true" /> : <ArrowUpIcon />}{" "}
+              {mode === "steer" ? "Steer" : mode === "followUp" && busy ? "Queue" : "Send"}
+            </Button>
+          </div>
           {mode === "steer" && (
             <p className="text-sm text-muted-foreground">
               Requested steering is applied at an eligible run boundary, not immediately.
@@ -245,7 +255,7 @@ export function ChatComposer({
               Stop ends current foreground work and withdraws queued inputs.
             </p>
           )}
-        </form>
+        </ComposerPrimitive.Root>
       )}
       {onReset && (
         <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>

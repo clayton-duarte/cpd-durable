@@ -63,7 +63,7 @@ test("user transcript preserves line breaks and indentation", async ({ page }) =
   await page.getByRole("textbox", { name: "Message", exact: true }).fill(text);
   await page.getByRole("button", { name: "Send", exact: true }).click();
   const content = page
-    .locator('[data-slot="bubble-content"]')
+    .locator('[data-role="user"] [data-slot="aui-message-content"]')
     .filter({ hasText: "Indented example:" });
   await expect(content).toHaveText(text, { useInnerText: true });
   await expect(content).toHaveCSS("white-space", "pre-wrap");

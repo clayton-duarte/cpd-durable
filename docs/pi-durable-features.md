@@ -10,7 +10,7 @@ Evidence: the published package's [README](https://unpkg.com/@earendil-works/pi-
 - **Underlying:** the SDK supplies it behind the current chat, but no dedicated UI/control exposes it; some behavior is an SDK default, not exercised by our tests.
 - **Not integrated:** application wiring, UI, permissions or dependencies would be needed.
 
-The current app is one root conversation with a fixed OpenCode Go model, no tools and an empty extension registry. [Server setup](../src/server/chat.ts), [HTTP/SSE endpoints](../src/server/app.ts), [presentation filtering](../src/server/presentation.ts) and [client](../src/client/chat.tsx) are the implementation evidence. The [component mapping](chat-components.md#delivery-status) records incremental enrichment and remaining work.
+The current app is one root conversation with a fixed OpenCode Go model, no tools and an empty extension registry. [Server setup](../src/server/chat.ts), [HTTP/SSE endpoints](../src/server/app.ts), [presentation filtering](../src/server/presentation.ts) and [client](../src/client/chat.tsx) are the implementation evidence. The [component mapping](chat-components.md) records assistant-ui adoption, incremental enrichment and remaining work.
 
 ## Conversation and chat experience
 
@@ -84,7 +84,7 @@ For discussion, the closest additions to the existing single-chat boundary are:
 2. Usage/cost display, followed by honest context/compaction visibility.
 3. Reasoning display where the provider supplies it.
 
-Continue, reset and busy-input queue/steer choices are now exposed with the [documented semantics](chat-components.md#delivery-status). The remaining items above are candidates, not authorization.
+Continue, reset and busy-input queue/steer choices are now exposed with the [documented semantics](chat-components.md#2-composer-and-run-controls). The remaining items above are candidates, not authorization.
 
 Tools, approvals, multimodal input, forks, helpers and project-scale orchestration require additional scope/authority decisions. None is authorized simply by appearing in this inventory. The [design proposals](design.md#proposal-project-conversations-and-interactive-threads) remain open.
 

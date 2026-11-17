@@ -112,6 +112,7 @@ test("queues a follow-up while busy and preserves a newer draft during admission
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await draft.press("Enter");
   await expect.poll(() => requests.length).toBe(1);
+  await expect(draft).toHaveValue("Follow-up\n  with indentation");
   await draft.fill("Another draft");
   release();
   await expect(page.getByText("Follow-up input admitted.", { exact: false })).toBeVisible();
@@ -159,11 +160,11 @@ test("shows queued input separately and reports the withdraw placement race", as
     (state) => window.dispatchEvent(new CustomEvent("synthetic-chat-state", { detail: state })),
     queueState,
   );
-  await page.getByRole("button", { name: "Queued inputs" }).click();
+  await expect(page.getByRole("region", { name: "Queued inputs" })).toBeVisible();
   await expect(page.getByText("Steer requested")).toBeVisible();
   await expect(page.getByText("Queued synthetic direction")).toBeVisible();
   await expect(
-    page.locator('[data-slot="message"]', { hasText: "Queued synthetic direction" }),
+    page.locator('[data-slot="aui-message"]', { hasText: "Queued synthetic direction" }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "Withdraw queued input 123" }).click();
   await expect(page.getByText("Input was already placed; it was not withdrawn.")).toBeVisible();
@@ -235,4 +236,123 @@ test("requires reset confirmation, preserves drafts and retries an uncertain res
   expect(requests[0]).toEqual(requests[1]);
   expect(requests[0]).toMatchObject({ type: "reset", handoff: "Keep only the approved direction" });
   await expect(draft).toHaveValue("Keep this draft");
+});
+
+test("uses native message parts, safe Markdown, code copy and response export", async ({
+  page,
+}) => {
+  const markdown =
+    "## Summary\n\n**Formatted reply**\n\n| Name | Value |\n| --- | --- |\n| Test | 1 |\n\n```ts\n    const value = 1;\n```\n\n<script>window.PWNED=true</script>\n\n[Unsafe](javascript:alert(1))\n\n![tracking](https://example.invalid/tracker.png)";
+  await connect(page, {
+    ...empty,
+    controls,
+    messages: [
+      {
+        id: "1:0",
+        role: "user",
+        text: "**Literal user text**\n    indentation",
+        interrupted: false,
+      },
+      { id: "2:0", role: "assistant", text: markdown, interrupted: false },
+    ],
+  });
+  const remoteImages: string[] = [];
+  const externalRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("tracker.png")) remoteImages.push(request.url());
+    if (request.url().startsWith("http") && new URL(request.url()).hostname !== "127.0.0.1")
+      externalRequests.push(request.url());
+  });
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Summary", exact: true })).toBeVisible();
+  const user = page.locator('[data-role="user"] [data-slot="aui-message-content"]');
+  await expect(user).toHaveText("**Literal user text**\n    indentation", { useInnerText: true });
+  await expect(user.locator("strong")).toHaveCount(0);
+  await expect(page.getByRole("table")).toBeVisible();
+  await expect(page.locator("pre code")).toHaveText("    const value = 1;\n");
+  await expect(page.getByText("[Image: tracking]", { exact: true })).toBeVisible();
+  await expect(page.locator('img[src*="tracker"]')).toHaveCount(0);
+  await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
+  expect(await page.evaluate(() => Object.hasOwn(window, "PWNED"))).toBe(false);
+  expect(remoteImages).toEqual([]);
+  expect(externalRequests).toEqual([]);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: async (text: string) => {
+          document.body.dataset["copied"] = text;
+        },
+      },
+    });
+  });
+  await page
+    .locator(".aui-code-header-root")
+    .getByRole("button", { name: "Copy", exact: true })
+    .click();
+  expect(await page.locator("body").getAttribute("data-copied")).toBe("    const value = 1;\n");
+  await page.getByRole("button", { name: "Copy response", exact: true }).click();
+  expect(await page.locator("body").getAttribute("data-copied")).toBe(markdown);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export response as Markdown", exact: true }).click();
+  expect((await download).suggestedFilename()).toMatch(/\.md$/);
+  await expect(
+    page.getByRole("button", { name: /Regenerate|Edit message|Attach|Voice|Helpful/i }),
+  ).toHaveCount(0);
+});
+
+test("native runtime retains distinct messages through streaming and settlement", async ({
+  page,
+}) => {
+  const committed = [
+    { id: "1:0", role: "assistant" as const, text: "First assistant entry", interrupted: true },
+    { id: "2:0", role: "assistant" as const, text: "Second assistant entry", interrupted: false },
+  ];
+  await connect(page, { ...empty, controls, messages: committed, busy: true, partial: "Incoming" });
+  await page.goto("/");
+  await expect(page.locator('[data-slot="aui-message"][data-role="assistant"]')).toHaveCount(3);
+  await page.evaluate(
+    (state) => window.dispatchEvent(new CustomEvent("synthetic-chat-state", { detail: state })),
+    { ...empty, controls, messages: committed, busy: true, partial: "Incoming more" },
+  );
+  await expect(page.getByText("Incoming more", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-slot="aui-message"][data-role="assistant"]')).toHaveCount(3);
+  await page.evaluate(
+    (state) => window.dispatchEvent(new CustomEvent("synthetic-chat-state", { detail: state })),
+    {
+      ...empty,
+      controls,
+      messages: [
+        ...committed,
+        { id: "3:0", role: "assistant" as const, text: "Incoming more", interrupted: false },
+      ],
+    },
+  );
+  await expect(page.locator('[data-slot="aui-message"][data-role="assistant"]')).toHaveCount(3);
+  await expect(page.getByText("Incoming more", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Response interrupted.", { exact: true })).toBeVisible();
+});
+
+test("isolates native composer state and send mode between two embedded runtimes", async ({
+  page,
+  baseURL,
+}) => {
+  test.skip(
+    !baseURL?.endsWith(":5173"),
+    "Vite-only composition fixture, excluded from production build",
+  );
+  await page.goto("/tests/fixtures/chat-reuse.html");
+  const first = page.getByRole("region", { name: "First chat", exact: true });
+  const second = page.getByRole("region", { name: "Second chat", exact: true });
+  await first.getByRole("textbox", { name: "Message", exact: true }).fill("First draft");
+  await second
+    .getByRole("textbox", { name: "Message", exact: true })
+    .fill("Independent second draft");
+  await first.getByRole("button", { name: "Send mode" }).click();
+  await page.getByRole("menuitem", { name: "Send after current response", exact: true }).click();
+  await expect(second.getByRole("button", { name: "Send mode" })).toHaveText("Send now");
+  await first.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(first.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("");
+  await expect(second.getByRole("textbox", { name: "Message", exact: true })).toHaveValue(
+    "Independent second draft",
+  );
 });

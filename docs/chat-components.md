@@ -1,135 +1,90 @@
 # Chat capability mapping
 
-Accepted direction (2026-11-17), not a claim that every capability is implemented. The [SDK inventory](pi-durable-features.md) scopes this mapping to pi-durable 1.5.2. Use only stock [shadcn components](https://ui.shadcn.com/docs/components), composed without custom visual primitives or a custom theme.
+Settled direction, updated 2026-11-17: **assistant-ui replaces shadcn AI Elements for chat**. The User requested native adoption informed by the entire element catalogue, not a one-for-one component substitution. The [128-element review](assistant-ui-elements.md) records that pass and its evidence limits. General shadcn controls and the existing dark theme remain compatible; the earlier shadcn-only chat constraint is superseded.
 
-## Vocabulary and containment
+This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual element does not authorize a new runtime capability, tool or host integration.
 
-- **Message** represents participant content; **Trace** represents agent activity; **Marker** represents events and boundaries.
-- Preserve chronological content order, including text interleaved with activity. Do not manufacture reasoning, progress, citations or metadata.
-- Use Popover and Sheet for optional detail, not a permanently expanded developer console.
-- The embedding application owns routes, placement, dimensions, conversation selection and transport/provider integration.
-- Each mounted chat owns its draft, scroll position and expanded details. Change its React key when switching conversations. Multiple views are independent, not synchronized draft editors.
-- Actions must follow actual capabilities and authority. Read-only views must not need mutation controls.
-- Credentials, storage configuration, registry administration and telemetry infrastructure remain outside chat.
+## Architecture and vocabulary
+
+- One assistant-ui external-store runtime per mounted `Chat`, supplied from validated Hono/SSE snapshots. pi-durable remains authoritative for transcript, execution, queues and persistence.
+- `ThreadPrimitive` owns thread layout, viewport and scrolling; `MessagePrimitive` and part renderers own participant content and native message actions. The assistant-ui composer owns draft text.
+- Activities belong in ordered reasoning/tool/data parts and, where justified, native reasoning/tool groups or RunActivity. Do not preserve the old Message/Trace/Marker wrappers as a second abstraction layer.
+- The application owns routes, conversation selection, dimensions and provider/transport integration. Change the Chat's React key when switching conversations.
+- Each instance keeps its own draft, scroll and disclosure state. Read-only views expose no mutation controls.
+- No Assistant Cloud, local transcript database, localStorage draft persistence, Vercel AI SDK runtime or client-side model/tool execution is enabled.
 
 ## 1. Conversation and messages
 
-| Capability                      | Stock components                       | Presentation                                                       |
-| ------------------------------- | -------------------------------------- | ------------------------------------------------------------------ |
-| Transcript                      | Message Scroller, Message              | Preserve position during streaming and history prepends            |
-| User/assistant content          | Message, Bubble                        | Participant alignment; preserve whitespace                         |
-| Sender/metadata                 | Message header/footer; optional Avatar | Relevant supplied identity, not invented timestamps                |
-| Streaming                       | Message content                        | Update one row, not one per token                                  |
-| Initial loading                 | Skeleton                               | History not yet available                                          |
-| Empty conversation              | Empty                                  | Starting state, distinct from loading                              |
-| Earlier history                 | Button, Spinner                        | Load earlier at the top                                            |
-| Missing segment after reconnect | Marker, Button                         | Explicit gap and recovery action                                   |
-| Submission acknowledgement      | Message footer, Spinner                | Sending/admitted/failed; admission is not answer completion        |
-| Safe resend                     | Message footer, Button                 | Retain original request identity after ambiguous delivery          |
-| Interrupted answer              | Message footer, Badge                  | Retain partial content and label interruption                      |
-| Custom transcript entries       | Marker or Message                      | Event versus participant content, with an explicit safe projection |
-| Code snippets                   | Code Block                             | Snippet formatting, copy and wrapping                              |
-| Structured results              | Table or Code Block                    | Table only for meaningful tabular data                             |
-| Images                          | Attachment, Dialog                     | Requires real provider/input support                               |
-| Files/downloads                 | Attachment                             | Requires host-managed access                                       |
-| Supplied sources                | Trace links                            | Only references actually returned by tools                         |
+| Capability             | assistant-ui composition                                    | Status/boundary                                                                         |
+| ---------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Transcript and scroll  | Thread Root/Viewport/Messages/ViewportFooter/ScrollToBottom | Adopted; centered reading surface and registered sticky composer                        |
+| Participant content    | Message Root and Parts                                      | Adopted; durable IDs and order retained, no automatic adjacent-assistant merging        |
+| Assistant text         | MarkdownText element, lazily loaded                         | Adopted: Markdown/GFM headings, lists, tables and fenced code with code-copy controls   |
+| User text              | MessagePart Text                                            | Adopted: literal text, line breaks and indentation preserved                            |
+| Message actions        | ActionBar Copy/ExportMarkdown with TooltipIconButton        | Adopted; native copied-state confirmation, no fake feedback/edit/regenerate buttons     |
+| Streaming              | In-place running assistant part                             | Adopted; no simulated word replay. Live-to-committed identity still needs host work     |
+| Loading/empty          | Runtime state, skeleton and welcome composition             | Adopted; initial loading is not an empty transcript                                     |
+| Earlier history/gaps   | Native LoadEarlier adapter is the preferred paging surface  | Host paging, gap recovery and merge logic remain pending; recent-window notice retained |
+| Acknowledgement/retry  | Admission-aware composer submission and transport notices   | Preserves original payload/ID after uncertain delivery, not answer-completion claims    |
+| Interrupted answer     | Incomplete message status and retained content              | Adopted; Continue is offered separately only when active context needs an answer        |
+| Custom events/activity | Typed message data parts or explicit event projection       | Pending; no raw SDK document dump                                                       |
+| Images/files/sources   | Image/File/Attachment/Source elements and part renderers    | Require actual host/provider data; not enabled by this text-only migration              |
 
-Full Markdown remains unresolved: Message is layout and Code Block is not a Markdown parser. Plain text remains the safe default; no outside parser is implicitly approved.
+Markdown does not enable raw HTML or code execution. Model-authored images render a text placeholder rather than fetching a remote URL. Links are not verified citations. Neither Shiki nor Prism, math, Mermaid, maps nor arbitrary generative UI execution is installed just because the catalogue offers it.
 
 ## 2. Composer and run controls
 
-| Capability             | Stock components              | Presentation                                            |
-| ---------------------- | ----------------------------- | ------------------------------------------------------- |
-| Text input/send        | Input Group, Textarea, Button | Multiline draft                                         |
-| Stop/continue          | Button                        | Only when applicable; distinct operations               |
-| Follow-up versus steer | Dropdown Menu                 | Explicit send modes; distinguish requested from applied |
-| Queue                  | Collapsible, Item, Badge      | Pending inputs above composer, not delivered messages   |
-| Withdraw queued input  | Button                        | Specific input, not abort entire run                    |
-| Reset context          | Dropdown Menu, Alert Dialog   | Explain that stored history remains                     |
-| Handoff instructions   | Dialog, Field, Textarea       | Optional instructions and explicit confirmation         |
-| Selected attachments   | Button, Attachment group      | Removal and real processing/error state                 |
+| Capability               | Composition                                                     | Semantics                                                                                                                  |
+| ------------------------ | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Multiline draft          | Native Composer Root/Input and assistant-ui surface tokens      | Draft belongs to assistant-ui; Enter submits, Shift+Enter inserts newline, IME is preserved                                |
+| Send now/follow-up/steer | Host-admitted toolbar actions                                   | Explicit mode; idle steering is refused rather than silently starting another run                                          |
+| Durable queue            | Queue presentation informed by MessageQueue, fed from SDK inbox | Visible immediately, separate from delivered messages; no second browser queue                                             |
+| Withdraw                 | Per-item server-backed action                                   | Placement race reports already-placed/settled/not-found honestly                                                           |
+| Stop                     | Explicit foreground abort                                       | Also withdraws queued inputs; queued reset writes survive                                                                  |
+| Continue                 | Explicit context-aware action                                   | Starts a run without adding user text; not checkpoint Resume or Regenerate                                                 |
+| Reset/handoff            | Confirmed application control with optional handoff textarea    | Stored history remains; busy reset waits for a boundary. Handoff is a user message; reset alone does not request an answer |
+| Attachments              | Native attachment adapter/elements when enabled                 | Deferred with text-only host; no inert attach button                                                                       |
+
+Steering is requested at an eligible boundary, not an immediate interruption. Continue eligibility comes from idle active model context ending in user content/tool results, with no queued reset, not the recent transcript window. Continue/reset admissions use request IDs for safe retry; reset uses the SDK's public reset-entry shape.
 
 ## 3. Agent activity, tools and tasks
 
-| Capability                   | Stock components             | Presentation                                                      |
-| ---------------------------- | ---------------------------- | ----------------------------------------------------------------- |
-| Provider-supplied reasoning  | Trace collapsible row        | Only available content                                            |
-| Tool call/status             | Trace                        | Name, actual state and supplied duration                          |
-| Arguments/results            | Code Block, optional Tabs    | Input/output detail                                               |
-| Streamed output/errors       | Trace, Code Block            | Bounded output; sanitized failure, not color alone                |
-| Nested tools/code mode       | Nested Trace, Code Block     | Actual parent-child order and script                              |
-| Deferred-tool search/loading | Trace                        | Activity rather than permanent panel                              |
-| Foreground subagent          | Trace, Badge, Button         | Assignment, status, result, open conversation                     |
-| Background subagent          | Trace, Badge                 | Explicit background scope; parent Stop is not global cancellation |
-| Dependencies/child tasks     | Nested Trace                 | Actual waits and relationships, no required graphical DAG         |
-| Sleep/deferred response      | Trace, Badge                 | Known wake time, no invented percentage                           |
-| After-run work               | Trace, Marker                | Answer completion versus continuing follow-up work                |
-| Task inspection              | Sheet, Trace, optional Table | Conversation-scoped detail                                        |
+Preferred elements: Reasoning, ToolFallback/ToolGroup, RunActivity, TerminalBlock, TaskCard and appropriate task/status disclosures. Preserve text/activity ordering and actual ownership. Use native GroupedParts only with supplied part data; never invent hidden reasoning, progress percentages, timings or tool results.
+
+Tools, code execution, subagents, background work and task inspectors are not enabled. Tool retries, approvals and a Run now queue button need real host protocols; frontend callbacks alone do not supply durable semantics.
 
 ## 4. Context, configuration and usage
 
-| Capability               | Stock components                | Presentation                                                                |
-| ------------------------ | ------------------------------- | --------------------------------------------------------------------------- |
-| Model/provider identity  | Badge, Popover                  | Compact header identity                                                     |
-| Model/thinking selection | Combobox, Select                | Only enabled models and supported levels                                    |
-| Instructions             | Dialog, Field, Textarea         | Explicit configuration action                                               |
-| Tools/extensions         | Sheet, Item, Checkbox/Switch    | Effective configuration; changes need host authority                        |
-| Environment/directory    | Badge, Popover/Sheet            | Selection and permissions belong to host                                    |
-| Tool-round limit         | Field, Input                    | Call it tool rounds, not response length                                    |
-| Tokens/cost              | Popover, Table                  | Input/output/cache/model breakdown                                          |
-| Context-window usage     | Progress, Popover               | Meaningful measured or labelled estimated denominator; not cumulative usage |
-| Active model context     | Sheet, Tabs, Message/Code Block | Separate from full stored history                                           |
-| Automatic compaction     | Marker, Spinner                 | Event, not participant message                                              |
-| Completed summary        | Marker, Collapsible             | Optional summary detail                                                     |
-| Manual compaction        | Dropdown Menu, Dialog, Textarea | Explicit action and optional instructions                                   |
-| Compaction failure       | Alert, applicable Button        | Persistent recovery, not toast-only                                         |
+ModelSelector, reasoning effort, context displays/breakdowns and CostMeter are future presentation candidates backed by selected SDK projections. The current provider/model remain fixed server-side. Cumulative usage is not active context occupancy; unknown token breakdowns remain unknown. Browser model-context registration is not an automatic pi-durable configuration API.
+
+Automatic/manual compaction, context inspection and configuration surfaces remain pending. Do not replace missing metrics with decorative rings or imply that a usage estimate is an invoice.
 
 ## 5. Recovery and connection
 
-| Capability              | Stock components         | Presentation                                                |
-| ----------------------- | ------------------------ | ----------------------------------------------------------- |
-| Connecting/reconnecting | Badge/Marker, Spinner    | Keep visible history and draft                              |
-| Resumed work            | Marker, Trace            | No duplicate user message                                   |
-| Retry/backoff           | Trace/Marker             | Known timing only                                           |
-| Run failure             | Alert, applicable Button | Only valid recovery actions                                 |
-| Storage/host failure    | Alert                    | Honest unavailable/read-only state                          |
-| Read-only conversation  | Badge, optional Alert    | No mutation controls                                        |
-| Diagnostics             | Sheet, Code Block        | Authorized sanitized projection, never raw secrets/payloads |
-| Custom document state   | Sheet, Table/Code Block  | Selected useful projection, not arbitrary SDK dump          |
+Connection, failure, cancellation and completion remain distinct. SSE disconnect detaches observation, not work; reconnect does not submit another run. Retain visible history and editable draft while observation is unavailable.
 
-Disconnect, cancellation, failure and success remain distinct states.
+Use Error/StoppedRun/ConnectionState patterns only with real signals and valid callbacks. No unwired Retry/Discard action, blanket server-progress claim, fake reconnect count or fabricated token-replay number. No request-ID-safe retry is offered for uncertain Stop, because a later abort could stop newer work.
 
-## 6. Adjacent host integrations
+Diagnostics, detailed task recovery, compaction failure detail and custom document inspection require sanitized host projections. Raw provider errors, paths and credentials stay private.
 
-| Capability             | Stock components                     | Boundary                                                |
-| ---------------------- | ------------------------------------ | ------------------------------------------------------- |
-| Approvals              | Alert, Button, optional Alert Dialog | Hooks can block; durable approval protocol is host work |
-| Structured questions   | Questionnaire                        | Durable answer delivery/resumption is host work         |
-| Proposed file changes  | Trace, Code Block diff, Sheet        | Requires actual tool/host evidence                      |
-| Fork/open conversation | Dropdown Menu/Button                 | Host owns navigation                                    |
+## 6. Adjacent integrations
 
-Creating a conversation and resetting current model context are separate actions.
+ApprovalCard, PermissionGrant, OptionList/QuestionFlow, ElicitationForm and ReviewableDiff require durable host protocols, actual evidence and authorization. An assistant-ui human-tool example does not implement that protocol for pi-durable.
 
-## Delivery status
+ThreadList, sidebar/modal shells, forks, sharing and new-thread controls require application-owned navigation and APIs. Keep the contained thread reusable now rather than adding fake multi-conversation machinery.
 
-Implementation proceeds section by section. The first Section 1 increment separates the application page/transport from reusable presentation, adds initial loading/empty states, sender/interruption metadata and explicit ambiguous-delivery retry. Existing text streaming, whitespace and unchanged-draft acknowledgement behavior are retained.
+## Current embedding contract
 
-Still pending in Section 1: history paging, gap recovery, stable live-to-committed row identity, ordered rich-content projection and a safe custom-entry projection. Code, structured data, attachments and sources are not claimed as implemented. No tools, additional models, uploads or host approval/question protocols are enabled by this mapping.
+`src/client/chat.tsx` exports `Chat` and `ChatProps`. Supply title, optional description, validated presentation state (`null` during initial load), connection and pending/error/notice state. The parent supplies a bounded height. `src/client/chat-page.tsx` owns application integration; `src/client/use-chat.ts` owns the single-conversation API connection. No backend/data migration is needed for the UI change.
 
-Section 2 now exposes multiline input, explicit Send now/follow-up/steer modes, Stop, context-aware Continue, a collapsible queued-input list with per-item withdrawal, and confirmed model-context reset with optional handoff instructions. These are backed by actual SDK admission/inbox/context state; selected attachments remain deferred with the text-only host.
+Omit `onSend` for read-only mode. Otherwise it receives text and optional send mode, returning true only for confirmed admission. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
 
-Steering is requested for an eligible boundary, not an immediate interruption. An idle steering submission is rejected rather than silently starting another run. Follow-ups can be admitted while idle or busy. Queued inputs are separate from transcript messages until placed. Withdrawal can lose a placement race; the UI reports `already_placed` rather than claiming removal. Stop aborts current foreground work and withdraws queued inputs; it does not withdraw queued resets (SDK write submissions).
+The native composer form intercepts submit before assistant-ui's eager draft-detachment path; only an unchanged draft clears after confirmed admission. Eager native composer sends are gated; direct runtime appends use guarded text-only admission through the host callback. This deliberate boundary preserves server authority without a second React draft store or an optimistic transcript.
 
-Continue eligibility is derived server-side from idle active context ending in user content or tool results, with no queued reset, not from the recent transcript window or failure label. It adds no user message. Reset retains stored history, runs at the next boundary if busy and may place queued inputs into the new context. Handoff text becomes a user message; a reset by itself does not request an answer. Continue and reset admissions retain request IDs for safe retry, using the SDK's public reset-entry shape for the latter.
+After uncertain input/control delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` or `retryAction`. Retain the original operation/payload/request ID. Other mutations stay blocked while a new draft remains editable. Continue/reset/withdraw do not consume the composer draft. Reset handoff text survives a failed attempt.
 
-### Current embedding contract
+The transport serializes mutations and keeps retry identity only until refresh. Inspect restored state before repeating an uncertain action after refresh. Stop is a current-scope abort, not a request-ID admission; an uncertain Stop asks for state inspection before explicitly stopping again.
 
-`src/client/chat.tsx` exports `Chat` and `ChatProps`. Supply a title, optional description, validated presentation state (`null` while loading), connection status and optional pending/error state. The parent must provide a bounded height; `Chat` fills that space rather than taking over the viewport.
+## Remaining work
 
-Omit `onSend` for read-only presentation. Otherwise it receives text and an optional send mode and returns `true` only when admission is confirmed, not when the answer completes. Acknowledgement clears only the unchanged submitted draft. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional, capability-gated callbacks. The optional `state.controls` projection provides Continue eligibility, queued inputs and pending-reset state; without it, advanced controls stay hidden.
-
-After uncertain delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` for input or `retryAction` for a control. Retry must retain the original operation, payload and request ID; changing a send mode must not change the uncertain action. Mutation controls are disabled until uncertainty resolves, but editing a new draft remains possible. Continue/reset/withdraw do not consume the composer draft. Reset handoff text is retained after a failed attempt; a retry confirms the original admitted action, not newly edited instructions.
-
-The current transport serializes mutations, distinguishes definite rejection from uncertain delivery and preserves retry identity only until refresh. After an uncertain action followed by refresh, inspect the restored state before repeating it. `src/client/chat-page.tsx` owns application integration; `src/client/use-chat.ts` owns the single-conversation API connection. `src/client/chat-composer.tsx` contains the instance-local composer mode, queue expansion and reset confirmation/handoff state.
-
-Stop is not a request-ID admission: a later abort could target newer work. An uncertain Stop therefore asks the user to inspect current state before explicitly stopping again, rather than offering a supposedly safe original-action retry.
+The UI migration does not silently complete previously deferred history paging, gap recovery, stable live-to-committed identity, ordered rich SDK projection or custom events. Richer assistant Markdown is now adopted as part of the assistant-ui pivot; attachments/tools/sources and the wider host capabilities remain deferred. The [catalogue review](assistant-ui-elements.md) distinguishes ready-to-use primitives, data-dependent renderers, alternative shells and entirely new host capabilities.
