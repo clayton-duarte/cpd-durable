@@ -10,7 +10,7 @@ const directories: string[] = [];
 
 function start(dataDir: string, key = "test-only") {
   const child = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
-    env: { ...process.env, CPD_DATA_DIR: dataDir, OPENROUTER_API_KEY: key },
+    env: { ...process.env, CPD_DATA_DIR: dataDir, OPENCODE_API_KEY: key },
     stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(child);
@@ -68,6 +68,6 @@ it("missing credentials fail closed before creating session files", async () => 
   const host = start(data, "");
   await once(host.child, "exit");
   expect(host.child.exitCode).toBe(1);
-  expect(host.output()).toContain("Set OPENROUTER_API_KEY");
+  expect(host.output()).toContain("Set OPENCODE_API_KEY");
   await expect(stat(data)).rejects.toMatchObject({ code: "ENOENT" });
 });

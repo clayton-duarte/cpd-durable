@@ -4,9 +4,9 @@ import type {
   TranscriptContext,
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
-import { MODEL_ID } from "../src/shared/chat.ts";
+import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 
 type TestCall = {
   context: TranscriptContext;
@@ -23,14 +23,14 @@ export function testModels(onCall?: (call: TestCall) => void) {
       fileExists: async () => false,
     },
   });
-  const provider = openrouterProvider();
+  const provider = opencodeGoProvider();
   function stream(context: TranscriptContext, options?: Pick<SimpleStreamOptions, "signal">) {
     const events = createAssistantMessageEventStream();
     let message: AssistantMessage = {
       role: "assistant",
       content: [],
       api: "openai-completions",
-      provider: "openrouter",
+      provider: PROVIDER_ID,
       model: MODEL_ID,
       stopReason: "pending",
       timestamp: Date.now(),

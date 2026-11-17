@@ -24,7 +24,7 @@ Selected stack: Vite+, pnpm, React, TanStack Router, uncustomized shadcn/AI Elem
 
 One package contains `src/client`, `src/server` and browser-safe `src/shared` modules. Package extraction is deferred until independent consumers, deployments or dependency isolation justify it. Zod validates application boundaries, without replacing the SDK's internal schema mechanisms.
 
-The initial implementation is localhost-only and text-only, with OpenRouter's `deepseek/deepseek-v4.1-flash` fixed server-side. Hono relays validated input and SDK conversation watches over SSE (`streamSSE`); the SDK owns execution, retries and SQLite persistence. Browser state is transient. There is no separate transcript database, legacy wrapper, tool registry population or orchestration service.
+The initial implementation is localhost-only and text-only, with OpenCode Go's `deepseek-v4.1-flash` fixed server-side. The User clarified that the earlier OpenRouter reference was a misstatement; OpenCode Go is the intended provider. Hono relays validated input and SDK conversation watches over SSE (`streamSSE`); the SDK owns execution, retries and SQLite persistence. Browser state is transient. There is no separate transcript database, legacy wrapper, tool registry population or orchestration service.
 
 This slice implements send/stream/stop, recent history, reconnect and reopen/resume. [Running instructions and verification boundaries](../README.md#checks) distinguish local tests with a substituted provider from live-provider verification. LAN access, additional models, tools and broader topology remain outside this slice.
 

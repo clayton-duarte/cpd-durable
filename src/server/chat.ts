@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { MODEL_ID } from "../shared/chat.ts";
+import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 
 export async function openChat(dataDir: string, models: Models) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -15,15 +15,25 @@ export async function openChat(dataDir: string, models: Models) {
       models,
       registry: createRegistry(),
       settings: { retry: { maxRetries: 2 } },
+      identity: {
+        userAgent: { custom: "cpd-durable/0.1.0" },
+        attribution: { name: "CPD Durable", url: "https://github.com/clayton-duarte/cpd-durable" },
+      },
       // Log categories only: reports can contain prompts, paths or credentials.
       onReport: (report) => console.error("pi-durable report:", report.kind),
     },
     BACKGROUND_CONTEXT,
   );
   try {
-    const conversation = await harness.root(BACKGROUND_CONTEXT, {
-      agent: { model: { provider: "openrouter", modelId: MODEL_ID }, tools: [] },
-    });
+    const conversation = await harness.root(BACKGROUND_CONTEXT);
+    // Apply the fixed provider to reopened sessions too, without discarding history.
+    await conversation.configure(
+      {
+        model: { provider: PROVIDER_ID, modelId: MODEL_ID },
+        tools: [],
+      },
+      BACKGROUND_CONTEXT,
+    );
     harness.resume();
     let closed = false;
     return {

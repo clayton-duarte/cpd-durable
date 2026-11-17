@@ -127,8 +127,8 @@ describe("single durable chat", () => {
   it("uses the fixed model without tools or extensions", async () => {
     const agent = await chat.conversation.agent(BACKGROUND_CONTEXT);
     expect(agent.model).toMatchObject({
-      provider: "openrouter",
-      modelId: "deepseek/deepseek-v4.1-flash",
+      provider: "opencode-go",
+      modelId: "deepseek-v4.1-flash",
     });
     expect(agent.tools).toEqual([]);
   });

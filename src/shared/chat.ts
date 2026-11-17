@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-export const MODEL_ID = "deepseek/deepseek-v4.1-flash";
+export const PROVIDER_ID = "opencode-go";
+export const MODEL_ID = "deepseek-v4.1-flash";
 
 export const InputSchema = z.strictObject({
   requestId: z.uuid(),

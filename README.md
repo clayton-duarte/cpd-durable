@@ -19,7 +19,7 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Set `OPENROUTER_API_KEY` in your local `.env`, then:
+Set `OPENCODE_API_KEY` in your local `.env` or inject it into the server environment from your secret manager, then:
 
 ```sh
 pnpm dev
@@ -36,7 +36,7 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
-The model is fixed to OpenRouter's `deepseek/deepseek-v4.1-flash`. There are no tools, attachments, model selector, new-chat/reset control or LAN access. Send is disabled while busy; Stop explicitly aborts the response. Responses are rendered as plain text, not interpreted HTML.
+The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. There are no tools, attachments, model selector, new-chat/reset control or LAN access. Send is disabled while busy; Stop explicitly aborts the response. Responses are rendered as plain text, not interpreted HTML.
 
 ## Persistence and recovery
 
@@ -50,7 +50,7 @@ Run only one application host against a data directory. The fixed loopback liste
 
 This repository is public; its package remains marked private to prevent accidental npm publication. Keep `.env`, credentials, database files, conversations, logs and browser traces out of commits. The ignore rules cover default local artifacts, but are not a substitute for reviewing a change. Keep any custom data directory outside tracked source.
 
-Provider credentials are server-only. Requests go to OpenRouter and the selected model provider; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics.
+Provider credentials are server-only. Requests go to OpenCode Go and the selected model provider; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics. Consult [OpenCode Go's privacy settings](https://opencode.ai/docs/go/#privacy); access to DeepSeek may require the workspace to allow Global regions. The application does not change those settings.
 
 The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. Do not expose it through a LAN bind, tunnel, reverse proxy or public host without a separate access-control decision.
 
@@ -70,7 +70,7 @@ The Actions workflow runs separate `tsc`, `lint`, `fmt` and `test` jobs on PRs a
 
 All external contributors require workflow approval in repository settings. Review workflow changes before approval; CI uses a read-only token and needs no provider credentials.
 
-Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenRouter credential/request succeeds. These checks need no provider secrets. Browser traces may contain conversation text; local tests use synthetic data only.
+Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenCode Go credential/request succeeds. These checks need no provider secrets. Browser traces may contain conversation text; local tests use synthetic data only.
 
 ## Read next
 
