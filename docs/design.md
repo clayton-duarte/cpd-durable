@@ -20,7 +20,7 @@ The accepted [delivery lessons](problem-and-learning.md#lessons-for-this-reset) 
 
 After the documentation foundation, the User authorized one browser chat backed by one pi-durable session, deliberately deferring multi-project orchestration.
 
-Selected stack: Vite+, pnpm, React, TanStack Router, assistant-ui for chat, compatible general shadcn controls, Hono, Zod and `@tsconfig/strictest`. The User's 2026-11-17 pivot replaces the earlier shadcn AI Elements constraint and calls for native assistant-ui adoption following a full element-catalogue review, not a one-for-one wrapper swap. Use current compatible releases and lock them; the SDK's experimental API makes version alignment important.
+Selected stack: Vite+, pnpm, React, TanStack Router, assistant-ui, Hono, Zod and `@tsconfig/strictest`. Component priority is **assistant-ui > shadcn** across the application: use supplied assistant-ui elements first; shadcn may fill only a documented gap. No custom visual components. Application adapters may compose supplied elements and bind real host behavior; official elements' internal shadcn dependencies are accepted. The User's 2026-11-17 pivot replaces the earlier shadcn AI Elements constraint and calls for full-catalogue review, not a one-for-one wrapper swap. Use current compatible releases and lock them; the SDK's experimental API makes version alignment important.
 
 One package contains `src/client`, `src/server` and browser-safe `src/shared` modules. Package extraction is deferred until independent consumers, deployments or dependency isolation justify it. Zod validates application boundaries, without replacing the SDK's internal schema mechanisms.
 

@@ -7,7 +7,10 @@ export function assistantMessages(state: ChatState | null): ThreadMessageLike[] 
   const messages: ThreadMessageLike[] = state.messages.map((message) => ({
     id: message.id,
     role: message.role,
-    content: [{ type: "text", text: message.text }],
+    content: [
+      { type: "text", text: message.text },
+      ...(message.interrupted ? [{ type: "data-interruption" as const, data: {} }] : []),
+    ],
     metadata: { custom: { interrupted: message.interrupted } },
     ...(message.role === "assistant"
       ? {

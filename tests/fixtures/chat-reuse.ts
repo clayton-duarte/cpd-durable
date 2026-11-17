@@ -19,13 +19,17 @@ createRoot(root).render(
     "div",
     { className: "grid h-dvh grid-cols-2" },
     ...["First chat", "Second chat"].map((title) =>
-      createElement(Chat, {
-        key: title,
-        title,
-        state,
-        connected: true,
-        onSend: () => Promise.resolve(true),
-      }),
+      createElement(
+        "section",
+        { key: title, "aria-label": title, className: "min-h-0 min-w-0" },
+        createElement(Chat, {
+          key: title,
+          title,
+          state,
+          connected: true,
+          onSend: () => Promise.resolve(true),
+        }),
+      ),
     ),
   ),
 );

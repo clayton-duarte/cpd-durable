@@ -20,6 +20,7 @@ describe("assistant-ui presentation adapter", () => {
     expect(messages.map((message) => message.id)).toEqual(["1:0", "2:0", "3:0", "live:partial"]);
     expect(messages[0]?.content).toEqual([{ type: "text", text: "Literal\n  **text**" }]);
     expect(messages[1]?.status).toEqual({ type: "incomplete", reason: "other" });
+    expect(messages[1]?.content).toContainEqual({ type: "data-interruption", data: {} });
     expect(messages[1]?.metadata?.custom).toEqual({ interrupted: true });
     expect(messages[2]?.status).toEqual({ type: "complete", reason: "stop" });
     expect(messages[3]?.status).toEqual({ type: "running" });

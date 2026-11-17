@@ -52,6 +52,7 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, componentsByLangu
 
   return (
     <MarkdownTextPrimitive
+      disallowedElements={["img"]}
       remarkPlugins={[remarkGfm]}
       className="aui-md"
       components={markdownComponents}

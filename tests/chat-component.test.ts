@@ -13,8 +13,8 @@ describe("reusable chat presentation", () => {
   it("renders a read-only instance without provider, route or viewport assumptions", () => {
     const html = renderToStaticMarkup(createElement(Chat, base));
     expect(html).toContain("Embedded conversation");
-    expect(html).toContain("This conversation is read-only.");
-    expect(html).not.toContain("textarea");
+    expect(html).toContain("Read-only");
+    expect(html).toMatch(/<textarea[^>]*disabled=""/);
     expect(html).not.toContain("h-dvh");
     expect(html).not.toContain("OpenCode");
     expect(html).not.toContain("Stop response");
@@ -22,10 +22,15 @@ describe("reusable chat presentation", () => {
 
   it("distinguishes loading from an empty conversation", () => {
     const html = renderToStaticMarkup(
-      createElement(Chat, { ...base, state: null, connected: false }),
+      createElement(Chat, {
+        ...base,
+        state: null,
+        connected: false,
+        onSend: () => Promise.resolve(true),
+      }),
     );
     expect(html).toContain("Loading conversation");
-    expect(html).not.toContain("No messages yet");
+    expect(html).not.toContain("How can I help you today?");
   });
 
   it("does not expose mutation controls in a read-only embedding", () => {
@@ -42,7 +47,7 @@ describe("reusable chat presentation", () => {
     expect(html).not.toContain("Send mode");
   });
 
-  it("escapes content, preserves message order and labels interruption", () => {
+  it("escapes content and preserves message order and literal whitespace", () => {
     const html = renderToStaticMarkup(
       createElement(Chat, {
         ...base,
@@ -58,6 +63,5 @@ describe("reusable chat presentation", () => {
     expect(html).toContain("&lt;script&gt;first&lt;/script&gt;\n  second");
     expect(html.indexOf("first")).toBeLessThan(html.indexOf("Retained answer"));
     expect(html).toContain("whitespace-pre-wrap");
-    expect(html).toContain("Response interrupted.");
   });
 });
