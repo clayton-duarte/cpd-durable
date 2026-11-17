@@ -52,7 +52,7 @@ export function useChat() {
       setRetry(null);
       return true;
     } catch {
-      setError("Delivery could not be confirmed. Send the same text to retry safely.");
+      setError("Delivery could not be confirmed. Retry the original submission safely.");
       return false;
     } finally {
       setPending(false);
@@ -72,5 +72,13 @@ export function useChat() {
     }
   }
 
-  return { state, connected, pending, error, send, stop };
+  return {
+    state,
+    connected,
+    pending,
+    error,
+    retryText: error && !pending ? (retry?.text ?? null) : null,
+    send,
+    stop,
+  };
 }

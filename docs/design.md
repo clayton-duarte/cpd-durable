@@ -28,6 +28,8 @@ The initial implementation is localhost-only and text-only, with OpenCode Go's `
 
 This slice implements send/stream/stop, recent history, reconnect and reopen/resume. [Running instructions and verification boundaries](../README.md#checks) distinguish local tests with a substituted provider from live-provider verification. LAN access, additional models, tools and broader topology remain outside this slice.
 
+The accepted [chat component mapping](chat-components.md) defines reusable containment and stock shadcn presentation for incremental enrichment. Its delivery status distinguishes the current implementation from mapped capabilities; mapping a capability does not authorize enabling additional host/runtime integrations.
+
 ## Proposal: project conversations and interactive threads
 
 A stable project conversation could develop intent and explore vague ideas. Short-lived interactive threads could own bounded tangents worth separating for model cost, context or direct User interaction: research, implementation or another focused effort. An investigation can be a bounded outcome; a thread need not be an implementation task.
