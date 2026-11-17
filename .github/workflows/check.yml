@@ -15,7 +15,7 @@ concurrency:
 jobs:
   check:
     name: ${{ matrix.check }}
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
       fail-fast: false
