@@ -66,7 +66,9 @@ pnpm test:browser
 
 `pnpm check` runs Vite+ formatting, type-aware lint and type checks, plus separate strictest client/server/tool TypeScript configurations. Client/shared imports are restricted from Node and SDK/server modules. `pnpm-workspace.yaml` holds pnpm tool policies only; this is a single package, not a workspace monorepo.
 
-Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenRouter credential/request succeeds. These checks need no provider secrets; an Actions workflow is not included because the publishing session lacked workflow permission. Browser traces may contain conversation text; local tests use synthetic data only.
+The Actions workflow runs separate `tsc`, `lint`, `fmt` and `test` jobs on PRs and pushes to `main`. These are the required checks for protected `main`; its protection also requires a PR and an up-to-date branch, applies to administrators, and blocks force-pushes/deletion. Build and browser checks above are additional local verification, not part of these four required jobs.
+
+Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenRouter credential/request succeeds. These checks need no provider secrets. Browser traces may contain conversation text; local tests use synthetic data only.
 
 ## Read next
 
