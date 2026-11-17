@@ -27,6 +27,8 @@ pnpm dev
 
 Open **http://127.0.0.1:5173**. Vite+ serves React and proxies `/api` to Hono on loopback port 3000. Both ports must be available. pnpm provisions the pinned Node LTS through `devEngines.runtime`; `.node-version` records the same version for other runtime managers. The project-local Vite+ CLI is available as `pnpm exec vp`.
 
+Use this live development mode while iterating: client edits hot-reload and server edits restart the watched server. Keep the same `CPD_DATA_DIR` across worktrees to preserve the active conversation. When injecting credentials from a secret manager, run `pnpm exec vp dev` separately and inject credentials only into `pnpm exec tsx watch src/server/index.ts`, rather than the frontend process. These separate commands provide the same live-reload loop.
+
 For the built frontend, stop the development processes first:
 
 ```sh
@@ -36,7 +38,7 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
-The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. There are no tools, attachments, model selector, new-chat/reset control or LAN access. Send is disabled while busy; Stop explicitly aborts the response. Responses are rendered as plain text, not interpreted HTML.
+The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. There are no tools, attachments, model selector, new-chat/reset control or LAN access. Send is disabled while busy; Stop explicitly aborts the response. Responses are rendered as plain text, not interpreted HTML. The stock shadcn dark theme is the default from initial page load, independent of system preference; no theme picker or custom palette is added.
 
 ## Persistence and recovery
 
@@ -76,5 +78,6 @@ Integration tests use the real SDK and SQLite with a controllable test provider.
 
 - [Problem and learning](docs/problem-and-learning.md): the needs and experiences behind the reset.
 - [Design direction](docs/design.md): settled baseline, proposals and unresolved questions.
+- [pi-durable feature inventory](docs/pi-durable-features.md): SDK capabilities, current chat coverage and possible enrichment choices.
 - [Documentation conventions](docs/CONTRIBUTING.md): where material belongs and how to maintain it.
 - [Agent entrypoint](AGENTS.md): scoped instructions for agents changing this repository.
