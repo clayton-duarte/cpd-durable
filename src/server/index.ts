@@ -3,23 +3,23 @@ import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { z } from "zod";
 import { createApp } from "./app.ts";
 import { openChat } from "./chat.ts";
 
 const ConfigSchema = z.object({
-  OPENROUTER_API_KEY: z.string().trim().min(1),
+  OPENCODE_API_KEY: z.string().trim().min(1),
   CPD_DATA_DIR: z.string().min(1).default("./data"),
 });
 const config = ConfigSchema.safeParse(process.env);
 if (!config.success) {
-  console.error("Set OPENROUTER_API_KEY in the server environment or .env before starting.");
+  console.error("Set OPENCODE_API_KEY in the server environment or .env before starting.");
   process.exitCode = 1;
 } else {
   process.umask(0o077);
   const models = createModels();
-  models.setProvider(openrouterProvider());
+  models.setProvider(opencodeGoProvider());
   let app: ReturnType<typeof createApp> | undefined;
   let chat: Awaited<ReturnType<typeof openChat>> | undefined;
   let stopping = false;

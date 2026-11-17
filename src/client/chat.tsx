@@ -42,7 +42,7 @@ export function Chat() {
       <div className="flex h-dvh w-full flex-col gap-4">
         <div className="flex flex-col gap-1 p-8 pb-4">
           <h1 className="font-medium">CPD Durable</h1>
-          <div className="text-sm text-muted-foreground">{MODEL_ID}</div>
+          <div className="text-sm text-muted-foreground">OpenCode Go · {MODEL_ID}</div>
           <div role="status" className="text-sm text-muted-foreground">
             {!connected ? "Connecting…" : busy ? "Responding…" : "Ready"}
           </div>
