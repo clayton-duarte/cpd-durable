@@ -6,9 +6,67 @@ Parallelism is the reason for CPD, not a worker-count target. Pragmatism guides 
 
 ## Current status
 
-This repository is a documentation-only fresh start, framed as CPD v1. It contains no runtime, packages, build system or runnable application. The selected direction is not an implemented architecture, migration or application cutover.
+This fresh start, framed as CPD v1, now includes a minimal localhost browser chat backed directly by one persistent pi-durable conversation. It is an initial connectivity/persistence slice—not the multi-project Cockpit, a legacy migration or an application cutover.
 
 The existing [CPD repository](https://github.com/clayton-duarte/cpd) remains historical reference; its identity is unchanged. Starting fresh does not authorize deleting its data or evidence.
+
+## Run locally
+
+Use pnpm (the package manifest pins its version). Install dependencies from the repository root:
+
+```sh
+pnpm install --frozen-lockfile
+cp .env.example .env
+```
+
+Set `OPENROUTER_API_KEY` in your local `.env`, then:
+
+```sh
+pnpm dev
+```
+
+Open **http://127.0.0.1:5173**. Vite+ serves React and proxies `/api` to Hono on loopback port 3000. Both ports must be available. pnpm provisions the pinned Node LTS through `devEngines.runtime`; `.node-version` records the same version for other runtime managers. The project-local Vite+ CLI is available as `pnpm exec vp`.
+
+For the built frontend, stop the development processes first:
+
+```sh
+pnpm build
+pnpm start
+```
+
+Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
+
+The model is fixed to OpenRouter's `deepseek/deepseek-v4.1-flash`. There are no tools, attachments, model selector, new-chat/reset control or LAN access. Send is disabled while busy; Stop explicitly aborts the response. Responses are rendered as plain text, not interpreted HTML.
+
+## Persistence and recovery
+
+pi-durable's Node SQLite adapter owns the transcript and execution state in `data/session.sqlite` by default (`CPD_DATA_DIR` can change the directory). Browser refresh/reconnect reconstructs the latest view through SSE; the browser does not persist a transcript. The UI shows the SDK's recent-message window and labels omitted earlier history, which stays in storage.
+
+The server opens one Harness and resumes pending SDK work. A disconnect detaches observation, not execution. SDK request IDs deduplicate a retried submission; the client retains its retry ID only until refresh. After an ambiguous send followed by refresh, check the restored conversation before resending. Durability is not a guarantee of uninterrupted token streaming: the SDK can retry interrupted provider requests, and its documented progress-persistence window may lose recent partial output on a crash.
+
+Run only one application host against a data directory. The fixed loopback listener is acquired before writable storage opens, so a second application host fails without touching it. To restart, stop the existing host and start again with the same data directory. Do not edit or delete SQLite/sidecar files to resolve an error. Session-open failures leave existing data in place for inspection.
+
+## Public repository and private runtime data
+
+This repository is public; its package remains marked private to prevent accidental npm publication. Keep `.env`, credentials, database files, conversations, logs and browser traces out of commits. The ignore rules cover default local artifacts, but are not a substitute for reviewing a change. Keep any custom data directory outside tracked source.
+
+Provider credentials are server-only. Requests go to OpenRouter and the selected model provider; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics.
+
+The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. Do not expose it through a LAN bind, tunnel, reverse proxy or public host without a separate access-control decision.
+
+## Checks
+
+```sh
+pnpm check
+pnpm test
+pnpm build
+pnpm exec playwright install chromium
+pnpm test:browser
+```
+
+`pnpm check` runs Vite+ formatting, type-aware lint and type checks, plus separate strictest client/server/tool TypeScript configurations. Client/shared imports are restricted from Node and SDK/server modules. `pnpm-workspace.yaml` holds pnpm tool policies only; this is a single package, not a workspace monorepo.
+
+Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenRouter credential/request succeeds. These checks need no provider secrets; an Actions workflow is not included because the publishing session lacked workflow permission. Browser traces may contain conversation text; local tests use synthetic data only.
 
 ## Read next
 
