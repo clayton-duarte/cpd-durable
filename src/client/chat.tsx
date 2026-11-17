@@ -30,7 +30,11 @@ export function Chat() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (canSend && (await send(text.trim()))) setText("");
+    if (!canSend) return;
+    const submittedDraft = text;
+    if (await send(submittedDraft.trim())) {
+      setText((current) => (current === submittedDraft ? "" : current));
+    }
   }
 
   return (
@@ -65,7 +69,9 @@ export function Chat() {
                       <MessageContent>
                         {message.role === "user" ? (
                           <Bubble align="end" variant="muted">
-                            <BubbleContent>{message.text}</BubbleContent>
+                            <BubbleContent className="whitespace-pre-wrap">
+                              {message.text}
+                            </BubbleContent>
                           </Bubble>
                         ) : (
                           <div className="whitespace-pre-wrap">{message.text}</div>
