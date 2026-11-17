@@ -15,7 +15,7 @@ test("defaults to dark on first load and reload regardless of system preference"
     await page.goto("/");
     await expect(page.locator("html")).toHaveClass("dark");
     await expect(page.locator('meta[name="color-scheme"]')).toHaveAttribute("content", "dark");
-    await expect(page.getByRole("heading", { name: "CPD Durable" })).toBeVisible();
+    await expect(page).toHaveTitle("CPD Durable");
     await page.reload();
     await expect(page.locator("html")).toHaveClass("dark");
   }

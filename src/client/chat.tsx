@@ -1,26 +1,22 @@
-import { useState, type ReactNode } from "react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Bubble, BubbleContent } from "@/components/ui/bubble";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Empty, EmptyHeader, EmptyTitle, EmptyDescription } from "@/components/ui/empty";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Spinner } from "@/components/ui/spinner";
-import { Message, MessageContent, MessageHeader, MessageFooter } from "@/components/ui/message";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import {
-  MessageScroller,
-  MessageScrollerButton,
-  MessageScrollerContent,
-  MessageScrollerItem,
-  MessageScrollerProvider,
-  MessageScrollerViewport,
-} from "@/components/ui/message-scroller";
-import type { ChatState } from "../shared/chat.ts";
-import { ChatComposer, type ComposerActions } from "./chat-composer.tsx";
+  AssistantRuntimeProvider,
+  useExternalMessageConverter,
+  useExternalStoreRuntime,
+  useAssistantDataUI,
+  type AppendMessage,
+  type AssistantRuntime,
+  type ThreadMessageLike,
+} from "@assistant-ui/react";
+import { Thread } from "@/components/assistant-ui/elements/thread.aui";
+import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
+import type { ChatState, SendMode } from "../shared/chat.ts";
+import { assistantMessages } from "./assistant-messages.ts";
+import { DurableControls } from "./durable-controls.tsx";
 
-export interface ChatProps extends ComposerActions {
+export interface ChatProps {
   title: string;
-  description?: ReactNode;
+  description?: string;
   state: ChatState | null;
   connected: boolean;
   pending?: boolean;
@@ -30,197 +26,134 @@ export interface ChatProps extends ComposerActions {
   onRetry?: () => Promise<boolean>;
   uncertain?: boolean;
   notice?: string | null;
+  onSend?: (text: string, mode?: SendMode) => Promise<boolean>;
+  onStop?: () => Promise<void>;
+  onContinue?: () => Promise<boolean>;
+  onReset?: (handoff: string) => Promise<boolean>;
+  onWithdraw?: (id: string) => Promise<void>;
 }
 
-// Instance-local presentation; the host owns transport, provider, routing and dimensions.
-// Remount with a conversation key when changing the represented conversation.
-export function Chat({
-  title,
-  description,
-  state,
-  connected,
-  pending = false,
-  error = null,
-  retryText = null,
-  retryAction = false,
-  onRetry,
-  uncertain = false,
-  notice = null,
-  onSend,
-  onStop,
-  onContinue,
-  onReset,
-  onWithdraw,
-}: ChatProps) {
-  const [text, setText] = useState("");
-  const busy = state?.busy ?? false;
+type ChatHost = ChatProps & {
+  available: boolean;
+  localError: string | null;
+  clearLocalError: () => void;
+  submitDraft: (mode: SendMode) => Promise<boolean>;
+};
+const HostContext = createContext<ChatHost | null>(null);
+export function useChatHost() {
+  const host = useContext(HostContext);
+  if (!host) throw new Error("Missing durable chat host");
+  return host;
+}
 
-  async function submit(draft: string) {
-    const currentDraft = text;
-    if (await (onRetry ? onRetry() : onSend?.(draft.trim()))) {
-      setText((current) =>
-        current === currentDraft && current.trim() === draft.trim() ? "" : current,
+const convertMessage = (message: ThreadMessageLike) => message;
+const threadComponents = { ComposerExtra: DurableControls };
+const interruptionUI = {
+  name: "interruption",
+  render: () => <AgentStatus state="waiting" label="Response interrupted." />,
+};
+
+function OfficialThread() {
+  useAssistantDataUI(interruptionUI);
+  return <Thread components={threadComponents} autoFocus={false} />;
+}
+
+// Application code adapts host behavior; the official Thread owns presentation.
+export function Chat(props: ChatProps) {
+  const runtimeRef = useRef<AssistantRuntime | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const projected = useMemo(() => assistantMessages(props.state), [props.state]);
+  const messages = useExternalMessageConverter({
+    messages: projected,
+    callback: convertMessage,
+    joinStrategy: "none",
+    isRunning: props.state?.busy ?? false,
+  });
+  const available =
+    !!props.onSend &&
+    props.connected &&
+    props.state !== null &&
+    !props.pending &&
+    !props.uncertain &&
+    props.retryText == null &&
+    !props.retryAction;
+
+  const admit = useCallback(
+    async (draft: string, mode: SendMode, nativeSend = false) => {
+      const composer = runtimeRef.current?.thread.composer;
+      // The supplied composer detaches the draft on send. Return it immediately
+      // while admission is pending, unless the user has already written a new one.
+      if (nativeSend && composer?.getState().text === "") composer.setText(draft);
+      setLocalError(null);
+      if (
+        !available ||
+        !props.onSend ||
+        (mode === "reject" && props.state?.busy) ||
+        (mode === "steer" && !props.state?.busy)
+      )
+        return false;
+      const text = draft.trim();
+      if (!text || text.length > 32_000) {
+        setLocalError("Messages must contain between 1 and 32,000 characters.");
+        return false;
+      }
+      try {
+        const admitted = await props.onSend(text, mode);
+        if (admitted && composer?.getState().text === draft) composer.setText("");
+        return admitted;
+      } catch {
+        setLocalError(
+          "Message delivery could not be confirmed. Check the conversation before sending again.",
+        );
+        return false;
+      }
+    },
+    [available, props.onSend, props.state],
+  );
+
+  const onNew = useCallback(
+    async (message: AppendMessage) => {
+      if (
+        message.role !== "user" ||
+        (message.attachments?.length ?? 0) > 0 ||
+        message.content.some((part) => part.type !== "text")
+      ) {
+        setLocalError("This conversation accepts text only.");
+        return;
+      }
+      await admit(
+        message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+        "reject",
+        true,
       );
-    }
-  }
+    },
+    [admit],
+  );
+
+  const runtime = useExternalStoreRuntime({
+    messages,
+    onNew,
+    isRunning: props.state?.busy ?? false,
+    isLoading: props.state === null,
+    isDisabled: !props.onSend,
+    isSendDisabled: !available || (props.state?.busy ?? false),
+    ...(available && props.onStop ? { onCancel: props.onStop } : {}),
+  });
+  runtimeRef.current = runtime;
 
   return (
-    <MessageScrollerProvider autoScroll>
-      <section aria-label={title} className="flex h-full min-h-0 w-full flex-col gap-4">
-        <div className="flex flex-col gap-1 p-8 pb-4">
-          <h1 className="font-medium">{title}</h1>
-          {description && <div className="text-sm text-muted-foreground">{description}</div>}
-          {!onSend && <Badge variant="outline">Read-only</Badge>}
-          <div role="status" className="text-sm text-muted-foreground">
-            {!connected
-              ? state
-                ? "Reconnecting…"
-                : "Connecting…"
-              : busy
-                ? "Responding…"
-                : "Ready"}
-          </div>
-        </div>
-        {(error ?? state?.failure) && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              {error ?? state?.failure}
-              {retryText !== null && onSend && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!connected || pending}
-                  onClick={() => {
-                    void submit(retryText);
-                  }}
-                >
-                  Retry submission
-                </Button>
-              )}
-              {retryAction && onRetry && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={!connected || pending}
-                  onClick={() => {
-                    void onRetry();
-                  }}
-                >
-                  Retry action
-                </Button>
-              )}
-            </AlertDescription>
-          </Alert>
-        )}
-        {notice && (
-          <Alert>
-            <AlertDescription>{notice}</AlertDescription>
-          </Alert>
-        )}
-        <div className="min-h-0 flex-1">
-          <MessageScroller>
-            <MessageScrollerViewport preserveScrollOnPrepend>
-              <MessageScrollerContent aria-busy={busy} className="gap-6 px-8 py-0">
-                {state === null ? (
-                  <div aria-label="Loading conversation" aria-busy="true">
-                    <Skeleton className="h-4 w-3/4" />
-                    <Skeleton className="h-4 w-1/2" />
-                  </div>
-                ) : state.messages.length === 0 && !state.partial && !busy && !state.hasEarlier ? (
-                  <Empty>
-                    <EmptyHeader>
-                      <EmptyTitle>No messages yet</EmptyTitle>
-                      <EmptyDescription>
-                        {onSend
-                          ? "Send a message to start the conversation."
-                          : "This conversation is read-only."}
-                      </EmptyDescription>
-                    </EmptyHeader>
-                  </Empty>
-                ) : null}
-                {state?.hasEarlier && (
-                  <p>Showing recent messages. Earlier history remains in session storage.</p>
-                )}
-                {state?.messages.map((message) => (
-                  <MessageScrollerItem
-                    key={message.id}
-                    messageId={message.id}
-                    scrollAnchor={message.role === "user"}
-                  >
-                    <Message align={message.role === "user" ? "end" : "start"}>
-                      <MessageContent>
-                        <MessageHeader>
-                          {message.role === "user" ? "You" : "Assistant"}
-                        </MessageHeader>
-                        {message.role === "user" ? (
-                          <Bubble align="end" variant="muted">
-                            <BubbleContent className="whitespace-pre-wrap">
-                              {message.text}
-                            </BubbleContent>
-                          </Bubble>
-                        ) : (
-                          <div className="whitespace-pre-wrap">{message.text}</div>
-                        )}
-                        {message.interrupted && (
-                          <MessageFooter>
-                            <Badge variant="outline">Response interrupted.</Badge>
-                          </MessageFooter>
-                        )}
-                      </MessageContent>
-                    </Message>
-                  </MessageScrollerItem>
-                ))}
-                {state?.partial && (
-                  <MessageScrollerItem messageId="partial">
-                    <Message>
-                      <MessageContent>
-                        <MessageHeader>Assistant</MessageHeader>
-                        <div className="whitespace-pre-wrap">{state.partial}</div>
-                      </MessageContent>
-                    </Message>
-                  </MessageScrollerItem>
-                )}
-                {busy && !state?.partial && (
-                  <Message>
-                    <MessageContent>
-                      <MessageFooter>
-                        <Spinner aria-hidden="true" />
-                        Waiting for response…
-                      </MessageFooter>
-                    </MessageContent>
-                  </Message>
-                )}
-                {pending && !busy && onSend && (
-                  <Message align="end">
-                    <MessageContent>
-                      <MessageFooter>
-                        <Spinner aria-hidden="true" />
-                        Awaiting acknowledgement…
-                      </MessageFooter>
-                    </MessageContent>
-                  </Message>
-                )}
-              </MessageScrollerContent>
-            </MessageScrollerViewport>
-            <MessageScrollerButton />
-          </MessageScroller>
-        </div>
-        {onSend && (
-          <ChatComposer
-            state={state}
-            connected={connected}
-            pending={pending}
-            uncertain={uncertain || retryText !== null}
-            text={text}
-            setText={setText}
-            onSend={onSend}
-            {...(onStop ? { onStop } : {})}
-            {...(onContinue ? { onContinue } : {})}
-            {...(onReset ? { onReset } : {})}
-            {...(onWithdraw ? { onWithdraw } : {})}
-          />
-        )}
-      </section>
-    </MessageScrollerProvider>
+    <HostContext.Provider
+      value={{
+        ...props,
+        available,
+        localError,
+        clearLocalError: () => setLocalError(null),
+        submitDraft: (mode) => admit(runtime.thread.composer.getState().text, mode),
+      }}
+    >
+      <AssistantRuntimeProvider runtime={runtime}>
+        <OfficialThread />
+      </AssistantRuntimeProvider>
+    </HostContext.Provider>
   );
 }

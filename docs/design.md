@@ -20,7 +20,7 @@ The accepted [delivery lessons](problem-and-learning.md#lessons-for-this-reset) 
 
 After the documentation foundation, the User authorized one browser chat backed by one pi-durable session, deliberately deferring multi-project orchestration.
 
-Selected stack: Vite+, pnpm, React, TanStack Router, uncustomized shadcn/AI Elements patterns, Hono, Zod and `@tsconfig/strictest`. Use current compatible releases and lock them; the SDK's experimental API makes version alignment important.
+Selected stack: Vite+, pnpm, React, TanStack Router, assistant-ui, Hono, Zod and `@tsconfig/strictest`. Component priority is **assistant-ui > shadcn** across the application: use supplied assistant-ui elements first; shadcn may fill only a documented gap. No custom visual components. Application adapters may compose supplied elements and bind real host behavior; official elements' internal shadcn dependencies are accepted. The User's 2026-11-17 pivot replaces the earlier shadcn AI Elements constraint and calls for full-catalogue review, not a one-for-one wrapper swap. Use current compatible releases and lock them; the SDK's experimental API makes version alignment important.
 
 One package contains `src/client`, `src/server` and browser-safe `src/shared` modules. Package extraction is deferred until independent consumers, deployments or dependency isolation justify it. Zod validates application boundaries, without replacing the SDK's internal schema mechanisms.
 
@@ -28,7 +28,7 @@ The initial implementation is localhost-only and text-only, with OpenCode Go's `
 
 This slice implements send/stream/stop, recent history, reconnect and reopen/resume. [Running instructions and verification boundaries](../README.md#checks) distinguish local tests with a substituted provider from live-provider verification. LAN access, additional models, tools and broader topology remain outside this slice.
 
-The accepted [chat component mapping](chat-components.md) defines reusable containment and stock shadcn presentation for incremental enrichment. Its delivery status distinguishes the current implementation from mapped capabilities; mapping a capability does not authorize enabling additional host/runtime integrations.
+The accepted [chat component mapping](chat-components.md) defines reusable containment and assistant-ui presentation; the [element review](assistant-ui-elements.md) classifies the complete catalogue. Native UI/runtime composition adapts existing pi-durable state rather than replacing its execution/persistence with Assistant Cloud or a second agent runtime. Mapping an element does not authorize enabling additional host capabilities.
 
 ## Proposal: project conversations and interactive threads
 

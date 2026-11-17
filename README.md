@@ -38,11 +38,11 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
-The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. There are no tools, attachments, model selector, new-conversation control or LAN access. Responses are rendered as plain text, not interpreted HTML. The stock shadcn dark theme is the default from initial page load, independent of system preference; no theme picker or custom palette is added.
+The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through the existing Hono/SSE API. There are no tools, attachments, model selector, new-conversation control, Assistant Cloud integration or LAN access. User text stays literal; assistant Markdown supports lists, tables and copyable code, without raw HTML, executable code or remote Markdown-image loads. Native actions copy/export a response. The existing stock dark theme remains the default, independent of system preference.
 
-The composer offers **Send now**, **Send after current response** and **Steer current work**. Steering waits for an eligible run boundary; it does not interrupt generation immediately and is refused if the run has ended. Queued inputs have individual Withdraw actions. **Stop** aborts current foreground work and withdraws queued inputs. **Continue response** appears when active model context still needs an answer, without adding another user message.
+The official assistant-ui Thread supplies the composer, messages and actions. Native **Send** submits while idle; **Conversation actions** opens the supplied command palette for queueing a draft, boundary-applied steering and individual withdrawal. Steering does not interrupt generation immediately and is refused if the run has ended. Native **Stop** aborts current foreground work and withdraws queued inputs. The palette offers **Continue response** when active model context still needs an answer, without adding another user message.
 
-**Conversation actions → Reset model context** requires confirmation and optionally accepts handoff instructions. Stored history remains; only active model context restarts. While busy, reset waits for a boundary. Stop does not withdraw a queued reset. Handoff text becomes a user message; reset alone does not request an answer. See the [component mapping and semantics](docs/chat-components.md#delivery-status) for reuse and pending work.
+**Conversation actions → Reset model context** requires confirmation and optionally accepts handoff instructions. Stored history remains; only active model context restarts. While busy, reset waits for a boundary. Stop does not withdraw a queued reset. Handoff text becomes a user message; reset alone does not request an answer. See the [component mapping and semantics](docs/chat-components.md#2-composer-and-run-controls) for reuse and pending work.
 
 ## Persistence and recovery
 
@@ -89,5 +89,6 @@ The separate presentation browser configuration uses Vite on port 5173 (reusing 
 - [Design direction](docs/design.md): settled baseline, proposals and unresolved questions.
 - [pi-durable feature inventory](docs/pi-durable-features.md): SDK capabilities, current chat coverage and possible enrichment choices.
 - [Chat component mapping](docs/chat-components.md): accepted presentation, reusable boundaries and incremental delivery status.
+- [assistant-ui element review](docs/assistant-ui-elements.md): full catalogue applicability, native adoption choices and host-data boundaries.
 - [Documentation conventions](docs/CONTRIBUTING.md): where material belongs and how to maintain it.
 - [Agent entrypoint](AGENTS.md): scoped instructions for agents changing this repository.
