@@ -50,6 +50,7 @@ test("production route keeps native chats and drafts through tangent navigation"
 }) => {
   const requests: string[] = [];
   let upload = 0;
+  let stopRequested = false;
   await page.addInitScript(() => {
     class Synthetic extends EventTarget {
       onerror: (() => void) | null = null;
@@ -96,6 +97,43 @@ test("production route keeps native chats and drafts through tangent navigation"
       });
     if (path.endsWith("/questions"))
       return route.fulfill({ json: { conversationId: path.split("/")[3], questions: [] } });
+    if (path.endsWith("/workers")) {
+      const id = path.split("/")[3];
+      return route.fulfill({
+        json: {
+          hasUnsettled: true,
+          helpers: [
+            {
+              requestId: `request-${id}`,
+              taskId: `task-${id}`,
+              childId: null,
+              mode: "background",
+              model: { provider: "test", modelId: `worker-${id}` },
+              modelName: `Worker model ${id}`,
+              stop: id === "2" && stopRequested ? "requested" : "none",
+              status: id === "1" ? "unknown" : "running",
+              answerEntryId: null,
+              delivery: "notify-only",
+            },
+          ],
+        },
+      });
+    }
+    if (path === "/api/chats/2/workers/task-2/stop") {
+      stopRequested = true;
+      return route.fulfill({ status: 202, json: { status: "requested" } });
+    }
+    if (path === "/api/chats/2/workers/task-2/result")
+      return route.fulfill({
+        json: {
+          taskId: "task-2",
+          childId: "20",
+          answerEntryId: "5",
+          text: "Review this result",
+          truncated: false,
+          review: "unreviewed",
+        },
+      });
     if (path.endsWith("/attachments") && request.method() === "POST")
       return route.fulfill({
         status: 201,
@@ -122,6 +160,14 @@ test("production route keeps native chats and drafts through tangent navigation"
   await input(side).fill("child draft");
   await addFile(page, side, "child.png");
   await expect.poll(() => requests.includes("GET /api/chats/2/questions")).toBe(true);
+  await expect(main.getByText(/unknown · Worker model 1/)).toBeVisible();
+  await expect(side.getByText(/running · Worker model 2/)).toBeVisible();
+  await side.getByRole("button", { name: "Inspect worker task-2" }).click();
+  await expect(side.getByRole("textbox", { name: "Worker result for review" })).toHaveValue(
+    "Review this result",
+  );
+  await side.getByRole("button", { name: "Stop worker task-2" }).click();
+  await expect(side.getByText(/stop requested/)).toBeVisible();
   await page.getByRole("button", { name: "Close tangent" }).click();
   await expect(page).toHaveURL(/\/chats\/1$/);
   await expect(input(main)).toHaveValue("main draft");
@@ -136,7 +182,7 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(input(side)).toHaveValue("child draft");
   await page.goForward();
   await expect(page).toHaveURL(/tangent=3/);
-  expect(requests.filter((r) => /POST .*\/(input|stop)$/.test(r))).toEqual([]);
+  expect(requests.filter((r) => /^POST \/api\/chats\/\d+\/(input|stop)$/.test(r))).toEqual([]);
   await page.route("**/api/chats/1/tangents", (route) => route.fulfill({ status: 503 }));
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open tangent: Running child" })).toBeDisabled();

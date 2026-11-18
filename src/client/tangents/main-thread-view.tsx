@@ -5,6 +5,7 @@ import { TangentViewSchema, type TangentView } from "../../shared/tangents.ts";
 import { ChatPage } from "../chat-page.tsx";
 import { tangentChildView } from "./adapter.ts";
 import { TangentWorkspace } from "./workspace.tsx";
+import { WorkerPanel } from "../workers/panel.tsx";
 
 const ResponseSchema = z.strictObject({ tangents: z.array(TangentViewSchema) });
 
@@ -107,21 +108,33 @@ export function MainThreadView({
         onSelectTangent={onSelectTangent}
         onCloseTangent={onCloseTangent}
         renderMain={(visible) => (
-          <ChatPage
-            chatId={mainId}
-            active={active && visible}
-            readOnly={readOnly}
-            onFork={onFork}
-          />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <WorkerPanel chatId={mainId} active={active && visible} readOnly={readOnly} />
+            <ChatPage
+              chatId={mainId}
+              active={active && visible}
+              readOnly={readOnly}
+              onFork={onFork}
+            />
+          </div>
         )}
         renderTangent={(tangent, visible) => (
-          <ChatPage
-            chatId={tangent.id}
-            active={active && visible}
-            readOnly={
-              readOnly || (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
-            }
-          />
+          <div className="flex min-h-0 flex-1 flex-col">
+            <WorkerPanel
+              chatId={tangent.id}
+              active={active && visible}
+              readOnly={
+                readOnly || (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
+              }
+            />
+            <ChatPage
+              chatId={tangent.id}
+              active={active && visible}
+              readOnly={
+                readOnly || (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
+              }
+            />
+          </div>
         )}
       />
     </div>
