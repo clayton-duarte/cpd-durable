@@ -41,6 +41,7 @@ const tangent = (id: number, title: string, activity: "running" | "idle") => ({
 
 test("many admitted receipts leave both split composers inside the viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1064, height: 975 });
+  const title = `Long child title ${"investigation ".repeat(4)}end`;
   let writes = 0;
   await page.addInitScript(() => {
     class Source extends EventTarget {
@@ -84,7 +85,7 @@ test("many admitted receipts leave both split composers inside the viewport", as
         json: {
           tangents: [
             {
-              ...tangent(2, "Child", "idle"),
+              ...tangent(2, title, "idle"),
               latestHandoff: {
                 ...tangent(2, "Child", "idle").latestHandoff,
                 handoff: { ...handoff, goal: "Long synthetic handoff ".repeat(50) },
@@ -138,8 +139,8 @@ test("many admitted receipts leave both split composers inside the viewport", as
     }),
   );
   await page.goto("/chats/1");
-  await page.getByRole("button", { name: "Open tangent: Child" }).click();
-  for (const name of ["Main chat: Main", "Tangent chat: Child"]) {
+  await page.getByRole("button", { name: `Open tangent: ${title}` }).click();
+  for (const name of ["Main chat: Main", `Tangent chat: ${title}`]) {
     const input = page
       .getByRole("region", { name })
       .getByRole("textbox", { name: "Message input" });
@@ -169,7 +170,7 @@ test("many admitted receipts leave both split composers inside the viewport", as
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(viewport);
-    for (const tab of ["Main", "Child"]) {
+    for (const tab of ["Main", title]) {
       await page.getByRole("tab", { name: tab, exact: true }).focus();
       await page.keyboard.press("Enter");
       const input = page
@@ -327,6 +328,114 @@ async function addFile(page: Page, scope: ReturnType<Page["locator"]>, name: str
   await scope.getByRole("button", { name: "Add Attachment" }).click();
   await (await chooser).setFiles({ name, mimeType: "image/png", buffer: png });
   await expect(scope.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
+}
+
+for (const prefix of ["!", "!!"]) {
+  test(`stale parent relationship blocks ${prefix} shell admission with child still connected`, async ({
+    page,
+  }) => {
+    let stale = false;
+    let runningShell = false;
+    const writes: string[] = [];
+    await page.addInitScript(() => {
+      class Source extends EventTarget {
+        onerror = null;
+        constructor(url: string) {
+          super();
+          const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+          queueMicrotask(() =>
+            this.dispatchEvent(
+              new MessageEvent("state", {
+                data: JSON.stringify({
+                  conversationId: id,
+                  messages: [],
+                  partial: "",
+                  busy: false,
+                  hasEarlier: false,
+                  failure: null,
+                  controls: { canContinue: false, resetPending: false, queue: [] },
+                }),
+              }),
+            ),
+          );
+        }
+        close() {}
+      }
+      Object.defineProperty(window, "EventSource", { value: Source });
+    });
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() !== "GET" && !path.endsWith("/attachments"))
+        writes.push(`${request.method()} ${path}`);
+      if (path === "/api/chats")
+        return route.fulfill({
+          json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+        });
+      if (path === "/api/chats/1/tangents")
+        return stale
+          ? route.fulfill({ status: 503 })
+          : route.fulfill({ json: { tangents: [tangent(2, "Child", "idle")] } });
+      if (path === "/api/chats/2/shell" && request.method() === "GET")
+        return route.fulfill({
+          json: runningShell
+            ? {
+                requestId: "11111111-1111-4111-8111-111111111111",
+                command: "synthetic",
+                includeInContext: true,
+                conversationId: "2",
+                taskId: "7",
+                status: "running",
+                output: "synthetic",
+                truncated: false,
+              }
+            : null,
+        });
+      if (path.endsWith("/attachments") && request.method() === "POST")
+        return route.fulfill({
+          status: 201,
+          json: {
+            id: ids[0],
+            mimeType: "image/png",
+            size: png.length,
+            prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+          },
+        });
+      if (path.includes("/attachments/"))
+        return route.fulfill({ contentType: "image/png", body: png });
+      return route.abort();
+    });
+    await syntheticDrafts(page);
+    await page.goto("/chats/1");
+    await page.getByRole("button", { name: "Open tangent: Child" }).click();
+    const side = page.getByRole("region", { name: "Tangent chat: Child" });
+    const input = side.getByRole("textbox", { name: "Message input" });
+    await input.fill(`${prefix} synthetic-command`);
+    stale = true;
+    await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
+      timeout: 15000,
+    });
+    await input.dispatchEvent("keydown", { key: "Enter", code: "Enter" });
+    await side.getByRole("button", { name: "Send message", exact: true }).dispatchEvent("click");
+    expect(writes).toEqual([]);
+    await expect(input).toHaveValue(`${prefix} synthetic-command`);
+    stale = false;
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(side.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(input).toHaveValue(`${prefix} synthetic-command`);
+    expect(writes).toEqual([]);
+    runningShell = true;
+    await expect(side.getByRole("button", { name: "Stop generating" })).toBeVisible({
+      timeout: 15000,
+    });
+    stale = true;
+    await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
+      timeout: 15000,
+    });
+    const stop = side.getByRole("button", { name: "Stop generating" });
+    await expect(stop).toHaveCount(0);
+    expect(writes).toEqual([]);
+  });
 }
 
 test("saved prompts use each native composer and respect stale parent scope", async ({ page }) => {
@@ -496,6 +605,8 @@ test("saved prompts use each native composer and respect stale parent scope", as
   await expect(draft(side)).toHaveValue("side before navigation");
   const beforeStale = mutations;
   await choose(side, "retained side");
+  await page.getByRole("textbox", { name: "Edit prompt text" }).fill("Held unsaved edit");
+  await page.getByRole("textbox", { name: "Prompt title", exact: true }).fill("Held title");
   parentUnavailable = true;
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
     timeout: 15000,
@@ -508,8 +619,22 @@ test("saved prompts use each native composer and respect stale parent scope", as
     "Save prompt",
   ])
     await page.getByRole("button", { name, exact: true }).dispatchEvent("click");
+  expect(mutations).toBe(beforeStale);
+  expect(inputs).toBe(0);
+  await expect(page.getByRole("textbox", { name: "Edit prompt text" })).toHaveValue(
+    "Held unsaved edit",
+  );
+  await expect(page.getByRole("textbox", { name: "Prompt title", exact: true })).toHaveValue(
+    "Held title",
+  );
+  parentUnavailable = false;
+  await expect(page.getByRole("button", { name: "Save edit" })).toBeEnabled({ timeout: 15000 });
+  await expect(page.getByRole("textbox", { name: "Edit prompt text" })).toHaveValue(
+    "Held unsaved edit",
+  );
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect(draft(side)).toHaveValue("retained side");
+  await expect(side.getByRole("button", { name: "Remove side.png" })).toBeVisible();
   expect(upload).toBe(2);
   expect(inputs).toBe(0);
   expect(mutations).toBe(beforeStale);
