@@ -30,6 +30,7 @@ import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachmen
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
+import { parseDirectShell } from "../shared/direct-shell.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
@@ -158,11 +159,47 @@ export function Chat(props: ChatProps) {
   useLayoutEffect(() => {
     committedProjection.current = projection;
   }, [projection]);
+  const displayMessages = useMemo(() => {
+    if (
+      !props.shell ||
+      props.state?.messages.some(
+        (message) =>
+          message.source?.taskId === Number(props.shell?.taskId) &&
+          message.parts?.some(
+            (part) => part.type === "tool-call" && part.name.startsWith("Direct shell"),
+          ),
+      )
+    )
+      return projection.messages;
+    const partId = `shell:${props.shell.taskId}`;
+    return [
+      ...projection.messages,
+      {
+        id: partId,
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: partId,
+            toolName: props.shell.includeInContext
+              ? "Direct shell"
+              : "Direct shell (not in model context)",
+            args: { command: props.shell.command },
+            argsText: JSON.stringify({ command: props.shell.command }),
+            result: `${props.shell.truncated ? "[Earlier output truncated]\n" : ""}${props.shell.output}`,
+            isPreliminary: true,
+          },
+        ],
+        metadata: { custom: { toolStates: { [partId]: "running" } } },
+        status: { type: "running" as const },
+      },
+    ];
+  }, [projection.messages, props.shell, props.state?.messages]);
   const messages = useExternalMessageConverter({
-    messages: projection.messages,
+    messages: displayMessages,
     callback: convertMessage,
     joinStrategy: "none",
-    isRunning: projection.streaming,
+    isRunning: projection.streaming || !!props.shell,
   });
   const available =
     !!props.onSend &&
@@ -228,8 +265,10 @@ export function Chat(props: ChatProps) {
     async (draft: string, mode: SendMode, nativeSend = false, ids?: string[]) => {
       const composer = runtimeRef.current?.thread.composer;
       setLocalError(null);
+      const shell = nativeSend ? parseDirectShell(draft) : undefined;
       if (
         nativeSend &&
+        !shell &&
         Array.from(draft.matchAll(/(?:^|\s)\/([a-z]*)(?=\s|$)/giu)).some((match) =>
           durableCommandNames.some((name) => name.startsWith(match[1]?.toLowerCase() ?? "")),
         )
@@ -244,8 +283,16 @@ export function Chat(props: ChatProps) {
         (mode === "steer" && !props.state?.busy)
       )
         return false;
-      const text = draft.trim();
+      const text = (draft.startsWith("\\!") ? draft.slice(1) : draft).trim();
       const images = ids ?? composer?.getState().attachments.map((item) => item.id) ?? [];
+      if (shell && images.length) {
+        setLocalError("Direct shell commands cannot include image attachments.");
+        return false;
+      }
+      if (shell && !props.onShell) {
+        setLocalError("Direct shell is unavailable in this chat.");
+        return false;
+      }
       if (
         (!text && !images.length) ||
         text.length > 32_000 ||
@@ -262,7 +309,10 @@ export function Chat(props: ChatProps) {
           ? { text: draft, ids: [...images], revision: revision.current }
           : null;
       try {
-        const admitted = await props.onSend(text, mode, images);
+        const admitted =
+          shell && props.onShell
+            ? await props.onShell(shell.command, shell.includeInContext)
+            : await props.onSend(text, mode, images);
         if (admitted) clearSubmitted();
         return admitted;
       } catch {
@@ -272,7 +322,7 @@ export function Chat(props: ChatProps) {
         return false;
       }
     },
-    [available, props.onSend, props.state, clearSubmitted],
+    [available, props.onSend, props.onShell, props.state, clearSubmitted],
   );
 
   const onNew = useCallback(
@@ -334,14 +384,18 @@ export function Chat(props: ChatProps) {
   const runtime = useExternalStoreRuntime({
     messages,
     onNew,
-    isRunning: props.state?.busy ?? false,
+    isRunning: (props.state?.busy ?? false) || !!props.shell,
     isLoading: props.state === null,
     isDisabled: !props.onSend,
-    isSendDisabled: !available || (props.state?.busy ?? false),
+    isSendDisabled: !available || (props.state?.busy ?? false) || !!props.shell,
     ...(adapter ? { adapters: { attachments: adapter } } : {}),
     hasEarlier: !!props.onLoadEarlier && props.connected && (props.state?.hasEarlier ?? false),
     ...(props.onLoadEarlier ? { onLoadEarlier: props.onLoadEarlier } : {}),
-    ...(available && props.onStop ? { onCancel: props.onStop } : {}),
+    ...(props.shell && props.connected && !props.pending && props.onShellStop
+      ? { onCancel: props.onShellStop }
+      : available && !props.shell && props.onStop
+        ? { onCancel: props.onStop }
+        : {}),
   });
   runtimeRef.current = runtime;
   useLayoutEffect(() => {

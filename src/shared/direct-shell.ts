@@ -26,6 +26,7 @@ export const DirectShellResultSchema = z.strictObject({
   exitCode: z.number().int().optional(),
 });
 export const DirectShellStatusSchema = z.strictObject({
+  conversationId: z.string(),
   taskId: z.string(),
   requestId: z.uuid(),
   command: z.string().max(32_000),

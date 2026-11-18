@@ -1,5 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   configure,
   AgentDoc,
@@ -37,6 +37,7 @@ import {
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
+const COMPACT_HOST = randomUUID();
 
 type CatalogItem = {
   id: number;
@@ -165,7 +166,7 @@ export async function openChats(
         }, BACKGROUND_CONTEXT);
       },
       archived: item.status === "archived",
-      shellStatus: async (requestId: string) => {
+      shellStatus: async (requestId?: string) => {
         if (!(await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT)))
           return undefined;
         return harness.commit(async (tx) => {
@@ -175,13 +176,17 @@ export async function openChats(
           )
             return undefined;
           const state = await tx.doc(DirectShellDoc, conversation.id);
-          const record = state.requests.find((request) => request.requestId === requestId);
+          const record = state.requests.find((request) =>
+            requestId === undefined
+              ? request.taskId === state.active
+              : request.requestId === requestId,
+          );
           if (!record) return undefined;
           const task = await tx.task(record.taskId as import("@earendil-works/pi-durable").TaskId);
           if (!task || task.conversationId !== conversation.id || task.kind !== "cpd.direct-shell")
             return undefined;
           const input = DirectShellRequestSchema.safeParse(task.input);
-          if (!input.success || input.data.requestId !== requestId) return undefined;
+          if (!input.success || input.data.requestId !== record.requestId) return undefined;
           const settled =
             task.state.status === "terminal"
               ? DirectShellResultSchema.safeParse(task.state.outcome.result)
@@ -198,6 +203,7 @@ export async function openChats(
                 truncated: progress?.truncated ?? false,
               };
           return DirectShellStatusSchema.parse({
+            conversationId: String(conversation.id),
             taskId: String(task.id),
             ...input.data,
             ...result,
@@ -227,7 +233,13 @@ export async function openChats(
             (await compactIntentUnsettled(tx, conversation.id))
           )
             throw new ChatLifecycleError("Shell or compaction admission is pending.", 409);
-          (await tx.doc(DirectShellDoc, conversation.id)).compactIntent = { id: reservation };
+          (await tx.doc(DirectShellDoc, conversation.id)).compactIntent = {
+            id: reservation,
+            owner: COMPACT_HOST,
+            inputDigest: createHash("sha256")
+              .update(JSON.stringify(instructions ?? null))
+              .digest("hex"),
+          };
         }, BACKGROUND_CONTEXT);
         const taskId = await conversation.compact(instructions, BACKGROUND_CONTEXT);
         await conversation.commit(async (tx) => {
@@ -238,6 +250,58 @@ export async function openChats(
         }, BACKGROUND_CONTEXT);
         return taskId;
       },
+      compactReservation: async () => {
+        const doc = await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT);
+        if (!doc?.compactIntent) return null;
+        const intent = doc.compactIntent;
+        const task =
+          intent.taskId === undefined
+            ? undefined
+            : await harness.getTask(
+                intent.taskId as import("@earendil-works/pi-durable").TaskId,
+                BACKGROUND_CONTEXT,
+              );
+        return {
+          id: intent.id,
+          pending:
+            intent.taskId === undefined ||
+            !task ||
+            task.conversationId !== conversation.id ||
+            task.kind !== "pi.compaction" ||
+            task.state.status !== "terminal",
+          recoveryRequiresRestart: !intent.owner || intent.owner === COMPACT_HOST,
+          taskKnown: intent.taskId !== undefined,
+        };
+      },
+      releaseCompactReservation: async (id: string) =>
+        conversation.commit(async (tx) => {
+          await assertWritable(tx);
+          const doc = await tx.doc(DirectShellDoc, conversation.id);
+          const intent = doc.compactIntent;
+          if (!intent || intent.id !== id)
+            throw new ChatLifecycleError("Compaction reservation changed.", 409);
+          if (!intent.owner || intent.owner === COMPACT_HOST)
+            throw new ChatLifecycleError(
+              "Restart the host before resolving this reservation.",
+              409,
+            );
+          const live = await tx.doc(LiveDoc, conversation.id);
+          if (live.compactions?.length)
+            throw new ChatLifecycleError("Compaction is still active.", 409);
+          if (intent.taskId !== undefined) {
+            const task = await tx.task(
+              intent.taskId as import("@earendil-works/pi-durable").TaskId,
+            );
+            if (
+              !task ||
+              task.conversationId !== conversation.id ||
+              task.kind !== "pi.compaction" ||
+              task.state.status !== "terminal"
+            )
+              throw new ChatLifecycleError("Compaction outcome is unavailable or active.", 409);
+          }
+          delete doc.compactIntent;
+        }, BACKGROUND_CONTEXT),
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
       admit: (

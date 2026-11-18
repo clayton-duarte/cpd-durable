@@ -32,7 +32,7 @@ export const DirectShellEntry = defineEntry<{
 export const DirectShellDoc = defineDoc<{
   requests: Stored[];
   active: number | null;
-  compactIntent?: { id: string; taskId?: number };
+  compactIntent?: { id: string; owner?: string; inputDigest?: string; taskId?: number };
   progress?: {
     taskId: number;
     command: string;
@@ -54,7 +54,12 @@ export async function directShellHasUnsettled(tx: Tx, id: ConversationId): Promi
   const state = await tx.doc(DirectShellDoc, id);
   if (state.active === null) return false;
   const task = await tx.task(state.active as TaskId);
-  return task === undefined || task.state.status !== "terminal";
+  return (
+    task === undefined ||
+    task.conversationId !== id ||
+    task.kind !== "cpd.direct-shell" ||
+    task.state.status !== "terminal"
+  );
 }
 
 export async function compactIntentUnsettled(tx: Tx, id: ConversationId): Promise<boolean> {
@@ -62,7 +67,12 @@ export async function compactIntentUnsettled(tx: Tx, id: ConversationId): Promis
   if (!intent) return false;
   if (intent.taskId === undefined) return true;
   const task = await tx.task(intent.taskId as TaskId);
-  return !task || task.state.status !== "terminal";
+  return (
+    !task ||
+    task.conversationId !== id ||
+    task.kind !== "pi.compaction" ||
+    task.state.status !== "terminal"
+  );
 }
 
 export async function directShellRequestExists(

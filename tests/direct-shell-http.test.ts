@@ -85,3 +85,72 @@ it("fails shell admission closed for an uncertain durable compaction intent", as
   expect(response.status).toBe(409);
   expect(provider.calls).toHaveLength(0);
 });
+
+it("serializes a held manual compaction admission against shell and requires explicit recovery", async () => {
+  let release!: () => void;
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const original = chat.conversation.compact.bind(chat.conversation);
+  const spy = vi
+    .spyOn(chat.conversation, "compact")
+    .mockImplementation(async (instructions, context) => {
+      entered();
+      await waiting;
+      return original(instructions, context);
+    });
+  const path = `/api/chats/${chat.conversation.id}`;
+  const post = (suffix: string, body: unknown) =>
+    app.request(`http://localhost:3000${path}${suffix}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  try {
+    const compacting = post("/compact", { instructions: "" });
+    await started;
+    const status = (await (
+      await app.request(`http://localhost:3000${path}/compact/reservation`)
+    ).json()) as { id: string };
+    expect(
+      (
+        await post("/shell", {
+          requestId: crypto.randomUUID(),
+          command: "printf no",
+          includeInContext: true,
+        })
+      ).status,
+    ).toBe(409);
+    expect((await post("/compact/recover", { id: status.id })).status).toBe(409);
+    expect(provider.calls).toHaveLength(0);
+    release();
+    expect((await compacting).status).toBe(202);
+  } finally {
+    release();
+    spy.mockRestore();
+  }
+});
+
+it("explicitly releases an unknown prior-host reservation without starting compaction", async () => {
+  const id = crypto.randomUUID();
+  await chat.conversation.commit(async (tx) => {
+    (await tx.doc(DirectShellDoc, chat.conversation.id)).compactIntent = {
+      id,
+      owner: crypto.randomUUID(),
+    };
+  }, BACKGROUND_CONTEXT);
+  const response = await app.request(
+    `http://localhost:3000/api/chats/${chat.conversation.id}/compact/recover`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id }),
+    },
+  );
+  expect(await response.json()).toEqual({ status: "released", outcome: "unknown" });
+  expect(provider.calls).toHaveLength(0);
+});

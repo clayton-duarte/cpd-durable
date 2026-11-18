@@ -125,12 +125,14 @@ export function ChatConfiguration() {
                     setDraft({ ...draft, thinkingLevel: supported });
                 }}
               >
-                <ModelSelectorTrigger disabled={pending || error || !data.choices.length} />
+                <ModelSelectorTrigger
+                  disabled={pending || error || !!host.shell || !data.choices.length}
+                />
                 <ModelSelectorContent searchable />
               </ModelSelectorRoot>
               <Button
                 variant="outline"
-                disabled={pending || error || !data.choices.length}
+                disabled={pending || error || !!host.shell || !data.choices.length}
                 onClick={() => {
                   void save();
                 }}

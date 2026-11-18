@@ -50,6 +50,8 @@ Use **New chat** in the supplied assistant-ui sidebar. It reuses the existing em
 
 The SDK's `codemode` tool can call installed native tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled; MCP is not yet integrated.
 
+In the composer, start a fresh message with `!` to run a shell command directly and include its command and bounded result in later model context. `!!` keeps the command and result in the visible transcript but excludes them from model context. An empty prefix is ordinary text; start with `\!` for a literal leading exclamation mark. Commands cannot include image attachments. They use the conversation's configured host environment and normal OS authority, with no added sandbox, approval or deadline; there is no interactive PTY. Stop requests cancellation, not reversal of completed effects. Output is a bounded observed tail; a stopped or interrupted command may have produced output that was not committed. Interrupted commands are not automatically rerun.
+
 ### Project guidance and skills
 
 For each provider request the server discovers `AGENTS.md` along the conversation's actual cwd ancestry, from filesystem root toward the nearest directory. The cwd defaults as described above; symlinks are resolved to the actual directory. It also looks one level deep under `.pi/skills/<directory>/SKILL.md` at each ancestor, nearest first. The first valid skill with a given name wins. The model receives file provenance and bounded skill name/description metadata, and can call `load_skill` to read a discovered skill's current file on demand. A skill body is not automatically included or executed.

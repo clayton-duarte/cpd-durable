@@ -234,6 +234,10 @@ export function createApp(
             stopShell: async () => {
               throw new Error("Shell unavailable.");
             },
+            compactReservation: async () => null,
+            releaseCompactReservation: async () => {
+              throw new Error("Unavailable.");
+            },
             compact: async () => {
               throw new Error("Transactional compaction unavailable.");
             },
@@ -338,10 +342,14 @@ export function createApp(
   routes.get("/shell", async (c) => {
     if (c.req.param("chatId") === undefined || !chat.chats)
       return c.json({ error: "Chat not found." }, 404);
-    const requestId = z.uuid().safeParse(c.req.query("requestId"));
+    const requestId = z.uuid().optional().safeParse(c.req.query("requestId"));
     if (!requestId.success) return c.json({ error: "Invalid shell request." }, 400);
     const status = await c.get("scope").shellStatus(requestId.data);
-    return status ? c.json(status) : c.json({ error: "Shell request not found." }, 404);
+    return status
+      ? c.json(status)
+      : requestId.data === undefined
+        ? c.json(null)
+        : c.json({ error: "Shell request not found." }, 404);
   });
   routes.post("/shell/stop", async (c) => {
     if (c.req.param("chatId") === undefined || !chat.chats)
@@ -386,6 +394,19 @@ export function createApp(
     if (!result.success) return c.json({ error: "Invalid compaction request." }, 400);
     const taskId = await c.get("scope").compact(result.data.instructions || undefined);
     return c.json({ taskId: String(taskId) }, 202);
+  });
+  routes.get("/compact/reservation", async (c) =>
+    c.json(await c.get("scope").compactReservation()),
+  );
+  routes.post("/compact/recover", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = z
+      .strictObject({ id: z.uuid() })
+      .safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success) return c.json({ error: "Invalid reservation." }, 400);
+    await c.get("scope").releaseCompactReservation(parsed.data.id);
+    return c.json({ status: "released", outcome: "unknown" });
   });
 
   routes.post("/control", async (c) => {

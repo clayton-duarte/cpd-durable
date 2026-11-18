@@ -83,6 +83,24 @@ async function attach(page: import("@playwright/test").Page, name = "one.png") {
   await (await chooser).setFiles({ name, mimeType: "image/png", buffer: png });
   await expect(page.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
 }
+test("direct shell with an attachment is rejected without losing the draft", async ({ page }) => {
+  let calls = 0;
+  await prepare(page, async (route) => route.abort());
+  await page.route("**/api/chats/1/shell", (route) => {
+    if (route.request().method() === "POST") calls++;
+    return route.fulfill({ json: null });
+  });
+  await attach(page);
+  const draft = page.getByRole("textbox", { name: "Message input" });
+  await draft.fill("!printf ignored");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect(
+    page.getByText("Direct shell commands cannot include image attachments."),
+  ).toBeVisible();
+  await expect(draft).toHaveValue("!printf ignored");
+  await expect(page.getByRole("button", { name: "Remove one.png" })).toBeVisible();
+  expect(calls).toBe(0);
+});
 test("image-only retry preserves id and avoids reupload", async ({ page }) => {
   const bodies: unknown[] = [];
   const uploads = await prepare(page, async (route) => {

@@ -17,6 +17,7 @@ import { openChats } from "../src/server/chats.ts";
 import { parseDirectShell } from "../src/shared/direct-shell.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+import { present } from "../src/server/presentation.ts";
 
 let dir: string;
 let env: NodeExecutionEnv;
@@ -77,6 +78,17 @@ it("runs real commands without a provider call, retains cwd, hides !! from later
   expect(JSON.stringify(view.messages)).not.toContain("hidden-marker");
   const entries = await conversation.entries({}, 30, undefined, BACKGROUND_CONTEXT);
   expect(entries.items.filter((entry) => DirectShellEntry.is(entry))).toHaveLength(2);
+  const watch = await conversation.watch(BACKGROUND_CONTEXT);
+  const projection = present(watch.value);
+  await watch.stop();
+  expect(
+    projection.messages.filter((message) =>
+      message.parts?.some(
+        (part) => part.type === "tool-call" && part.name.startsWith("Direct shell"),
+      ),
+    ),
+  ).toHaveLength(2);
+  expect(JSON.stringify(projection.messages)).toContain("Direct shell (not in model context)");
   await conversation.submit({ type: "input", content: "next" }, BACKGROUND_CONTEXT);
   await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
   expect(JSON.stringify(provider.calls[0]!.context.messages)).not.toContain("hidden-marker");
@@ -154,6 +166,26 @@ it("keeps excluded entries out of forked and reopened model context", async () =
   const reopened = JSON.stringify((await conversation.context(BACKGROUND_CONTEXT)).messages);
   expect(reopened).toContain("visible-marker");
   expect(reopened).not.toContain("hidden-marker");
+});
+
+it("excludes display-only shell content from an actual compaction provider request", async () => {
+  await conversation.configure({ compaction: { keepRecentTokens: 0 } }, BACKGROUND_CONTEXT);
+  for (let i = 0; i < 2; i++) {
+    await conversation.submit(
+      { type: "input", content: `Synthetic turn ${i}` },
+      BACKGROUND_CONTEXT,
+    );
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(i + 1));
+    provider.calls[i]!.finish(`Synthetic answer ${i}`);
+    await conversation.waitForIdle(BACKGROUND_CONTEXT);
+  }
+  const id = await run("private-compaction", "printf never-in-compaction", false);
+  await harness.waitForTask(id, BACKGROUND_CONTEXT);
+  const compact = await conversation.compact(undefined, BACKGROUND_CONTEXT);
+  await vi.waitFor(() => expect(provider.calls).toHaveLength(3));
+  expect(JSON.stringify(provider.calls[2]!.context.messages)).not.toContain("never-in-compaction");
+  provider.calls[2]!.finish("Synthetic summary");
+  await harness.waitForTask(compact, BACKGROUND_CONTEXT);
 });
 
 it("retains bounded output and reports truncation", async () => {
