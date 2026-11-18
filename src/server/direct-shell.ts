@@ -14,6 +14,7 @@ import {
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
+import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 
 type Input = { requestId: string; command: string; includeInContext: boolean };
 type Result = {
@@ -246,6 +247,12 @@ export async function admitDirectShell(
       (await readDraftAttempt(tx, conversation.id, input.requestId))
     )
       throw new Error("Request identity already used.");
+    const recordAdmission = await checkAdmissionRequest(
+      tx,
+      conversation.id,
+      input.requestId,
+      admissionDigest(["direct-shell", input.command, input.includeInContext]),
+    );
     const live = await tx.doc(LiveDoc, conversation.id);
     const inbox = await tx.doc(InboxDoc, conversation.id);
     if (
@@ -260,6 +267,7 @@ export async function admitDirectShell(
       ownership: { kind: "conversation" },
       abandonOnRestart: true,
     });
+    recordAdmission();
     doc.requests.push({ requestId: input.requestId, digest, taskId: id });
     doc.active = id;
     doc.progress = {

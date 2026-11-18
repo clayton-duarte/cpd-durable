@@ -55,6 +55,7 @@ export class BranchOperationError extends Error {
 // register must atomically add the new branch to that same transaction.
 export type BranchCatalogHooks = {
   requireActive(tx: Tx, id: ConversationId): Promise<void>;
+  reserveBranchRequest(tx: Tx, request: EditBranchRequest): Promise<() => void>;
   registerEdit(
     tx: Tx,
     branch: {
@@ -158,6 +159,15 @@ export function createBranchOperations(harness: Harness, catalog: BranchCatalogH
       if (preceding.items[0]?.id !== entryId)
         throw new BranchOperationError("Saved entry is not visible.", 404);
       const at = preceding.items[1]?.id ?? null;
+      if (await directShellRequestExists(tx, sourceId, request.requestId))
+        throw new BranchOperationError("Request identity already used.", 409);
+      const recordSource = await checkAdmissionRequest(
+        tx,
+        sourceId,
+        request.requestId,
+        admissionDigest(["branch-edit", request.sourceId, request.entryId, request.text]),
+      );
+      const recordBranch = await catalog.reserveBranchRequest(tx, request);
       // A first-entry edit has no as-of-before-first-entry API. Explicitly copy
       // the current saved state, captured in the same commit as branch creation.
       const current =
@@ -170,6 +180,8 @@ export function createBranchOperations(harness: Harness, catalog: BranchCatalogH
           : await tx.forkConversation(sourceId, at, { ownership: { kind: "ownerless" } });
       if (current) Object.assign(await tx.doc(AgentDoc, branch.id), current);
       await catalog.registerEdit(tx, { sourceId, branchId: branch.id, entryId, forkEntryId: at });
+      recordSource();
+      recordBranch();
       const operation: Operation = {
         requestId: request.requestId,
         sourceId,

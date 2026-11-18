@@ -6,6 +6,7 @@ export function ChatPage({
   active = true,
   readOnly = false,
   onFork,
+  onRegenerate,
   onEdit,
   draftGuards,
   onUnsavedDraft,
@@ -14,6 +15,7 @@ export function ChatPage({
   active?: boolean;
   readOnly?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
+  onRegenerate?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;
   draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
   onUnsavedDraft?: (chatId: string) => void;
@@ -26,6 +28,7 @@ export function ChatPage({
         active={active}
         readOnly={readOnly}
         onFork={onFork}
+        onRegenerate={onRegenerate}
         onEdit={onEdit}
         {...(draftGuards ? { draftGuards } : {})}
         {...(onUnsavedDraft ? { onUnsavedDraft } : {})}
