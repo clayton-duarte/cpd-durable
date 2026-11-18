@@ -1,12 +1,19 @@
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vite-plus/test";
-import { createRegistry } from "@earendil-works/pi-durable";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { Harness, createRegistry } from "@earendil-works/pi-durable";
+import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
+import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat";
+import { testModels } from "./models";
 import {
   createResourceExtension,
   discoverResources,
   loadSkill,
+  MAX_RESOURCE_SECTION_BYTES,
 } from "../src/server/resources/index";
 
 const roots: string[] = [];
@@ -111,5 +118,147 @@ describe("resource discovery", () => {
         .sections()
         .some(({ section }) => section.key === "project-resources"),
     ).toBe(true);
+  });
+  it("keeps supported fields and reports ignored metadata and unsupported required forms", async () => {
+    const { cwd } = await setup();
+    await put(
+      join(cwd, ".pi/skills/good/SKILL.md"),
+      "---\nname: 'good'\ndescription: 'It''s useful'\nlicense: MIT\nmetadata:\n  owner: example\n---\nbody",
+    );
+    await put(
+      join(cwd, ".pi/skills/bad/SKILL.md"),
+      "---\nname: bad\ndescription: >\n  folded text\n---\nbody",
+    );
+    const result = await discoverResources(cwd);
+    expect(result.skills).toEqual([
+      expect.objectContaining({ name: "good", description: "It's useful" }),
+    ]);
+    expect(result.issues.some((i) => i.reason.includes("metadata ignored"))).toBe(true);
+    expect(result.issues.some((i) => i.reason.includes("malformed or unsupported"))).toBe(true);
+  });
+  it.skipIf(process.platform === "win32")(
+    "rejects a FIFO and its symlink without opening a reader",
+    async () => {
+      const { root, cwd } = await setup();
+      const fifo = join(root, "fifo");
+      execFileSync("mkfifo", [fifo]);
+      await symlink(fifo, join(cwd, "AGENTS.md"));
+      const result = await discoverResources(cwd);
+      expect(
+        result.issues.some(
+          (i) => i.path === join(cwd, "AGENTS.md") && i.reason.includes("unreadable"),
+        ),
+      ).toBe(true);
+    },
+  );
+  it("bounds the complete serialized section with nearest instructions and omission counts", async () => {
+    const { root, parent, cwd } = await setup();
+    await put(join(root, "AGENTS.md"), "outer" + "é".repeat(15000));
+    await put(join(parent, "AGENTS.md"), "middle" + "é".repeat(15000));
+    await put(join(cwd, "AGENTS.md"), "nearest" + "é".repeat(15000));
+    for (let i = 0; i < 90; i++) {
+      await put(
+        join(cwd, `.pi/skills/s${i}/SKILL.md`),
+        `---\nname: s${i}\ndescription: ${"x".repeat(1000)}\n---\nbody`,
+      );
+    }
+    for (let i = 0; i < 50; i++) {
+      await put(join(cwd, `.pi/skills/invalid${i}/SKILL.md`), "invalid");
+    }
+    const extension = createResourceExtension();
+    const section = extension.sections![0]!;
+    const env = new NodeExecutionEnv({ cwd });
+    try {
+      const text = await section.render(
+        { env } as unknown as Parameters<typeof section.render>[0],
+        BACKGROUND_CONTEXT,
+      );
+      expect(text).toBeDefined();
+      expect(Buffer.byteLength(text!)).toBeLessThanOrEqual(MAX_RESOURCE_SECTION_BYTES);
+      const payload = JSON.parse(text!) as {
+        instructions: { text: string }[];
+        omittedInstructions: number;
+        omittedSkills: number;
+      };
+      expect(payload.instructions.some((i) => i.text.startsWith("nearest"))).toBe(true);
+      expect(payload.omittedInstructions).toBeGreaterThan(0);
+      expect(payload.omittedSkills).toBeGreaterThan(0);
+    } finally {
+      await env.cleanup(BACKGROUND_CONTEXT);
+    }
+  });
+  it("reports directory and configured-root discovery limits", async () => {
+    const { cwd } = await setup();
+    for (let i = 0; i < 205; i++) await put(join(cwd, `.pi/skills/s${i}/SKILL.md`), skill(`s${i}`));
+    const result = await discoverResources(cwd, {
+      promptDirs: Array.from({ length: 35 }, (_, i) => `missing-${i}`),
+    });
+    expect(result.skills.length).toBe(200);
+    expect(result.issues.some((i) => i.reason.includes("additional entries excluded"))).toBe(true);
+    expect(result.issues.some((i) => i.reason.includes("3 configured prompt roots excluded"))).toBe(
+      true,
+    );
+  });
+  it("runs SDK request sections and load_skill in each conversation cwd and refreshes on subsequent requests", async () => {
+    const { root, cwd } = await setup();
+    const other = join(root, "other");
+    await mkdir(other);
+    await put(join(cwd, "AGENTS.md"), "cwd-one-before");
+    await put(join(other, "AGENTS.md"), "cwd-two-only");
+    await put(join(cwd, ".pi/skills/one/SKILL.md"), skill("one", "skill-one-body"));
+    const registry = createRegistry();
+    registry.install(createResourceExtension());
+    const provider = testModels();
+    const environments: NodeExecutionEnv[] = [];
+    const harness = await Harness.open(
+      new MemoryStorage(),
+      {
+        models: provider.models,
+        registry,
+        env: ({ cwd: directory }) => {
+          const env = new NodeExecutionEnv({ cwd: directory! });
+          environments.push(env);
+          return env;
+        },
+      },
+      BACKGROUND_CONTEXT,
+    );
+    const model = { provider: PROVIDER_ID, modelId: MODEL_ID };
+    try {
+      const first = await harness.root(BACKGROUND_CONTEXT, { agent: { cwd, model } });
+      const second = await harness.createConversation(
+        { ownership: { kind: "ownerless" }, agent: { cwd: other, model } },
+        BACKGROUND_CONTEXT,
+      );
+      await first.submit({ type: "input", content: "first" }, BACKGROUND_CONTEXT);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      const original = JSON.stringify(provider.calls[0]!.context.messages);
+      expect(original).toContain("cwd-one-before");
+      expect(original).not.toContain("cwd-two-only");
+      await put(join(cwd, "AGENTS.md"), "cwd-one-after");
+      expect(JSON.stringify(provider.calls[0]!.context.messages)).toBe(original);
+      provider.calls[0]!.tools([
+        { id: "skill-call", name: "load_skill", arguments: { name: "one" } },
+      ]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      const next = JSON.stringify(provider.calls[1]!.context.messages);
+      expect(next).toContain("skill-one-body");
+      expect(next).toContain("cwd-one-after");
+      provider.calls[1]!.finish("done");
+      await first.waitForIdle(BACKGROUND_CONTEXT);
+      await second.submit({ type: "input", content: "second" }, BACKGROUND_CONTEXT);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(3));
+      const secondPrompt = JSON.stringify(provider.calls[2]!.context.messages);
+      expect(secondPrompt).toContain("cwd-two-only");
+      expect(secondPrompt).not.toContain("cwd-one-after");
+      provider.calls[2]!.tools([{ id: "missing", name: "load_skill", arguments: { name: "one" } }]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(4));
+      expect(JSON.stringify(provider.calls[3]!.context.messages)).toContain("skill not discovered");
+      provider.calls[3]!.finish("done");
+      await second.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await harness.close(BACKGROUND_CONTEXT);
+      await Promise.all(environments.map((env) => env.cleanup(BACKGROUND_CONTEXT)));
+    }
   });
 });
