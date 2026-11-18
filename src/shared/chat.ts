@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NestedToolDisplaySchema } from "./nested-tools.ts";
 import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
 
 export const PROVIDER_ID = "opencode-go";
@@ -83,6 +84,7 @@ export const ChatPartSchema = z.discriminatedUnion("type", [
     output: z.string().optional(),
     resultParts: z.array(ToolResultPartSchema).optional(),
     resultEntryId: RecordIdSchema.optional(),
+    nested: NestedToolDisplaySchema.optional(),
   }),
   z.strictObject({
     id: z.string(),
