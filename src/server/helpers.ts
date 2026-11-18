@@ -93,10 +93,16 @@ export const ForegroundHelperTask = defineTask<Input, { phase: "run" }, null>({
   },
 });
 
+/** The task is a conversation-owned background anchor; its child remains task-owned. */
+export const BackgroundHelperTask = defineTask({
+  ...ForegroundHelperTask.definition,
+  name: "cpd.helper.background",
+});
+
 /** Install this extension into the host registry before opening/reopening the Harness. */
 export const HelpersExtension = defineExtension({
   name: "cpd.helpers",
-  tasks: [ForegroundHelperTask],
+  tasks: [ForegroundHelperTask, BackgroundHelperTask],
 });
 
 /** Admission is atomic with the request identity and saved parent agent snapshot. */
@@ -117,13 +123,26 @@ export async function launchHelper(conversation: Conversation, raw: unknown) {
       cwd: agent.cwd ?? null,
     };
     const taskId = await tx.createTask(
-      ForegroundHelperTask,
+      request.mode === "background" ? BackgroundHelperTask : ForegroundHelperTask,
       { request, agent: saved },
-      { ownership: { kind: "conversation" } },
+      { ownership: { kind: "conversation" }, background: request.mode === "background" },
     );
     doc.items.push({ request, taskId, childId: null, receipt: null });
     return String(taskId);
   }, BACKGROUND_CONTEXT);
+}
+
+/** Scope the explicit Stop to a recorded worker belonging to this conversation. */
+export async function stopHelper(harness: Harness, conversation: Conversation, taskId: string) {
+  const doc = await harness.snapshot(HelpersDoc, conversation.id, BACKGROUND_CONTEXT);
+  const item = doc?.items.find((candidate) => String(candidate.taskId) === taskId);
+  if (!item) return "not-found" as const;
+  return harness.abortTask(item.taskId as TaskId, BACKGROUND_CONTEXT);
+}
+
+/** Explicitly cross background boundaries, unlike the ordinary parent Stop. */
+export async function stopHelpersIncludingBackground(conversation: Conversation) {
+  await conversation.abort(BACKGROUND_CONTEXT, { background: true });
 }
 
 /** Call on the same SDK transaction as a catalog lifecycle decision. */
@@ -157,6 +176,7 @@ export async function inspectHelpers(harness: Harness, conversation: Conversatio
         requestId: item.request.requestId,
         taskId: String(item.taskId),
         childId: item.childId === null ? null : String(item.childId),
+        mode: item.request.mode,
         status,
         answerEntryId:
           status === "success" && item.receipt?.answerEntryId !== null

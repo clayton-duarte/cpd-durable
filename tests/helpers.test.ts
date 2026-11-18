@@ -8,6 +8,7 @@ import {
   ProviderDoc,
   type Conversation,
   type ConversationId,
+  type TaskId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -17,6 +18,8 @@ import {
   helperHasUnsettled,
   inspectHelpers,
   launchHelper,
+  stopHelper,
+  stopHelpersIncludingBackground,
 } from "../src/server/helpers.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
@@ -69,10 +72,30 @@ describe("foreground helpers", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  it("rejects unsupported background and follow-up modes", async () => {
-    await expect(launchHelper(parent, { ...request, mode: "background" })).rejects.toThrow();
+  it("rejects unsupported delivery modes", async () => {
     await expect(launchHelper(parent, { ...request, delivery: "follow-up" })).rejects.toThrow();
     expect((await view()).helpers).toEqual([]);
+  });
+
+  it("keeps a background anchor alive across normal Stop, then stops it explicitly", async () => {
+    const id = await launchHelper(parent, { ...request, mode: "background" });
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    const record = await harness.getTask(Number(id) as TaskId, BACKGROUND_CONTEXT);
+    expect(record?.background).toBe(true);
+    expect(record?.owner).toBeUndefined();
+    await parent.abort(BACKGROUND_CONTEXT);
+    expect((await view()).helpers[0]?.status).toBe("running");
+    expect((await view()).helpers[0]?.mode).toBe("background");
+    expect(await stopHelper(harness, parent, "999999")).toBe("not-found");
+    expect(await stopHelper(harness, parent, id)).toBe("marked");
+    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
+  });
+
+  it("crosses the background boundary only when explicitly requested", async () => {
+    await launchHelper(parent, { ...request, mode: "background" });
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    await stopHelpersIncludingBackground(parent);
+    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
   });
 
   it("launches one owned child, deduplicates concurrent requests, and records a separate receipt", async () => {
