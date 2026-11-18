@@ -51,7 +51,9 @@ describe("draft attempt HTTP integration", () => {
         text: "original",
         draft: { revision: 1, text: "original", images: [], attempt: true },
       };
-      expect((await send("/input", "POST", input)).status).toBe(202);
+      const admitted = await send("/input", "POST", input);
+      expect(admitted.status).toBe(202);
+      expect(await admitted.json()).not.toHaveProperty("clearedDraftRevision");
       expect(await (await app.request(base + "/draft")).json()).toEqual({
         revision: 2,
         content: { text: "newer", images: [] },

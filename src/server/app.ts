@@ -325,7 +325,15 @@ export function createApp(
           ...(result.data.draft ? { draft: result.data.draft } : {}),
         },
       );
-      return c.json({ id: String(submission.id) }, 202);
+      return c.json(
+        {
+          id: String(submission.id),
+          ...(submission.clearedDraftRevision === undefined
+            ? {}
+            : { clearedDraftRevision: submission.clearedDraftRevision }),
+        },
+        202,
+      );
     } catch (error) {
       if (error instanceof ConversationBusy) {
         return c.json({ error: "The conversation is busy." }, 409);

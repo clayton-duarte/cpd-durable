@@ -193,5 +193,8 @@ export type ChatState = z.infer<typeof ChatStateSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatPart = z.infer<typeof ChatPartSchema>;
 
-export const SubmissionSchema = z.strictObject({ id: z.string() });
+export const SubmissionSchema = z.strictObject({
+  id: z.string(),
+  clearedDraftRevision: z.number().int().nonnegative().safe().optional(),
+});
 export const ApiErrorSchema = z.strictObject({ error: z.string() });

@@ -210,6 +210,7 @@ export async function openChats(
             : undefined;
           const submission = await conversation.submit(tx, draft);
           record?.();
+          let clearedDraftRevision: number | undefined;
           if (
             savedDraft &&
             options?.draft &&
@@ -221,6 +222,7 @@ export async function openChats(
           ) {
             savedDraft.content = { text: "", images: [] };
             savedDraft.revision++;
+            clearedDraftRevision = savedDraft.revision;
           }
           const title =
             options?.title ??
@@ -229,7 +231,10 @@ export async function openChats(
             item.title = title.trim().replace(/\s+/g, " ").slice(0, 80);
             item.named = true;
           }
-          return { id: submission };
+          return {
+            id: submission,
+            ...(clearedDraftRevision === undefined ? {} : { clearedDraftRevision }),
+          };
         }, BACKGROUND_CONTEXT),
     };
   }

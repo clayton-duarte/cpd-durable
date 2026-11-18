@@ -78,7 +78,12 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
           title,
           ...(savedDraft ? { draft: savedDraft } : {}),
         });
-        return { id: String(result.id) };
+        return {
+          id: String(result.id),
+          ...(result.clearedDraftRevision === undefined
+            ? {}
+            : { clearedDraftRevision: result.clearedDraftRevision }),
+        };
       },
     });
     harness.resume();

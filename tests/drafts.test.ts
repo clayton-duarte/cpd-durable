@@ -48,7 +48,9 @@ describe("conversation draft service", () => {
         images: [ref.id],
         draft: { revision: 1, text: "  image  ", images: [ref.id] },
       };
-      expect((await json("/input", "POST", input)).status).toBe(202);
+      const admitted = await json("/input", "POST", input);
+      expect(admitted.status).toBe(202);
+      expect(await admitted.json()).toMatchObject({ clearedDraftRevision: 2 });
       expect(await get()).toEqual({ revision: 2, content: { text: "", images: [] } });
       expect(
         (
@@ -109,7 +111,9 @@ describe("conversation draft service", () => {
         text: "hello",
         draft: { revision: 1, text: "  hello  ", images: [] },
       };
-      expect((await request("/input", "POST", input)).status).toBe(202);
+      const admitted = await request("/input", "POST", input);
+      expect(admitted.status).toBe(202);
+      expect(await admitted.json()).toMatchObject({ clearedDraftRevision: 2 });
       expect(await (await request("/draft", "GET")).json()).toEqual({
         revision: 2,
         content: { text: "", images: [] },
