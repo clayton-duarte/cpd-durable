@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
 const item = {
@@ -57,6 +58,51 @@ async function syntheticSources(page: Page) {
     Object.defineProperty(window, "EventSource", { value: Source });
   });
 }
+
+test("inserting a prompt autosaves through the native draft writer and survives reopen", async ({
+  page,
+}) => {
+  let saved = { revision: 0, content: { text: "", images: [] as unknown[] } };
+  let sends = 0;
+  await syntheticSources(page);
+  await page.route("**/api/**", async (route) => {
+    const url = new URL(route.request().url());
+    const method = route.request().method();
+    if (url.pathname === "/api/chats")
+      return route.fulfill({
+        json: {
+          rootId: "1",
+          chats: [{ id: "1", title: "Original", running: false }],
+        },
+      });
+    if (url.pathname === "/api/saved-prompts")
+      return route.fulfill({ json: { items: [item], nextCursor: null } });
+    if (url.pathname.endsWith("/draft/attempts"))
+      return route.fulfill({ json: { attempts: [], capped: false, nextCursor: null } });
+    if (url.pathname.endsWith("/draft") && method === "GET") return route.fulfill({ json: saved });
+    if (url.pathname.endsWith("/draft") && method === "PUT") {
+      const body = route.request().postDataJSON() as {
+        expectedRevision: number;
+        content: typeof saved.content;
+      };
+      if (body.expectedRevision !== saved.revision) return route.fulfill({ status: 409, json: {} });
+      saved = { revision: saved.revision + 1, content: body.content };
+      return route.fulfill({ json: saved });
+    }
+    if (url.pathname.endsWith("/input")) sends++;
+    return route.abort();
+  });
+  await page.goto("/");
+  await expect(page.getByRole("textbox", { name: "Message input" })).toBeEnabled();
+  const draft = await openPicker(page, "draft");
+  await page.getByRole("option", { name: "Example" }).click();
+  await page.getByRole("button", { name: "Append to draft" }).click();
+  await expect(draft).toHaveValue("draft\nSaved literal");
+  await expect.poll(() => saved.content.text).toBe("draft\nSaved literal");
+  await page.reload();
+  await expect(draft).toHaveValue("draft\nSaved literal");
+  expect(sends).toBe(0);
+});
 
 test("native composer saves and previews a literal prompt without sending the draft", async ({
   page,
@@ -128,6 +174,7 @@ test("native composer saves and previews a literal prompt without sending the dr
     }
     Object.defineProperty(window, "EventSource", { value: Source });
   });
+  await syntheticDrafts(page);
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await expect(draft).toBeEnabled();
@@ -224,6 +271,7 @@ test("prompt insertion retains existing and pending native images without reuplo
     if (url.pathname.endsWith("/input")) sends++;
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeEnabled();
   async function attach(name: string) {
@@ -293,6 +341,7 @@ test("late library read from chat A cannot apply or save in chat B", async ({ pa
     if (url.pathname.endsWith("/input")) writes++;
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeEnabled();
   await openPicker(page, "first draft");
@@ -322,6 +371,7 @@ test("disconnect after preview blocks insertion and all prompt mutations", async
     if (route.request().method() !== "GET") writes++;
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeEnabled();
   const draft = await openPicker(page);
@@ -375,6 +425,7 @@ test("late edit acknowledgement preserves newer form values and conflict reload 
     }
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeEnabled();
   await openPicker(page);

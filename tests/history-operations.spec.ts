@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 const catalog = {
   rootId: "1",
@@ -10,6 +11,7 @@ const catalog = {
 };
 async function setup(page: Page) {
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) => route.fulfill({ json: catalog }));
   await page.addInitScript(() => {
     class SyntheticSource extends EventTarget {

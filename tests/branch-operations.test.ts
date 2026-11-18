@@ -23,6 +23,7 @@ import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { openChat } from "../src/server/chat.ts";
 import { createApp } from "../src/server/app.ts";
 import { imageRequestDigest } from "../src/server/attachment-catalog.ts";
+import { reserveBranchIdentity } from "../src/server/branch-identity.ts";
 import { DirectShellDoc } from "../src/server/direct-shell.ts";
 
 describe("durable edit branch foundation", () => {
@@ -31,6 +32,9 @@ describe("durable edit branch foundation", () => {
   let root: Conversation;
   let provider: ReturnType<typeof testModels>;
   const hooks: BranchCatalogHooks = {
+    async reserveBranchRequest(tx, request) {
+      return reserveBranchIdentity(tx, request.requestId, "edit");
+    },
     async requireActive(tx, id) {
       const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
       if (!item || item.status) throw new BranchOperationError("Chat unavailable.", 409);

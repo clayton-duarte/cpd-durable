@@ -1,14 +1,18 @@
 import { createContext, useContext } from "react";
 import type { AttachmentAdapter } from "@assistant-ui/react";
 import type { ChatState, SendMode, HistoryGap } from "../shared/chat.ts";
+import type { DraftAdmission } from "../shared/drafts.ts";
 import type { DirectShellStatusSchema } from "../shared/direct-shell.ts";
 import type { z } from "zod";
 
 export interface ChatProps {
   chatId?: string | undefined;
+  draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
+  onUnsavedDraft?: (chatId: string) => void;
   active?: boolean;
   readOnly?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
+  onRegenerate?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;
   title: string;
   description?: string;
@@ -27,7 +31,16 @@ export interface ChatProps {
   onRetryHistory?: () => Promise<void>;
   onLoadEarlier?: () => Promise<void>;
   onFillGap?: (gap: HistoryGap) => Promise<void>;
-  onSend?: (text: string, mode?: SendMode, images?: string[]) => Promise<boolean>;
+  onSend?: (
+    text: string,
+    mode?: SendMode,
+    images?: string[],
+    prepared?: {
+      requestId: string;
+      draft: DraftAdmission;
+      onClear?: (revision: number) => void;
+    },
+  ) => Promise<boolean>;
   onShell?: (command: string, includeInContext: boolean) => Promise<boolean>;
   shell?: z.infer<typeof DirectShellStatusSchema> | null;
   onShellStop?: () => Promise<void>;
