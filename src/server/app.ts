@@ -293,6 +293,7 @@ export function createApp(
             images: [],
             mode: result.data.mode ?? "reject",
           }),
+          ...(result.data.draft ? { draft: result.data.draft } : {}),
         },
       );
       return c.json({ id: String(submission.id) }, 202);

@@ -22,6 +22,8 @@ import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
+import { DraftDoc } from "./drafts.ts";
+import type { DraftAdmission } from "../shared/drafts.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -149,7 +151,12 @@ export async function openChats(
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
       admit: (
         draft: SubmissionDraft,
-        options?: { digest?: string; expectedModelKey?: string | null; title?: string },
+        options?: {
+          digest?: string;
+          expectedModelKey?: string | null;
+          title?: string;
+          draft?: DraftAdmission;
+        },
       ) =>
         harness.commit(async (tx) => {
           const metadata = await tx.doc(CatalogDoc);
@@ -160,6 +167,13 @@ export async function openChats(
             if (modelKey(current) !== options.expectedModelKey)
               throw new ChatLifecycleError("Model changed. Refresh and try again.", 409);
           }
+          const prior = draft.requestId
+            ? await tx.submissionByRequest(conversation.id, draft.requestId)
+            : undefined;
+          const savedDraft =
+            options?.draft && !prior && draft.type === "input"
+              ? await tx.doc(DraftDoc, conversation.id)
+              : undefined;
           const record = draft.requestId
             ? await checkAdmissionRequest(
                 tx,
@@ -170,6 +184,18 @@ export async function openChats(
             : undefined;
           const submission = await conversation.submit(tx, draft);
           record?.();
+          if (
+            savedDraft &&
+            options?.draft &&
+            savedDraft.revision === options.draft.revision &&
+            savedDraft.revision < Number.MAX_SAFE_INTEGER &&
+            savedDraft.content.text === options.draft.text &&
+            JSON.stringify(savedDraft.content.images.map((image) => image.id)) ===
+              JSON.stringify(options.draft.images)
+          ) {
+            savedDraft.content = { text: "", images: [] };
+            savedDraft.revision++;
+          }
           const title =
             options?.title ??
             (draft.type === "input" && typeof draft.content === "string" ? draft.content : "");

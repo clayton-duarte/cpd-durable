@@ -7,6 +7,83 @@ import { openChat } from "../src/server/chat.ts";
 import { testModels } from "./models.ts";
 
 describe("conversation draft service", () => {
+  it("clears only the matching revision on first successful admission, never on retry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "draft-admit-"));
+    const provider = testModels();
+    const host = await openChat(dir, provider.models, dir);
+    try {
+      const app = createApp(host);
+      const base = `http://localhost:3000/api/chats/${host.conversation.id}`;
+      const request = (path: string, method: string, body?: unknown) =>
+        app.request(base + path, {
+          method,
+          ...(body === undefined
+            ? {}
+            : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }),
+        });
+      expect(
+        (
+          await request("/draft", "PUT", {
+            expectedRevision: 0,
+            content: { text: "  hello  ", images: [] },
+          })
+        ).status,
+      ).toBe(200);
+      const input = {
+        requestId: crypto.randomUUID(),
+        text: "hello",
+        draft: { revision: 1, text: "  hello  ", images: [] },
+      };
+      expect((await request("/input", "POST", input)).status).toBe(202);
+      expect(await (await request("/draft", "GET")).json()).toEqual({
+        revision: 2,
+        content: { text: "", images: [] },
+      });
+      expect(
+        (
+          await request("/draft", "PUT", {
+            expectedRevision: 2,
+            content: { text: "hello", images: [] },
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await request("/input", "POST", {
+            ...input,
+            draft: { revision: 3, text: "hello", images: [] },
+          })
+        ).status,
+      ).toBe(202);
+      expect(await (await request("/draft", "GET")).json()).toEqual({
+        revision: 3,
+        content: { text: "hello", images: [] },
+      });
+      const busy = {
+        requestId: crypto.randomUUID(),
+        text: "hello",
+        draft: { revision: 3, text: "hello", images: [] },
+      };
+      expect((await request("/input", "POST", busy)).status).toBe(409);
+      expect(
+        ((await (await request("/draft", "GET")).json()) as { revision: number }).revision,
+      ).toBe(3);
+      const followUp = {
+        requestId: crypto.randomUUID(),
+        text: "hello",
+        mode: "followUp",
+        draft: { revision: 1, text: "  hello  ", images: [] },
+      };
+      expect((await request("/input", "POST", followUp)).status).toBe(202);
+      expect(await (await request("/draft", "GET")).json()).toEqual({
+        revision: 3,
+        content: { text: "hello", images: [] },
+      });
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("accepts only pending images owned by the same chat", async () => {
     const dir = await mkdtemp(join(tmpdir(), "draft-images-"));
     const provider = testModels();

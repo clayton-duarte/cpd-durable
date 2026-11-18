@@ -6,6 +6,13 @@ import {
   ImageMimeSchema,
 } from "./attachments.ts";
 
+export const DraftAdmissionSchema = z.strictObject({
+  revision: z.number().int().nonnegative().safe(),
+  text: z.string().max(32_000),
+  images: z.array(AttachmentIdSchema).max(IMAGE_MAX_COUNT),
+});
+export type DraftAdmission = z.infer<typeof DraftAdmissionSchema>;
+
 export const DraftImageSchema = z.strictObject({
   id: AttachmentIdSchema,
   name: z.string().min(1).max(255),
