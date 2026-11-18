@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { rgPath } from "@vscode/ripgrep";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import {
   createRegistry,
@@ -16,11 +17,27 @@ import {
   type Result,
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import { openChat } from "../src/server/chat.ts";
 import { createSearchTools } from "../src/server/tools/search.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+
+// Real platform ripgrep is a declared test-only dependency, not a runtime
+// fallback or an assumption about the developer/CI machine's installed tools.
+beforeAll(() => {
+  vi.stubEnv("PATH", `${dirname(rgPath)}${delimiter}${process.env["PATH"] ?? ""}`);
+});
+afterAll(() => vi.unstubAllEnvs());
 
 describe("optional search tools through pi-durable", () => {
   let directory: string;
