@@ -75,6 +75,8 @@ The configuration path is relative to the server process directory; each require
 
 Startup connects explicitly configured processes once and fails if discovery fails; there is no automatic installation, reconnection, request deadline or hidden retry. Only MCP 2025-03-26 stdio tool discovery and calls are supported. Tool schemas using integers, unsupported constraints or structured output schemas are rejected rather than weakened; non-text results are omission receipts. HTTP, OAuth, resources, prompts, sampling, elicitation and MCP tasks are not supported. Changing configuration requires restarting the host. See [tool semantics](docs/chat-components.md#3-agent-activity-tools-and-tasks).
 
+In the composer, start a fresh message with `!` to run a shell command directly and include its command and bounded result in later model context. `!!` keeps the command and result in the visible transcript but excludes them from model context. An empty prefix is ordinary text; start with `\!` for a literal leading exclamation mark. Commands cannot include image attachments. They use the conversation's configured host environment and normal OS authority, with no added sandbox, approval or deadline; there is no interactive PTY. Stop requests cancellation, not reversal of completed effects. Output is a bounded observed tail; a stopped or interrupted command may have produced output that was not committed. Interrupted commands are not automatically rerun.
+
 ### Project guidance and skills
 
 For each provider request the server discovers `AGENTS.md` along the conversation's actual cwd ancestry, from filesystem root toward the nearest directory. The cwd defaults as described above; symlinks are resolved to the actual directory. It also looks one level deep under `.pi/skills/<directory>/SKILL.md` at each ancestor, nearest first. The first valid skill with a given name wins. The model receives file provenance and bounded skill name/description metadata, and can call `load_skill` to read a discovered skill's current file on demand. A skill body is not automatically included or executed.
@@ -101,7 +103,7 @@ The server opens one Harness and resumes pending SDK work. A disconnect detaches
 
 Requests admitted before the host recorded request fingerprints cannot be verified against a retry payload; retrying one of those legacy request IDs returns 409, including an identical payload. Inspect saved state rather than assuming it was not admitted.
 
-Stop targets current work rather than a request ID. If Stop cannot be confirmed, inspect current state before explicitly stopping again; the UI does not offer it as a supposedly safe original-action retry.
+Model Stop targets current conversation work rather than a request ID. Direct-shell Stop targets its identified SDK task. If Stop cannot be confirmed, inspect current state before explicitly stopping again; the UI does not offer it as a supposedly safe original-action retry.
 
 Run only one application host against a data directory. The fixed loopback listener is acquired before writable storage opens, so a second application host fails without touching it. To restart, stop the existing host and start again with the same data directory. Do not edit or delete SQLite/sidecar files to resolve an error. Session-open failures leave existing data in place for inspection.
 

@@ -7,6 +7,7 @@ import {
   sanitizeCodeModeOutput,
 } from "./nested-tool-presentation.ts";
 import { SavedImageReferenceSchema, ImageMimeSchema } from "../shared/attachments.ts";
+import { DirectShellResultSchema } from "../shared/direct-shell.ts";
 
 // Allowlist presentation fields; unknown payloads and provider diagnostics never cross the wire.
 const RecordIdSchema = z.number().int().positive().safe();
@@ -188,6 +189,47 @@ export function present(
       pending.clear();
       pendingTasks.clear();
       gapIndex++;
+    }
+    if (entry.kind === "cpd.direct-shell") {
+      const data = z
+        .strictObject({
+          command: z.string().max(32_000),
+          includeInContext: z.boolean(),
+          result: DirectShellResultSchema,
+        })
+        .safeParse(entry.data);
+      if (data.success) {
+        const { command, includeInContext, result } = data.data;
+        const id = `${entry.id}:shell`;
+        messages.push({
+          id,
+          role: "assistant",
+          text: "",
+          interrupted: false,
+          outcome: "complete",
+          source: {
+            entryId: entry.id,
+            ...(entry.byTaskId === undefined ? {} : { taskId: entry.byTaskId }),
+          },
+          parts: [
+            {
+              id: `${id}:0`,
+              type: "tool-call",
+              callId: id,
+              name: includeInContext ? "Direct shell" : "Direct shell (not in model context)",
+              arguments: { command },
+              state:
+                result.status === "complete"
+                  ? "complete"
+                  : result.status === "cancelled"
+                    ? "cancelled"
+                    : "error",
+              output: `${result.truncated ? "[Earlier output truncated]\n" : ""}${result.output}${result.outputMayBeIncomplete ? "\n[Output may be incomplete; effects may be uncertain.]" : ""}${result.exitCode === undefined ? "" : `\nExit code: ${result.exitCode}`}`,
+            },
+          ],
+        });
+      }
+      continue;
     }
     for (const [index, raw] of (entry.model ?? []).entries()) {
       const resultMessage =
