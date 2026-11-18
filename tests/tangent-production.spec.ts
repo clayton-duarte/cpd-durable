@@ -51,6 +51,8 @@ test("production route keeps native chats and drafts through tangent navigation"
   const requests: string[] = [];
   let upload = 0;
   let stopRequested = false;
+  let policyRevision = 1;
+  let workerSelection: { provider: string; modelId: string; thinkingLevel: string } | null = null;
   const inputs: unknown[] = [];
   let releaseInput!: () => void;
   const inputGate = new Promise<void>((resolve) => {
@@ -90,16 +92,34 @@ test("production route keeps native chats and drafts through tangent navigation"
     const request = route.request();
     const path = new URL(request.url()).pathname;
     requests.push(`${request.method()} ${path}`);
-    if (path === "/api/model-policy")
+    if (path === "/api/model-policy" && request.method() === "POST") {
+      const body = request.postDataJSON() as { assignments: { worker: typeof workerSelection } };
+      workerSelection = body.assignments.worker;
+      policyRevision++;
       return route.fulfill({
         json: {
-          revision: 1,
+          revision: policyRevision,
           assignments: {
             main: null,
             tangent: { provider: "test", modelId: "mid", thinkingLevel: "off" },
-            worker: null,
+            worker: workerSelection,
           },
-          choices: [],
+        },
+      });
+    }
+    if (path === "/api/model-policy")
+      return route.fulfill({
+        json: {
+          revision: policyRevision,
+          assignments: {
+            main: null,
+            tangent: { provider: "test", modelId: "mid", thinkingLevel: "off" },
+            worker: workerSelection,
+          },
+          choices: [
+            { provider: "test", modelId: "mid", name: "Mid", thinkingLevels: ["off"] },
+            { provider: "test", modelId: "cheap", name: "Cheap", thinkingLevels: ["off"] },
+          ],
         },
       });
     if (path === "/api/chats/1/input" && request.method() === "POST") {
@@ -296,6 +316,17 @@ test("production route keeps native chats and drafts through tangent navigation"
   await input(unstartedPane).fill("keep this draft");
   await expect(unstartedPane.getByRole("button", { name: "Send message" })).toBeDisabled();
   expect(starts).toEqual([]);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("combobox", { name: "Worker model" }).click();
+  await page
+    .getByRole("option", { name: /test\/cheap/ })
+    .last()
+    .click();
+  await page.getByRole("button", { name: "Confirm thinking off" }).click();
+  await page.getByRole("button", { name: "Save model tiers" }).click();
+  await expect.poll(() => policyRevision).toBe(2);
+  await page.keyboard.press("Escape");
+  await expect(unstartedPane.getByRole("heading", { name: "Idle child · Model 3" })).toBeVisible();
   await unstartedPane.getByRole("button", { name: "Start tangent" }).click();
   await expect(unstartedPane.getByText(/Start could not be confirmed/)).toBeVisible();
   await unstartedPane.getByRole("button", { name: "Start tangent" }).click();
