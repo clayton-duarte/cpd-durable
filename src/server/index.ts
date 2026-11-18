@@ -7,10 +7,12 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { z } from "zod";
 import { createApp } from "./app.ts";
 import { openChat } from "./chat.ts";
+import { workingDirectory } from "./execution.ts";
 
 const ConfigSchema = z.object({
   OPENCODE_API_KEY: z.string().trim().min(1),
   CPD_DATA_DIR: z.string().min(1).default("./data"),
+  CPD_CWD: z.string().min(1).default("~"),
 });
 const config = ConfigSchema.safeParse(process.env);
 if (!config.success) {
@@ -51,7 +53,11 @@ if (!config.success) {
   try {
     await once(server, "listening");
     if (!stopping) {
-      chat = await openChat(resolve(config.data.CPD_DATA_DIR), models);
+      chat = await openChat(
+        resolve(config.data.CPD_DATA_DIR),
+        models,
+        workingDirectory(config.data.CPD_CWD),
+      );
       if (stopping) {
         await chat.close();
       } else {

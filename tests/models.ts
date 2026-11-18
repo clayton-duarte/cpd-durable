@@ -2,6 +2,7 @@ import type {
   AssistantMessage,
   SimpleStreamOptions,
   TranscriptContext,
+  ToolCall,
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
@@ -12,6 +13,7 @@ type TestCall = {
   context: TranscriptContext;
   partial(text: string): void;
   finish(text: string): void;
+  tools(calls: Omit<ToolCall, "type">[]): void;
   fail(): void;
 };
 
@@ -58,6 +60,15 @@ export function testModels(onCall?: (call: TestCall) => void) {
         options?.signal?.removeEventListener("abort", abort);
         message = { ...message, content: [{ type: "text", text }], stopReason: "stop" };
         events.push({ type: "done", reason: "stop", message });
+      },
+      tools(calls) {
+        options?.signal?.removeEventListener("abort", abort);
+        message = {
+          ...message,
+          content: calls.map((call) => ({ type: "toolCall", ...call })),
+          stopReason: "toolUse",
+        };
+        events.push({ type: "done", reason: "toolUse", message });
       },
       fail() {
         options?.signal?.removeEventListener("abort", abort);

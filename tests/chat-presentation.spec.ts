@@ -16,9 +16,7 @@ async function connect(page: Page, state: ChatState = { ...empty, controls }) {
         super();
         window.addEventListener("synthetic-chat-state", this.update);
         window.addEventListener("synthetic-chat-disconnect", this.disconnect);
-        queueMicrotask(() =>
-          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(initial) })),
-        );
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent("state", { data: initial })));
       }
       close() {
         window.removeEventListener("synthetic-chat-state", this.update);
@@ -26,12 +24,15 @@ async function connect(page: Page, state: ChatState = { ...empty, controls }) {
       }
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource });
-  }, state);
+  }, JSON.stringify(state));
 }
 async function update(page: Page, state: ChatState) {
   await page.evaluate(
-    (detail) => window.dispatchEvent(new CustomEvent("synthetic-chat-state", { detail })),
-    state,
+    (detail) =>
+      window.dispatchEvent(
+        new CustomEvent("synthetic-chat-state", { detail: JSON.parse(detail) as unknown }),
+      ),
+    JSON.stringify(state),
   );
 }
 async function actions(page: Page, scope?: Locator) {
@@ -773,6 +774,82 @@ test("invalid identity frames preserve history and draft, then recover without s
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
   await expect(draft).toHaveValue("Retained draft");
 });
+
+for (const finalState of ["complete", "error", "cancelled"] as const) {
+  test(`native tool output stays disclosed through ${finalState} without approval or retry actions`, async ({
+    page,
+  }) => {
+    const state: ChatState = {
+      ...empty,
+      controls,
+      conversationId: 1,
+      busy: true,
+      live: null,
+      window: { entryIds: [1] },
+      messages: [
+        {
+          id: "1:0",
+          role: "assistant",
+          text: "",
+          interrupted: false,
+          outcome: "complete",
+          source: { entryId: 1, taskId: 9 },
+          parts: [
+            {
+              id: "1:0:0",
+              type: "tool-call",
+              callId: "shell",
+              name: "bash",
+              arguments: { command: "printf '<script>literal output</script>'" },
+              state: "running",
+              output: "first chunk",
+            },
+          ],
+        },
+      ],
+    };
+    await connect(page, state);
+    await page.goto("/");
+    await page.getByRole("button", { name: "1 tool call", exact: true }).click();
+    const tool = page.locator('[data-slot="tool-fallback-root"]');
+    await expect(tool).toHaveCount(1);
+    await tool.getByRole("button", { name: /Running tool: bash/ }).click();
+    await expect(tool).toContainText("first chunk");
+    await expect(tool).toContainText("printf '<script>literal output</script>'");
+    await update(page, {
+      ...state,
+      busy: false,
+      messages: [
+        {
+          ...state.messages[0]!,
+          parts: [
+            {
+              id: "1:0:0",
+              type: "tool-call",
+              callId: "shell",
+              name: "bash",
+              arguments: { command: "printf '<script>literal output</script>'" },
+              state: finalState,
+              output: "<script>literal output</script>",
+              resultEntryId: 2,
+            },
+          ],
+        },
+      ],
+    });
+    await expect(tool).toContainText(
+      finalState === "complete"
+        ? "Used tool"
+        : finalState === "cancelled"
+          ? "Cancelled tool"
+          : "Failed tool",
+    );
+    await expect(tool.getByText("<script>literal output</script>", { exact: true })).toBeVisible();
+    await expect(tool.locator("script")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^(Allow|Deny|Retry|Run now)$/ })).toHaveCount(0);
+    await expect(tool.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+  });
+}
 
 test("two official Threads keep their native drafts and action panels independent", async ({
   page,

@@ -90,6 +90,36 @@ const settled = (initial: ChatState, text = "Final"): ChatState => ({
 });
 
 describe("source-proven live-to-committed identity", () => {
+  it("maps tool invocations to native assistant-ui parts without inventing browser actions", () => {
+    const initial = settled(streamed());
+    initial.messages[1]!.parts = [
+      {
+        id: "2:0:0",
+        type: "tool-call",
+        callId: "call",
+        name: "bash",
+        arguments: { command: "pwd" },
+        state: "running",
+        output: "progress",
+      },
+    ];
+    const projection = projectAssistantMessages(initial);
+    expect(projection.streaming).toBe(true);
+    expect(projection.messages.at(-1)?.status).toEqual({ type: "running" });
+    expect(projection.messages.at(-1)?.content).toEqual([
+      {
+        type: "tool-call",
+        toolCallId: "2:0:0",
+        toolName: "bash",
+        args: { command: "pwd" },
+        argsText: JSON.stringify({ command: "pwd" }, null, 2),
+        result: "progress",
+        isPreliminary: true,
+        isError: false,
+      },
+    ]);
+  });
+
   it("keeps the row key across updates, corrected final content and reconnect snapshots", () => {
     const initial = streamed();
     const first = projectAssistantMessages(initial);

@@ -1,4 +1,4 @@
-# CPD Durable
+# cpd
 
 CPD exists to make parallel work across several large projects understandable and manageable. It should preserve intent and continuity, make ownership and progress visible, and focus human attention where judgment is needed—without requiring the human to supervise every execution step.
 
@@ -38,7 +38,9 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
-The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). The SDK sends its stable per-conversation session header and the application identifies itself as CPD Durable. Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through the existing Hono/SSE API. There are no tools, attachments, model selector, new-conversation control, Assistant Cloud integration or LAN access. User text stays literal; assistant Markdown supports lists, tables and copyable code, without raw HTML, executable code or remote Markdown-image loads. Native actions copy/export a response. The existing stock dark theme remains the default, independent of system preference.
+The model currently remains OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through Hono/SSE. Native host tools now include **read, write, edit, bash and powershell**. Calls, streaming output, results and failures appear in supplied tool disclosures. PowerShell needs `pwsh` or `powershell` installed. Attachments, model selection, new conversations, Assistant Cloud and LAN access remain unimplemented. User text stays literal; assistant Markdown supports lists, tables and copyable code, without executing rendered code/raw HTML or fetching remote Markdown images. The existing dark theme remains the default.
+
+**Execution defaults to your home directory (`~/`)**, independently of the repository and session-data location. `CPD_CWD` overrides it and expands `~`/`~/…`. This is not a sandbox: tools can access absolute paths, parent directories, network programs and the server account's inherited environment with normal OS permissions. There are no cpd approval prompts, path/command restrictions, forced shell timeouts or tool-round caps. Commands can modify/delete files and expose account secrets in tool output; protect the local host and conversation data accordingly. Shell `cd` affects that invocation, not the default directory of later calls. See [pi TUI parity and remaining work](docs/pi-durable-features.md#pi-tui-parity); native tools alone are not full TUI parity.
 
 The official assistant-ui Thread supplies the runtime composer, messages and actions. Native **Send** submits while idle. **Type `/` in the composer** for available commands: `/queue` sends the current draft after the response, `/steer` applies it at an eligible boundary, and `/continue` requests an answer from unresolved active context without sending the draft. For queue/steer, write the draft first, append the command and select it from the list; this is an action picker, not a `/command arguments` parser. Commands disappear when unavailable; reserved command text/prefixes are never silently sent as ordinary input. Queued inputs are visible below the composer with individual withdrawal buttons. Native **Stop** aborts foreground work and withdraws queued inputs.
 
@@ -62,7 +64,7 @@ Provider credentials are server-only. Requests go to OpenCode Go and the selecte
 
 The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. Do not expose it through a LAN bind, tunnel, reverse proxy or public host without a separate access-control decision.
 
-Transcript projection preserves ordered text and safe omission receipts without exposing reasoning, tool or image payloads. Unambiguous live-to-entry handovers retain mounted row identity while keeping canonical durable IDs separate; cancellation, error and output limits differ. See [projection semantics and limits](docs/chat-components.md#transcript-identity-and-projection-batch-2).
+Transcript projection preserves ordered text, tool calls/results and omission receipts for unsupported content. Tool arguments and output are private conversation content, not sanitized diagnostics; raw provider diagnostics and arbitrary SDK documents stay server-side. Unambiguous live-to-entry handovers retain mounted row identity while keeping canonical durable IDs separate; cancellation, error and output limits differ. See [projection semantics and limits](docs/chat-components.md#transcript-identity-and-projection-batch-2).
 
 ## Checks
 
