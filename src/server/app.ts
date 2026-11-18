@@ -18,13 +18,15 @@ import {
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
 import type { openChat } from "./chat.ts";
+import { ChatIdSchema, CreateChatSchema } from "../shared/chats.ts";
+import type { ChatScope } from "./chats.ts";
 
-export function createApp({
-  conversation,
-  withdraw,
-}: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw">) {
+export function createApp(
+  chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
+    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats">>,
+) {
   const app = new Hono();
-  const history = createHistory(conversation);
+  const histories = new Map<string, ReturnType<typeof createHistory>>();
   const allowedHosts = new Set([
     "127.0.0.1:3000",
     "localhost:3000",
@@ -61,23 +63,61 @@ export function createApp({
     }),
   );
 
-  app.post("/api/input", async (c) => {
+  app.get("/api/chats", async (c) => {
+    if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
+    return c.json(await chat.chats.list());
+  });
+  app.post("/api/chats", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = CreateChatSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid chat request." }, 400);
+    if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
+    return c.json(await chat.chats.create(result.data.requestId), 201);
+  });
+  const routes = new Hono<{
+    Variables: { scope: ChatScope; history: ReturnType<typeof createHistory> };
+  }>();
+  routes.use("*", async (c, next) => {
+    const id = c.req.param("chatId");
+    if (id !== undefined && !ChatIdSchema.safeParse(id).success)
+      return c.json({ error: "Chat not found." }, 404);
+    const scope =
+      id === undefined
+        ? {
+            conversation: chat.conversation,
+            withdraw: chat.withdraw,
+            admit: (draft: Parameters<ChatScope["admit"]>[0]) =>
+              chat.conversation.submit(draft, BACKGROUND_CONTEXT),
+          }
+        : await chat.chats?.resolve(id);
+    if (!scope) return c.json({ error: "Chat not found." }, 404);
+    const key = String(scope.conversation.id);
+    let history = histories.get(key);
+    if (!history) {
+      history = createHistory(scope.conversation);
+      histories.set(key, history);
+    }
+    c.set("scope", scope);
+    c.set("history", history);
+    await next();
+    return;
+  });
+
+  routes.post("/input", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json")) {
       return c.json({ error: "Expected application/json." }, 415);
     }
     const result = InputSchema.safeParse(await c.req.json<unknown>().catch(() => null));
     if (!result.success) return c.json({ error: "Invalid message." }, 400);
     try {
-      const submission = await conversation.submit(
-        {
-          type: "input",
-          content: result.data.text,
-          requestId: result.data.requestId,
-          whenBusy: result.data.mode ?? "reject",
-          ...(result.data.mode === "steer" ? { whenIdle: "reject" as const } : {}),
-        },
-        BACKGROUND_CONTEXT,
-      );
+      const submission = await c.get("scope").admit({
+        type: "input",
+        content: result.data.text,
+        requestId: result.data.requestId,
+        whenBusy: result.data.mode ?? "reject",
+        ...(result.data.mode === "steer" ? { whenIdle: "reject" as const } : {}),
+      });
       return c.json({ id: String(submission.id) }, 202);
     } catch (error) {
       if (error instanceof ConversationBusy) {
@@ -93,7 +133,7 @@ export function createApp({
     }
   });
 
-  app.post("/api/control", async (c) => {
+  routes.post("/control", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))
       return c.json({ error: "Expected application/json." }, 415);
     const result = ControlSchema.safeParse(await c.req.json<unknown>().catch(() => null));
@@ -101,7 +141,7 @@ export function createApp({
     const control = result.data;
     try {
       // Same public reset entry as Conversation.reset(), admitted with a request ID for safe retry.
-      const submission = await conversation.submit(
+      const submission = await c.get("scope").admit(
         control.type === "continue"
           ? control
           : {
@@ -119,7 +159,6 @@ export function createApp({
                   : {}),
               },
             },
-        BACKGROUND_CONTEXT,
       );
       return c.json({ id: String(submission.id) }, 202);
     } catch (error) {
@@ -129,32 +168,32 @@ export function createApp({
     }
   });
 
-  app.post("/api/withdraw", async (c) => {
+  routes.post("/withdraw", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))
       return c.json({ error: "Expected application/json." }, 415);
     const result = WithdrawSchema.safeParse(await c.req.json<unknown>().catch(() => null));
     if (!result.success) return c.json({ error: "Invalid submission." }, 400);
-    const status = await withdraw(Number(result.data.id) as SubmissionId);
+    const status = await c.get("scope").withdraw(Number(result.data.id) as SubmissionId);
     return c.json({ status });
   });
 
-  app.post("/api/stop", async (c) => {
-    await conversation.abort(BACKGROUND_CONTEXT);
+  routes.post("/stop", async (c) => {
+    await c.get("scope").conversation.abort(BACKGROUND_CONTEXT);
     return c.body(null, 204);
   });
 
-  app.post("/api/history", async (c) => {
+  routes.post("/history", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))
       return c.json({ error: "Expected application/json." }, 415);
     const result = HistoryLoadSchema.safeParse(await c.req.json<unknown>().catch(() => null));
     if (!result.success) return c.json({ error: "Invalid history request." }, 400);
-    const loading = history.load(result.data.view, result.data.gap);
+    const loading = c.get("history").load(result.data.view, result.data.gap);
     if (!loading)
       return c.json({ error: "History view expired. Reconnect before loading history." }, 410);
     return c.json(await loading);
   });
 
-  app.get("/api/events", (c) => {
+  routes.get("/events", (c) => {
     const query = HistoryQuerySchema.safeParse({ view: randomUUID(), ...c.req.query() });
     if (!query.success) return c.json({ error: "Invalid history view." }, 400);
     return streamSSE(
@@ -167,11 +206,13 @@ export function createApp({
             void unsubscribe?.().catch(() => {});
           });
           if (stream.aborted) return;
-          const subscription = await history.subscribe(
-            query.data.view,
-            (state) => stream.writeSSE({ event: "state", data: JSON.stringify(state) }),
-            query.data.oldest,
-          );
+          const subscription = await c
+            .get("history")
+            .subscribe(
+              query.data.view,
+              (state) => stream.writeSSE({ event: "state", data: JSON.stringify(state) }),
+              query.data.oldest,
+            );
           unsubscribe = subscription.unsubscribe;
           if (stream.aborted) return;
           heartbeat = setInterval(() => {
@@ -200,6 +241,8 @@ export function createApp({
     );
   });
 
+  app.route("/api/chats/:chatId", routes);
+  app.route("/api", routes);
   app.onError((_error, c) => c.json({ error: "Conversation unavailable. Try reconnecting." }, 503));
   app.notFound((c) => c.json({ error: "Not found." }, 404));
   return app;

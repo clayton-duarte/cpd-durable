@@ -17,7 +17,8 @@ type Request =
   | { path: "/api/withdraw"; body: { id: string } }
   | { path: "/api/stop"; body?: never };
 
-export function useChat() {
+export function useChat(chatId?: string, observing = true) {
+  const base = chatId === undefined ? "/api" : `/api/chats/${chatId}`;
   const [state, setState] = useState<ChatState | null>(null);
   const [connected, setConnected] = useState(false);
   const [pending, setPending] = useState(false);
@@ -37,6 +38,8 @@ export function useChat() {
   const [historyGap, setHistoryGap] = useState<HistoryGap>();
 
   function accept(next: ChatState) {
+    if (chatId !== undefined && String(next.conversationId) !== chatId)
+      throw new Error("Mismatched conversation");
     const previous = accepted.current?.history;
     if (next.history) {
       if (next.history.view !== view) throw new Error("Mismatched history view");
@@ -51,9 +54,13 @@ export function useChat() {
   }
 
   useEffect(() => {
+    if (!observing) {
+      setConnected(false);
+      return;
+    }
     let active = true;
     const source = new EventSource(
-      `/api/events?view=${view}${oldest === undefined ? "" : `&oldest=${oldest}`}`,
+      `${base}/events?view=${view}${oldest === undefined ? "" : `&oldest=${oldest}`}`,
     );
     source.addEventListener("state", (event: MessageEvent<string>) => {
       if (!active) return;
@@ -79,7 +86,7 @@ export function useChat() {
       active = false;
       source.close();
     };
-  }, [view, oldest]);
+  }, [base, observing, view, oldest]);
 
   async function loadHistory(gap?: HistoryGap) {
     if (historyInFlight.current || !connected || !accepted.current?.history) return;
@@ -89,7 +96,7 @@ export function useChat() {
     historyRetry.current = gap;
     setHistoryError(null);
     try {
-      const response = await fetch("/api/history", {
+      const response = await fetch(`${base}/history`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ view, ...(gap ? { gap } : {}) }),
@@ -118,7 +125,7 @@ export function useChat() {
     setNotice(null);
     setRetry(request);
     try {
-      const response = await fetch(request.path, {
+      const response = await fetch(`${base}${request.path.slice(4)}`, {
         method: "POST",
         ...(request.body
           ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(request.body) }

@@ -2,11 +2,12 @@ import { Chat } from "./chat.tsx";
 import { useChat } from "./use-chat.ts";
 import { MODEL_ID } from "../shared/chat.ts";
 
-export function ChatPage() {
-  const chat = useChat();
+export function ChatPage({ chatId, active = true }: { chatId?: string; active?: boolean }) {
+  const chat = useChat(chatId, active);
   return (
-    <main className="h-dvh">
+    <main className="h-full min-h-0">
       <Chat
+        active={active}
         title="CPD Durable"
         description={`OpenCode Go · ${MODEL_ID}`}
         state={chat.state}

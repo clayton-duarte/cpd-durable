@@ -6,7 +6,7 @@ const port = Number(new URL(baseURL).port);
 // Presentation tests intercept all API traffic; safe against the live development client.
 export default defineConfig({
   testDir: "./tests",
-  testMatch: ["chat-presentation.spec.ts", "theme.spec.ts"],
+  testMatch: ["chat-presentation.spec.ts", "chat-sidebar.spec.ts", "theme.spec.ts"],
   workers: 1,
   use: { baseURL },
   webServer: {

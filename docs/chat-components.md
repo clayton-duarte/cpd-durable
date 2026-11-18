@@ -9,7 +9,7 @@ This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual e
 - One assistant-ui external-store runtime per mounted `Chat`, supplied from validated Hono/SSE snapshots. pi-durable remains authoritative for transcript, execution, queues and persistence.
 - The official registry `Thread` owns layout, viewport, messages, actions and runtime composer. `Chat` binds the external-store runtime. A narrow `ComposerFooter` slot and native TriggerPopoverRoot integrate supplied slash, queue, confirmation and state elements outside the input shell, not another nested composer/menu.
 - Activities belong in ordered reasoning/tool/data parts and, where justified, native reasoning/tool groups or RunActivity. Do not preserve the old Message/Trace/Marker wrappers as a second abstraction layer.
-- The application owns routes, conversation selection, dimensions and provider/transport integration. Change the Chat's React key when switching conversations.
+- The application owns routes, conversation selection, dimensions and provider/transport integration. Each visited chat has an immutable React key and its own retained runtime; changing selection does not repurpose another chat's runtime.
 - Each instance keeps its own draft, scroll and disclosure state. Read-only views disable native input/actions and omit commands. Nonvisual host context lives in `chat-host.ts`, avoiding a circular presentation import.
 - No Assistant Cloud, local transcript database, localStorage draft persistence, Vercel AI SDK runtime or client-side model/tool execution is enabled.
 
@@ -54,7 +54,7 @@ Thread's supplied ghost LoadEarlier control binds to real `hasEarlier`/`onLoadEa
 
 The read-only `/api/history` operation accepts a validated view ID and optional gap bounds; it never submits a run. History loading/errors/retry are independent of mutation admission, drafts and uncertain-operation retry IDs. Revisions within a view epoch reject stale page responses; retired epochs and closed observers cannot overwrite a replacement view. There is no browser SDK mount, raw entry/document forwarding, history database or localStorage layer.
 
-Disconnect stops the observer, not work. The cached SDK transcript resumes on reconnect and explicitly marks missing ranges. A detached view expires after 30 minutes. After host restart/cache loss, the browser's oldest-entry bound reconstructs one oldest page plus the latest window, with SDK gap markers for anything still missing. A full page refresh creates a new recent view; stored history remains pageable. A view UUID selects transient read state, not an authentication credential. The application is still one localhost conversation.
+Disconnect stops the observer, not work. The cached SDK transcript resumes on reconnect and explicitly marks missing ranges. A detached view expires after 30 minutes. After host restart/cache loss, the browser's oldest-entry bound reconstructs one oldest page plus the latest window, with SDK gap markers for anything still missing. A full page refresh creates a new recent view; stored history remains pageable. A view UUID selects transient read state, not an authentication credential. History managers are scoped by SDK conversation.
 
 An empty terminal SDK page ends paging without dropping retained rows. Failed reads retain visible history and expose a read retry; no provider request or delivery retry is implied. Loaded-history navigation/search and whole-session search remain later work.
 
@@ -105,11 +105,17 @@ Diagnostics, detailed task recovery, compaction failure detail and custom docume
 
 ApprovalCard, PermissionGrant, ElicitationForm, OptionList/QuestionFlow and ReviewableDiff require durable host protocols, actual evidence and authorization. ElicitationForm is no longer used for reset: a human context-reset confirmation is not model/MCP elicitation. General elicitation and approval protocols remain unavailable.
 
-ThreadList, sidebar/modal shells, forks, sharing and new-thread controls require application-owned navigation and APIs. Keep the contained thread reusable now rather than adding fake multi-conversation machinery.
+### Chat navigation and creation
+
+TanStack Router routes `/` to `/chats`, then selects the original chat at `/chats/<id>`. Direct links, reload and back/forward select the same durable conversation. Unknown chats show supplied ErrorState rather than falling back silently. ThreadListSidebar and ThreadList come from the official assistant-ui registry, including their shadcn Sidebar/Sheet dependencies. Header/footer branding is application-specific; unsupported rename/archive/delete menus are capability-gated. Search filters catalog titles only; no fabricated date groups or whole-transcript search. Running icons use polled SDK LiveDoc state, not a second background execution runtime. AssistantSidebar is an app/copilot split and is intentionally not composed as a second Thread.
+
+`src/server/chats.ts` stores only catalog metadata in a session-scoped SDK document: original-chat adoption, titles and creation request IDs. Creation, ownerless SDK conversation configuration and catalog registration share one SDK transaction. Retries use the same request ID until acknowledged; first admitted input supplies the title atomically with submission. The catalog is not a transcript database. Forks, rename/archive/delete, projects and orchestration remain unimplemented.
+
+`GET/POST /api/chats` list/create chats. `/api/chats/:chatId/{input,control,withdraw,stop,history,events}` scope every operation and history cache to that conversation; legacy `/api/*` conversation endpoints still target the original. IDs are validated and resolved only from the catalog. The navigation-only assistant-ui runtime binds real create/switch callbacks; each visited Chat has a separate immutable native composer/runtime and transport. Hidden chats detach SSE, not SDK execution. Re-selection reconnects the retained history view; drafts, pending admissions and original retry identities stay with their chat until refresh. Outgoing reset dialogs close on route changes. Visited chats remain mounted for the workspace lifetime, so memory grows with visited/loaded history; no eviction or browser draft persistence is claimed.
 
 ## Current embedding contract
 
-`src/client/chat.tsx` exports `Chat` and `ChatProps`. Supply title, optional description, validated presentation state (`null` during initial load), connection and pending/error/notice state. The parent supplies a bounded height. `src/client/chat-page.tsx` owns application integration; `src/client/use-chat.ts` owns the single-conversation API connection. No backend/data migration is needed for the UI change.
+`src/client/chat.tsx` exports `Chat` and `ChatProps`. Supply title, optional description, validated presentation state (`null` during initial load), connection and pending/error/notice state. The parent supplies a bounded height. `src/client/chat-page.tsx` owns per-chat integration; `src/client/use-chat.ts` owns the immutable conversation-scoped API connection. Optional `active` closes transient reset UI when the containing workspace hides the chat.
 
 Omit `onSend` for read-only mode. Otherwise it receives text and optional send mode, returning true only for confirmed admission. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
 

@@ -2,6 +2,7 @@ import { createContext, useContext } from "react";
 import type { ChatState, SendMode, HistoryGap } from "../shared/chat.ts";
 
 export interface ChatProps {
+  active?: boolean;
   title: string;
   description?: string;
   state: ChatState | null;

@@ -8,7 +8,8 @@ async function connect(page: Page, state: ChatState = { ...empty, controls }) {
     class TestEventSource extends EventTarget {
       view: string;
       frame = (raw: string) => {
-        const state = JSON.parse(raw) as { history?: { view: string } };
+        const state = JSON.parse(raw) as { history?: { view: string }; conversationId?: number };
+        state.conversationId ??= 1;
         if (state.history) state.history.view = this.view;
         return JSON.stringify(state);
       };
@@ -97,6 +98,11 @@ function historyState(
 test.beforeEach(async ({ page }) => {
   // Never let synthetic tests reach the user's live conversation.
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats", (route) =>
+    route.fulfill({
+      json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
+    }),
+  );
 });
 
 test("native earlier loading prepends history while preserving draft, row identity and scroll anchor", async ({
@@ -104,7 +110,7 @@ test("native earlier loading prepends history while preserving draft, row identi
 }) => {
   await connect(page, historyState(61, 90, 1));
   const requests: unknown[] = [];
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     const request = HistoryLoadSchema.parse(route.request().postDataJSON());
     requests.push(request);
     const next = historyState(31, 90, 2);
@@ -134,7 +140,7 @@ test("a stale history response cannot roll back a newer loaded/live snapshot", a
     release = resolve;
   });
   let started = false;
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     const request = HistoryLoadSchema.parse(route.request().postDataJSON());
     started = true;
     await blocked;
@@ -160,7 +166,7 @@ test("mobile keyboard loading reaches the first page without losing focus or the
 }) => {
   await page.setViewportSize({ width: 375, height: 667 });
   await connect(page, historyState(61, 90, 1));
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     const request = HistoryLoadSchema.parse(route.request().postDataJSON());
     const next = historyState(1, 90, 2, false);
     next.history!.view = request.view;
@@ -183,11 +189,11 @@ test("history errors retry independently of uncertain message delivery", async (
   await connect(page, historyState(61, 90, 1));
   let inputRequests = 0;
   let historyRequests = 0;
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     inputRequests++;
     await route.abort();
   });
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     historyRequests++;
     if (historyRequests === 1) {
       await route.abort();
@@ -228,7 +234,7 @@ test("explicit gap recovery is ordered and never exposes message actions for a g
   initial.messages.push(...historyState(100, 110, 1).messages);
   await connect(page, initial);
   const requests: unknown[] = [];
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     const request = HistoryLoadSchema.parse(route.request().postDataJSON());
     requests.push(request);
     const next = historyState(1, 110, 2, false);
@@ -255,7 +261,7 @@ test("a delayed response from a retired history epoch cannot replace the restart
     release = resolve;
   });
   let started = false;
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     const request = HistoryLoadSchema.parse(route.request().postDataJSON());
     started = true;
     await blocked;
@@ -285,7 +291,7 @@ test("failed gap reads retry their original bounds without adding a second recov
   initial.messages.push(...historyState(100, 110, 1).messages);
   await connect(page, initial);
   const requests: unknown[] = [];
-  await page.route("**/api/history", async (route) => {
+  await page.route("**/api/chats/1/history", async (route) => {
     const request = HistoryLoadSchema.parse(route.request().postDataJSON());
     requests.push(request);
     if (requests.length === 1) {
@@ -336,7 +342,7 @@ test("keyboard slash selection strips command text and steers only the actual dr
 }) => {
   await connect(page, { ...empty, busy: true, controls });
   const requests: unknown[] = [];
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     requests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { id: "keyboard-steer" } });
   });
@@ -358,7 +364,7 @@ test("keyboard slash selection strips command text and steers only the actual dr
 test("stale or escaped reserved commands never become ordinary user messages", async ({ page }) => {
   await connect(page, { ...empty, busy: true, controls });
   const requests: unknown[] = [];
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     requests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { id: "must-not-send" } });
   });
@@ -383,11 +389,11 @@ test("reset keyboard focus, Escape and field Enter preserve the unsent draft", a
   await connect(page);
   const requests: string[] = [];
   const controlsSent: unknown[] = [];
-  await page.route("**/api/control", async (route) => {
+  await page.route("**/api/chats/1/control", async (route) => {
     controlsSent.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { id: "keyboard-reset" } });
   });
-  await page.route("**/api/input", (route) => {
+  await page.route("**/api/chats/1/input", (route) => {
     requests.push(route.request().url());
     return route.abort();
   });
@@ -428,7 +434,7 @@ test("reset keyboard focus, Escape and field Enter preserve the unsent draft", a
 test("IME Enter does not submit and Shift Enter preserves multiline input", async ({ page }) => {
   await connect(page);
   const requests: unknown[] = [];
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     requests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { id: "ime-input" } });
   });
@@ -482,11 +488,11 @@ test("official Thread distinguishes history loading from its welcome", async ({ 
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
+  await page.route(/\/api\/chats\/1\/events(?:\?.*)?$/, async (route) => {
     await gate;
     await route.fulfill({
       contentType: "text/event-stream",
-      body: `event: state\ndata: ${JSON.stringify(empty)}\n\n`,
+      body: `event: state\ndata: ${JSON.stringify({ ...empty, conversationId: 1 })}\n\n`,
     });
   });
   await page.goto("/");
@@ -506,7 +512,7 @@ test("native Send retains the submitted draft until acknowledgement and preserve
     release = resolve;
   });
   const requests: unknown[] = [];
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     requests.push(route.request().postDataJSON());
     await gate;
     await route.fulfill({ status: 202, json: { id: "test-admission" } });
@@ -528,7 +534,7 @@ test("official ErrorState retries the original identity without consuming a newe
 }) => {
   await connect(page);
   const requests: unknown[] = [];
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) await route.abort();
     else await route.fulfill({ status: 202, json: { id: "test-retry" } });
@@ -557,7 +563,7 @@ test("slash command queues a draft while busy without erasing newer edits", asyn
     release = resolve;
   });
   const requests: unknown[] = [];
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/1/input", async (route) => {
     requests.push(route.request().postDataJSON());
     await gate;
     await route.fulfill({ status: 202, json: { id: "test-queue" } });
@@ -604,7 +610,7 @@ test("queued input stays separate from messages and withdrawal reports a placeme
       queue: [{ id: "123", mode: "steer", text: "Queued synthetic direction" }],
     },
   });
-  await page.route("**/api/withdraw", (route) =>
+  await page.route("**/api/chats/1/withdraw", (route) =>
     route.fulfill({ json: { status: "already_placed" } }),
   );
   await page.goto("/");
@@ -627,7 +633,7 @@ test("queued input stays separate from messages and withdrawal reports a placeme
 test("Continue retries the same control without consuming the composer draft", async ({ page }) => {
   await connect(page, { ...empty, controls: { ...controls, canContinue: true } });
   const requests: unknown[] = [];
-  await page.route("**/api/control", async (route) => {
+  await page.route("**/api/chats/1/control", async (route) => {
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) await route.abort();
     else await route.fulfill({ status: 202, json: { id: "test-continue" } });
@@ -647,7 +653,7 @@ test("native Stop retains the draft and does not advertise an unsafe request-ID 
   page,
 }) => {
   await connect(page, { ...empty, busy: true, controls });
-  await page.route("**/api/stop", (route) => route.abort());
+  await page.route("**/api/chats/1/stop", (route) => route.abort());
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Keep this draft");
@@ -664,7 +670,7 @@ test("compact AlertDialog confirms reset, preserves drafts and retries the origi
 }) => {
   await connect(page);
   const requests: unknown[] = [];
-  await page.route("**/api/control", async (route) => {
+  await page.route("**/api/chats/1/control", async (route) => {
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) await route.abort();
     else await route.fulfill({ status: 202, json: { id: "test-reset" } });
@@ -701,7 +707,7 @@ test("reset dialog stays compact on mobile, traps focus and accepts an empty han
   await page.setViewportSize({ width: 375, height: 667 });
   await connect(page, { ...empty, busy: true, controls });
   const requests: unknown[] = [];
-  await page.route("**/api/control", async (route) => {
+  await page.route("**/api/chats/1/control", async (route) => {
     requests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { id: "empty-handoff-reset" } });
   });
@@ -736,7 +742,7 @@ test("reset dialog stays compact on mobile, traps focus and accepts an empty han
 test("reset confirmation rechecks pending state before admitting an action", async ({ page }) => {
   await connect(page);
   const requests: unknown[] = [];
-  await page.route("**/api/control", async (route) => {
+  await page.route("**/api/chats/1/control", async (route) => {
     requests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { id: "must-not-reset" } });
   });
