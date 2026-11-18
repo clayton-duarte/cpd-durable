@@ -51,6 +51,8 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
+import { ModelPolicyChangeSchema } from "../shared/model-policy.ts";
+import { ModelPolicyError } from "./model-policy.ts";
 import { BranchIdentityError } from "./branch-identity.ts";
 import { RegenerationError } from "./regeneration.ts";
 import { RegenerationRequestSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
@@ -65,7 +67,7 @@ import {
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
-    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments">>,
+    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments" | "modelPolicy">>,
 ) {
   const app = new Hono();
   const histories = new Map<string, ReturnType<typeof createHistory>>();
@@ -114,6 +116,18 @@ export function createApp(
       createFeedbackRoutes(async (id) => (await chat.chats?.resolve(id))?.conversation),
     );
 
+  app.get("/api/model-policy", async (c) => {
+    if (!chat.modelPolicy) return c.json({ error: "Model settings unavailable." }, 503);
+    return c.json(await chat.modelPolicy.read());
+  });
+  app.post("/api/model-policy", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = ModelPolicyChangeSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid model settings." }, 400);
+    if (!chat.modelPolicy) return c.json({ error: "Model settings unavailable." }, 503);
+    return c.json(await chat.modelPolicy.save(result.data));
+  });
   app.get("/api/chats", async (c) => {
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
     return c.json(await chat.chats.list());
@@ -649,6 +663,7 @@ export function createApp(
   app.onError((error, c) =>
     error instanceof ChatLifecycleError ||
     error instanceof AttachmentAccessError ||
+    error instanceof ModelPolicyError ||
     error instanceof DraftAttemptConflict ||
     error instanceof RegenerationError ||
     error instanceof BranchOperationError
