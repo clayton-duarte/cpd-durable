@@ -22,13 +22,23 @@ After the documentation foundation, the User authorized one browser chat backed 
 
 Selected stack: Vite+, pnpm, React, TanStack Router, assistant-ui, Hono, Zod and `@tsconfig/strictest`. Component priority is **assistant-ui > shadcn** across the application: use supplied assistant-ui elements first; shadcn may fill only a documented gap. No custom visual components. Application adapters may compose supplied elements and bind real host behavior; official elements' internal shadcn dependencies are accepted. The User's 2026-11-17 pivot replaces the earlier shadcn AI Elements constraint and calls for full-catalogue review, not a one-for-one wrapper swap. Use current compatible releases and lock them; the SDK's experimental API makes version alignment important.
 
+The User prefers borderless components inside chat messages. Choose supplied `ghost`/borderless variants for inline disclosures such as reasoning and tool groups, rather than bordered cards or custom CSS replacements. This preference does not remove functional input boundaries or restyle confirmation dialogs.
+
 One package contains `src/client`, `src/server` and browser-safe `src/shared` modules. Package extraction is deferred until independent consumers, deployments or dependency isolation justify it. Zod validates application boundaries, without replacing the SDK's internal schema mechanisms.
 
-The initial implementation is localhost-only and text-only, with OpenCode Go's `deepseek-v4.1-flash` fixed server-side. The User clarified that the earlier OpenRouter reference was a misstatement; OpenCode Go is the intended provider. Hono relays validated input and SDK conversation watches over SSE (`streamSSE`); the SDK owns execution, retries and SQLite persistence. Browser state is transient. There is no separate transcript database, legacy wrapper, tool registry population or orchestration service.
+The initial implementation was localhost-only and text-only, with OpenCode Go's `deepseek-v4.1-flash` fixed server-side. The User clarified that the earlier OpenRouter reference was a misstatement; OpenCode Go is the intended provider. Hono relays validated input and SDK conversation watches over SSE (`streamSSE`); the SDK owns execution, retries and SQLite persistence. Browser state is transient. There is no separate transcript database, legacy wrapper or orchestration service. Native-tool registry population was added under the later authorization below.
 
-This slice implements send/stream/stop, recent history, reconnect and reopen/resume. [Running instructions and verification boundaries](../README.md#checks) distinguish local tests with a substituted provider from live-provider verification. LAN access, additional models, tools and broader topology remain outside this slice.
+This initial slice implemented send/stream/stop, recent history, reconnect and reopen/resume. [Running instructions and verification boundaries](../README.md#checks) distinguish local tests with a substituted provider from live-provider verification. The later native-execution authorization below expands it; LAN/public exposure and legacy migration remain separate.
 
 The accepted [chat component mapping](chat-components.md) defines reusable containment and assistant-ui presentation; the [element review](assistant-ui-elements.md) classifies the complete catalogue. Native UI/runtime composition adapts existing pi-durable state rather than replacing its execution/persistence with Assistant Cloud or a second agent runtime. Mapping an element does not authorize enabling additional host capabilities.
+
+## Native execution and pi TUI parity
+
+On 2026-11-17, after Batch 2, the User authorized making cpd fully usable with pi TUI's tools and features, without cpd-added approval prompts or sandbox restrictions, and selected `~/` as the default working directory. It is a starting context, not a filesystem boundary. Tools execute with the server account's OS permissions and inherited environment; cpd does not bypass OS access controls or supply unavailable external programs.
+
+The first implementation installs pi-durable's native `read`, `write`, `edit`, `bash` and `powershell` tools, supplies `NodeExecutionEnv`, and renders tool calls/output through assistant-ui. PowerShell requires an installed executable. No command/path denylist, approval hook, forced command timeout or tool-round cap is added. SDK argument validation, bounded output/spill handling, cancellation and non-replay-safe side-effect semantics remain correctness behavior, not an application permission gate.
+
+pi-durable remains the sole execution/transcript/persistence authority; this direction does not select a second TUI/agent runtime. The [parity inventory](pi-durable-features.md#pi-tui-parity) distinguishes actual capability from remaining implementation. Keep the localhost transport and server-only credential handling; executing commands can access secrets available to the account and can deliberately emit sensitive output into private conversation storage.
 
 ## Proposal: project conversations and interactive threads
 

@@ -16,9 +16,7 @@ async function connect(page: Page, state: ChatState = { ...empty, controls }) {
         super();
         window.addEventListener("synthetic-chat-state", this.update);
         window.addEventListener("synthetic-chat-disconnect", this.disconnect);
-        queueMicrotask(() =>
-          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(initial) })),
-        );
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent("state", { data: initial })));
       }
       close() {
         window.removeEventListener("synthetic-chat-state", this.update);
@@ -26,12 +24,15 @@ async function connect(page: Page, state: ChatState = { ...empty, controls }) {
       }
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource });
-  }, state);
+  }, JSON.stringify(state));
 }
 async function update(page: Page, state: ChatState) {
   await page.evaluate(
-    (detail) => window.dispatchEvent(new CustomEvent("synthetic-chat-state", { detail })),
-    state,
+    (detail) =>
+      window.dispatchEvent(
+        new CustomEvent("synthetic-chat-state", { detail: JSON.parse(detail) as unknown }),
+      ),
+    JSON.stringify(state),
   );
 }
 async function actions(page: Page, scope?: Locator) {
@@ -773,6 +774,182 @@ test("invalid identity frames preserve history and draft, then recover without s
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
   await expect(draft).toHaveValue("Retained draft");
 });
+
+test("native Reasoning follows live streaming and collapses when reasoning completes", async ({
+  page,
+}) => {
+  const streaming: ChatState = {
+    ...empty,
+    controls,
+    conversationId: 1,
+    window: { entryIds: [] },
+    busy: true,
+    live: {
+      id: "generation:1:9:1",
+      taskId: 9,
+      afterEntryId: null,
+      text: "",
+      parts: [{ id: "generation:1:9:1:0", type: "reasoning", text: "Provider reasoning stream" }],
+    },
+  };
+  await connect(page, streaming);
+  await page.goto("/");
+  const root = page.locator('[data-slot="reasoning-root"]');
+  await expect(root).toHaveAttribute("data-variant", "ghost");
+  await expect(root).toHaveCSS("border-top-width", "0px");
+  const trigger = root.getByRole("button", { name: "Reasoning", exact: true });
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(root).toContainText("Provider reasoning stream");
+  await expect(root.locator('[data-slot="reasoning-content"]')).toHaveAttribute(
+    "aria-busy",
+    "true",
+  );
+  await update(page, {
+    ...empty,
+    controls,
+    conversationId: 1,
+    window: { entryIds: [1] },
+    live: null,
+    messages: [
+      {
+        id: "1:0",
+        role: "assistant",
+        text: "Answer",
+        interrupted: false,
+        outcome: "complete",
+        source: { entryId: 1, taskId: 9 },
+        parts: [
+          { id: "1:0:0", type: "reasoning", text: "Provider reasoning stream" },
+          { id: "1:0:1", type: "text", text: "Answer" },
+        ],
+      },
+    ],
+  });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("Answer", { exact: true })).toBeVisible();
+  await trigger.click();
+  await expect(root.getByText("Provider reasoning stream", { exact: true })).toBeVisible();
+});
+
+test("provider reasoning uses the supplied Reasoning disclosure, not a paused status notice", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    controls,
+    live: null,
+    messages: [
+      {
+        id: "1:0",
+        role: "assistant",
+        text: "Final answer",
+        interrupted: false,
+        outcome: "complete",
+        parts: [
+          { id: "1:0:0", type: "reasoning", text: "Actual provider reasoning" },
+          { id: "1:0:1", type: "text", text: "Final answer" },
+        ],
+      },
+      {
+        id: "2:0",
+        role: "assistant",
+        text: "Legacy answer",
+        interrupted: false,
+        parts: [
+          { id: "2:0:0", type: "omitted", kind: "reasoning" },
+          { id: "2:0:1", type: "text", text: "Legacy answer" },
+        ],
+      },
+    ],
+  });
+  await page.goto("/");
+  const reasoning = page.locator('[data-slot="reasoning-root"]');
+  await expect(reasoning).toHaveCount(1);
+  await expect(reasoning).toHaveAttribute("data-variant", "ghost");
+  await expect(reasoning).toHaveCSS("border-top-width", "0px");
+  await reasoning.getByRole("button", { name: "Reasoning", exact: true }).click();
+  await expect(reasoning).toContainText("Actual provider reasoning");
+  await expect(page.getByText("Final answer", { exact: true })).toBeVisible();
+  await expect(page.getByText("Legacy answer", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Reasoning content is not shown/)).toHaveCount(0);
+  await expect(page.locator('[data-slot="agent-status"]')).toHaveCount(0);
+});
+
+for (const finalState of ["complete", "error", "cancelled"] as const) {
+  test(`native tool output stays disclosed through ${finalState} without approval or retry actions`, async ({
+    page,
+  }) => {
+    const state: ChatState = {
+      ...empty,
+      controls,
+      conversationId: 1,
+      busy: true,
+      live: null,
+      window: { entryIds: [1] },
+      messages: [
+        {
+          id: "1:0",
+          role: "assistant",
+          text: "",
+          interrupted: false,
+          outcome: "complete",
+          source: { entryId: 1, taskId: 9 },
+          parts: [
+            {
+              id: "1:0:0",
+              type: "tool-call",
+              callId: "shell",
+              name: "bash",
+              arguments: { command: "printf '<script>literal output</script>'" },
+              state: "running",
+              output: "first chunk",
+            },
+          ],
+        },
+      ],
+    };
+    await connect(page, state);
+    await page.goto("/");
+    await page.getByRole("button", { name: "1 tool call", exact: true }).click();
+    const tool = page.locator('[data-slot="tool-fallback-root"]');
+    await expect(tool).toHaveCount(1);
+    await tool.getByRole("button", { name: /Running tool: bash/ }).click();
+    await expect(tool).toContainText("first chunk");
+    await expect(tool).toContainText("printf '<script>literal output</script>'");
+    await update(page, {
+      ...state,
+      busy: false,
+      messages: [
+        {
+          ...state.messages[0]!,
+          parts: [
+            {
+              id: "1:0:0",
+              type: "tool-call",
+              callId: "shell",
+              name: "bash",
+              arguments: { command: "printf '<script>literal output</script>'" },
+              state: finalState,
+              output: "<script>literal output</script>",
+              resultEntryId: 2,
+            },
+          ],
+        },
+      ],
+    });
+    await expect(tool).toContainText(
+      finalState === "complete"
+        ? "Used tool"
+        : finalState === "cancelled"
+          ? "Cancelled tool"
+          : "Failed tool",
+    );
+    await expect(tool.getByText("<script>literal output</script>", { exact: true })).toBeVisible();
+    await expect(tool.locator("script")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^(Allow|Deny|Retry|Run now)$/ })).toHaveCount(0);
+    await expect(tool.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+  });
+}
 
 test("two official Threads keep their native drafts and action panels independent", async ({
   page,

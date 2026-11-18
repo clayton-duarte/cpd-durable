@@ -32,8 +32,28 @@ export const WithdrawResultSchema = z.strictObject({
 });
 
 const RecordIdSchema = z.number().int().positive().safe();
+export const ToolStateSchema = z.enum([
+  "pending",
+  "running",
+  "complete",
+  "error",
+  "cancelled",
+  "unavailable",
+]);
 export const ChatPartSchema = z.discriminatedUnion("type", [
   z.strictObject({ id: z.string(), type: z.literal("text"), text: z.string() }),
+  z.strictObject({ id: z.string(), type: z.literal("reasoning"), text: z.string() }),
+  z.strictObject({
+    id: z.string(),
+    type: z.literal("tool-call"),
+    callId: z.string(),
+    name: z.string(),
+    arguments: z.record(z.string(), z.json()),
+    argumentsUnavailable: z.boolean().optional(),
+    state: ToolStateSchema,
+    output: z.string().optional(),
+    resultEntryId: RecordIdSchema.optional(),
+  }),
   z.strictObject({
     id: z.string(),
     type: z.literal("omitted"),

@@ -10,6 +10,23 @@ const MessageSchema = z.looseObject({
   stopReason: z.string().optional(),
 });
 const PartSchema = z.looseObject({ type: z.string(), text: z.string().optional() });
+const ToolCallSchema = z.looseObject({
+  type: z.literal("toolCall"),
+  id: z.string(),
+  name: z.string(),
+  arguments: z.record(z.string(), z.json()),
+});
+const ReasoningSchema = z.looseObject({
+  type: z.literal("thinking"),
+  thinking: z.string(),
+});
+const ToolResultSchema = z.looseObject({
+  role: z.literal("toolResult"),
+  toolCallId: z.string(),
+  toolName: z.string(),
+  content: z.array(z.unknown()),
+  isError: z.boolean(),
+});
 const LiveSchema = z.looseObject({
   run: z.looseObject({ taskId: RecordIdSchema.optional() }).optional(),
   generation: z
@@ -20,6 +37,17 @@ const LiveSchema = z.looseObject({
     })
     .optional(),
   runFailure: z.looseObject({ reason: z.string() }).optional(),
+  tools: z
+    .array(
+      z.looseObject({
+        callId: z.string(),
+        name: z.string(),
+        status: z.enum(["pending", "running", "done"]),
+        output: z.string().optional(),
+        diagnostics: z.array(z.looseObject({ code: z.string().optional() })).optional(),
+      }),
+    )
+    .optional(),
 });
 const InboxSchema = z.looseObject({
   items: z
@@ -40,16 +68,37 @@ const InboxSchema = z.looseObject({
     .default([]),
 });
 
-function partsOf(content: z.infer<typeof MessageSchema>["content"], prefix: string): ChatPart[] {
+function partsOf(
+  content: z.infer<typeof MessageSchema>["content"],
+  prefix: string,
+  assistant = false,
+): ChatPart[] {
   if (typeof content === "string")
     return content ? [{ id: `${prefix}:0`, type: "text", text: content }] : [];
   return content.flatMap((raw, index): ChatPart[] => {
     const part = PartSchema.safeParse(raw);
     const id = `${prefix}:${index}`;
+    const reasoning = assistant ? ReasoningSchema.safeParse(raw) : null;
+    if (reasoning?.success)
+      return reasoning.data.thinking
+        ? [{ id, type: "reasoning", text: reasoning.data.thinking }]
+        : [];
+    const call = assistant ? ToolCallSchema.safeParse(raw) : null;
+    if (call?.success)
+      return [
+        {
+          id,
+          type: "tool-call",
+          callId: call.data.id,
+          name: call.data.name,
+          arguments: call.data.arguments,
+          state: "unavailable",
+        },
+      ];
     if (part.success && part.data.type === "text" && part.data.text !== undefined)
       return part.data.text ? [{ id, type: "text", text: part.data.text }] : [];
-    // Preserve the position of omitted content without exposing its arguments,
-    // private reasoning, URLs, arbitrary type names or unvalidated custom data.
+    // Unsupported payloads stay omitted. Provider signatures/encrypted metadata
+    // are never inferred as reasoning text or forwarded as arbitrary UI data.
     const kind = !part.success
       ? "other"
       : part.data.type === "thinking"
@@ -106,39 +155,118 @@ export function present(view: ConversationView, canContinue = false): ChatState 
       ? `generation:${view.conversation.id}:${taskId}:${generation.attempt}`
       : null;
   const liveParts = generation?.message
-    ? partsOf(generation.message.content, liveId ?? "partial")
+    ? partsOf(generation.message.content, liveId ?? "partial", true)
     : [];
-  const messages = view.entries.flatMap((entry) =>
-    (entry.model ?? []).flatMap((raw, index): ChatMessage[] => {
+  const messages: ChatMessage[] = [];
+  const pending = new Map<string, Extract<ChatPart, { type: "tool-call" }>>();
+  const pendingTasks = new Map<string, number | undefined>();
+  for (const entry of view.entries) {
+    for (const [index, raw] of (entry.model ?? []).entries()) {
+      const resultMessage =
+        entry.kind === "pi.tool-result" ? ToolResultSchema.safeParse(raw) : null;
+      if (resultMessage?.success) {
+        const result = resultMessage.data;
+        const output = partsOf(result.content, `${entry.id}:${index}`)
+          .map((part) =>
+            part.type === "text" ? part.text : "[Non-text tool output is not displayed.]",
+          )
+          .join("\n");
+        const diagnostics = z
+          .looseObject({
+            diagnostics: z.array(z.looseObject({ code: z.string().optional() })),
+          })
+          .safeParse(entry.data);
+        const cancelled =
+          diagnostics.success &&
+          diagnostics.data.diagnostics.some((item) => item.code === "aborted");
+        const call = pending.get(result.toolCallId);
+        const state = cancelled ? "cancelled" : result.isError ? "error" : "complete";
+        if (call && call.name === result.toolName) {
+          call.state = state;
+          call.output = output;
+          call.resultEntryId = entry.id;
+          pending.delete(result.toolCallId);
+        } else {
+          // Window may start after the originating call. Keep its result visible,
+          // without inventing arguments or attaching it to a different invocation.
+          messages.push({
+            id: `${entry.id}:${index}`,
+            role: "assistant",
+            text: "",
+            interrupted: false,
+            outcome: "complete",
+            source: { entryId: entry.id },
+            parts: [
+              {
+                id: `${entry.id}:${index}:result`,
+                type: "tool-call",
+                callId: result.toolCallId,
+                name: result.toolName,
+                arguments: {},
+                argumentsUnavailable: true,
+                state,
+                output,
+                resultEntryId: entry.id,
+              },
+            ],
+          });
+        }
+        continue;
+      }
       const result = MessageSchema.safeParse(raw);
-      if (!result.success) return [];
+      if (!result.success) continue;
       const message = result.data;
       const id = `${entry.id}:${index}`;
-      const parts = partsOf(message.content, id);
-      if (parts.length === 0) return [];
+      const parts = partsOf(
+        message.content,
+        id,
+        entry.kind === "pi.assistant" && message.role === "assistant",
+      );
+      if (parts.length === 0) continue;
+      for (const part of parts) {
+        if (part.type === "tool-call") {
+          pending.set(part.callId, part);
+          pendingTasks.set(part.callId, entry.byTaskId);
+        }
+      }
       const outcome = message.role === "assistant" ? outcomeOf(message.stopReason) : undefined;
-      return [
-        {
-          id,
-          role: message.role,
-          text: textOf(parts),
-          parts,
-          interrupted: outcome === "interrupted",
-          ...(outcome ? { outcome } : {}),
-          source: {
-            entryId: entry.id,
-            ...(entry.kind === "pi.assistant" &&
-            entry.model?.length === 1 &&
-            index === 0 &&
-            message.role === "assistant" &&
-            entry.byTaskId !== undefined
-              ? { taskId: entry.byTaskId }
-              : {}),
-          },
+      messages.push({
+        id,
+        role: message.role,
+        text: textOf(parts),
+        parts,
+        interrupted: outcome === "interrupted",
+        ...(outcome ? { outcome } : {}),
+        source: {
+          entryId: entry.id,
+          ...(entry.kind === "pi.assistant" &&
+          entry.model?.length === 1 &&
+          index === 0 &&
+          message.role === "assistant" &&
+          entry.byTaskId !== undefined
+            ? { taskId: entry.byTaskId }
+            : {}),
         },
-      ];
-    }),
-  );
+      });
+    }
+  }
+  // Only the current round's still-unsettled calls receive live progress.
+  for (const slot of live.tools ?? []) {
+    const call = pending.get(slot.callId);
+    if (
+      call &&
+      taskId !== undefined &&
+      pendingTasks.get(slot.callId) === taskId &&
+      call.name === slot.name &&
+      slot.status !== "done"
+    ) {
+      call.state = slot.status;
+      if (slot.output !== undefined) call.output = slot.output;
+    }
+  }
+  for (const part of liveParts) {
+    if (part.type === "tool-call") part.state = "pending";
+  }
   return {
     conversationId: view.conversation.id,
     window: {

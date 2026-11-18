@@ -2,18 +2,21 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { createRegistry, Harness, type SubmissionId } from "@earendil-works/pi-durable";
+import { Harness, type SubmissionId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
+import { createExecution, workingDirectory } from "./execution.ts";
 
-export async function openChat(dataDir: string, models: Models) {
+export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
+  const execution = createExecution(cwd);
   const harness = await Harness.open(
     storage,
     {
       models,
-      registry: createRegistry(),
+      registry: execution.registry,
+      env: execution.env,
       settings: { retry: { maxRetries: 2 } },
       identity: {
         userAgent: { custom: "cpd-durable/0.1.0" },
@@ -30,7 +33,11 @@ export async function openChat(dataDir: string, models: Models) {
     await conversation.configure(
       {
         model: { provider: PROVIDER_ID, modelId: MODEL_ID },
-        tools: [],
+        cwd: workingDirectory(cwd),
+        extensions: null,
+        tools: null,
+        modelTools: null,
+        maxTurns: null,
       },
       BACKGROUND_CONTEXT,
     );
@@ -43,11 +50,16 @@ export async function openChat(dataDir: string, models: Models) {
       async close() {
         if (closed) return;
         closed = true;
-        await harness.close(BACKGROUND_CONTEXT);
+        try {
+          await harness.close(BACKGROUND_CONTEXT);
+        } finally {
+          await execution.close();
+        }
       },
     };
   } catch (error) {
     await harness.close(BACKGROUND_CONTEXT);
+    await execution.close();
     throw error;
   }
 }

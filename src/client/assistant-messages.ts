@@ -11,9 +11,23 @@ export interface AssistantProjection {
 
 function contentOf(parts: readonly ChatPart[]): Exclude<ThreadMessageLike["content"], string> {
   return parts.map((part) =>
-    part.type === "text"
-      ? { type: "text" as const, text: part.text }
-      : { type: "data-omitted" as const, data: { kind: part.kind } },
+    part.type === "text" || part.type === "reasoning"
+      ? { type: part.type, text: part.text }
+      : part.type === "tool-call"
+        ? {
+            type: "tool-call" as const,
+            toolCallId: part.id,
+            toolName: part.name,
+            args: part.arguments,
+            argsText: part.argumentsUnavailable
+              ? "Arguments are outside the retained history."
+              : JSON.stringify(part.arguments, null, 2),
+            ...(part.output !== undefined ? { result: part.output } : {}),
+            isPreliminary: part.state === "pending" || part.state === "running",
+            isError:
+              part.state === "error" || part.state === "cancelled" || part.state === "unavailable",
+          }
+        : { type: "data-omitted" as const, data: { kind: part.kind } },
   );
 }
 
@@ -22,6 +36,9 @@ function committedMessage(message: ChatMessage, displayId: string): ThreadMessag
   const parts = message.parts ?? [
     { id: `${message.id}:0`, type: "text" as const, text: message.text },
   ];
+  const toolsRunning = parts.some(
+    (part) => part.type === "tool-call" && (part.state === "pending" || part.state === "running"),
+  );
   return {
     id: displayId,
     role: message.role,
@@ -34,12 +51,16 @@ function committedMessage(message: ChatMessage, displayId: string): ThreadMessag
         durableId: message.id,
         partIds: parts.map((part) => part.id),
         interrupted: outcome === "interrupted",
+        toolStates: Object.fromEntries(
+          parts.filter((part) => part.type === "tool-call").map((part) => [part.id, part.state]),
+        ),
       },
     },
     ...(message.role === "assistant"
       ? {
-          status:
-            outcome === "complete"
+          status: toolsRunning
+            ? { type: "running" as const }
+            : outcome === "complete"
               ? { type: "complete" as const, reason: "stop" as const }
               : outcome === "error"
                 ? {
@@ -121,7 +142,14 @@ export function projectAssistantMessages(
       content: [{ type: "text", text: legacyPartial }],
       status: { type: "running" },
     });
-  return { snapshot, aliases, liveKey, messages, streaming: !!live || !!legacyPartial };
+  return {
+    snapshot,
+    aliases,
+    liveKey,
+    messages,
+    streaming:
+      !!live || !!legacyPartial || messages.some((message) => message.status?.type === "running"),
+  };
 }
 
 export const assistantMessages = (state: ChatState | null) =>

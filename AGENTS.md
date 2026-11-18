@@ -1,6 +1,6 @@
 # Working in this repository
 
-- The current implementation scope is a single localhost, text-only browser chat backed by pi-durable. Additional runtime capabilities and legacy migration require separate authorization.
+- The user authorized pi-TUI capability parity with native host execution, no cpd-added tool approvals or sandbox restrictions, and `~/` as the default working directory. pi-durable remains the execution/transcript authority. Check the [parity inventory](docs/pi-durable-features.md#pi-tui-parity) for what is actually implemented; authorization is not completion. Legacy migration and public/LAN exposure remain separate.
 - This repository is public. Keep provider credentials server-side; never commit secrets, machine-local paths, conversation data, logs or database files. Review staged changes and built client assets for accidental exposure.
 - Keep changes visible live during development: use Vite+ HMR for the client and watch mode for the server, and give the User the active preview URL. Preserve the active session's data directory when moving worktrees; check for an active response before restarting its host. Inject credentials only into the server process.
 - Before changing content, read [documentation conventions](docs/CONTRIBUTING.md). For product claims, consult [design direction](docs/design.md); for historical claims, consult [problem and learning](docs/problem-and-learning.md).

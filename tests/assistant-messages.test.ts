@@ -90,6 +90,48 @@ const settled = (initial: ChatState, text = "Final"): ChatState => ({
 });
 
 describe("source-proven live-to-committed identity", () => {
+  it("maps provider reasoning to the native reasoning part without adding it to answer text", () => {
+    const initial = settled(streamed());
+    initial.messages[1]!.parts = [
+      { id: "2:0:0", type: "reasoning", text: "Provider reasoning" },
+      { id: "2:0:1", type: "text", text: "Final answer" },
+    ];
+    expect(assistantMessages(initial).at(-1)?.content).toEqual([
+      { type: "reasoning", text: "Provider reasoning" },
+      { type: "text", text: "Final answer" },
+    ]);
+  });
+
+  it("maps tool invocations to native assistant-ui parts without inventing browser actions", () => {
+    const initial = settled(streamed());
+    initial.messages[1]!.parts = [
+      {
+        id: "2:0:0",
+        type: "tool-call",
+        callId: "call",
+        name: "bash",
+        arguments: { command: "pwd" },
+        state: "running",
+        output: "progress",
+      },
+    ];
+    const projection = projectAssistantMessages(initial);
+    expect(projection.streaming).toBe(true);
+    expect(projection.messages.at(-1)?.status).toEqual({ type: "running" });
+    expect(projection.messages.at(-1)?.content).toEqual([
+      {
+        type: "tool-call",
+        toolCallId: "2:0:0",
+        toolName: "bash",
+        args: { command: "pwd" },
+        argsText: JSON.stringify({ command: "pwd" }, null, 2),
+        result: "progress",
+        isPreliminary: true,
+        isError: false,
+      },
+    ]);
+  });
+
   it("keeps the row key across updates, corrected final content and reconnect snapshots", () => {
     const initial = streamed();
     const first = projectAssistantMessages(initial);

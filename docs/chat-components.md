@@ -34,7 +34,9 @@ Markdown does not enable raw HTML or code execution. Markdown image elements are
 
 ### Transcript identity and projection (Batch 2)
 
-The wire schema adds optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. Ordered text parts remain separated by coarse omission receipts (`reasoning`, `tool`, `image`, `other`); private reasoning, arguments, media, arbitrary type names, custom entry data and provider diagnostics are not forwarded. These receipts enable no new runtime capability.
+Batch 2 added optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. The native-tools increment projects validated tool calls, arguments and textual output alongside ordered text. Provider-supplied `thinking` text is now a native `reasoning` part; signatures/encrypted metadata, media, arbitrary custom entry data and provider diagnostics are not forwarded.
+
+Reasoning uses the official [assistant-ui runtime composition](https://www.assistant-ui.com/elements/reasoning): Thread's GroupedParts, ReasoningRoot/Trigger/Content/Text and Markdown renderer, with the supplied `ghost` variant. It opens during reasoning streaming and collapses afterward unless the reader chose otherwise. Only actual provider text is rendered; empty reasoning produces no disclosure. No synthetic step titles, elapsed-time estimates or hidden-reasoning reconstruction is added. Older omission-only reasoning receipts render nothing, not a paused AgentStatus bar. ThinkingIndicator, loaders and typing indicators are transient activity feedback, ReasoningEffort is configuration, and GuardrailNotice requires an actual guardrail event; none substitutes for the reasoning trace.
 
 SDK `aborted` is an interruption, `error` an error and `length` an incomplete output limit. Unknown/missing assistant stop reasons remain incomplete. A busy run is not necessarily a streaming assistant message: explicit `live: null` suppresses stale partial replay and false streaming on settled answers. Generic busy feedback says Working.
 
@@ -67,7 +69,11 @@ MessageQueue keeps the registry design but accepts host placement wording and an
 
 Preferred elements: Reasoning, ToolFallback/ToolGroup, RunActivity, TerminalBlock, TaskCard and appropriate task/status disclosures. Preserve text/activity ordering and actual ownership. Use native GroupedParts only with supplied part data; never invent hidden reasoning, progress percentages, timings or tool results.
 
-Tools, code execution, subagents, background work and task inspectors are not enabled. Tool retries, approvals and a Run now queue button need real host protocols; frontend callbacks alone do not supply durable semantics.
+Native `read`, `write`, `edit`, `bash` and `powershell` now execute through pi-durable and NodeExecutionEnv. Arguments, running output and settled textual results use the supplied ToolFallback and Thread's tool grouping. A nonvisual adapter maps SDK pending/running/complete/error/cancelled/unavailable state to truthful labels. No approval, Run now or unsafe tool-retry callback is supplied. PowerShell needs an installed host executable.
+
+Known `pi.tool-result` entries attach to the preceding unmatched call with the same SDK call ID and tool name, in transcript order. Reused call IDs in later rounds do not overwrite earlier results. Result entry IDs remain metadata separate from call-part identity. If the originating call has left the window, render the result as its own authoritative row with unknown arguments, not attached to a guessed call. Live progress overlays only an unsettled call owned by the current generation task; a missing result is unavailable, not successful. Arbitrary result details/documents are ignored. Output is rendered as literal text, never executed as HTML/JS.
+
+Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Image output currently receives a non-text receipt. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
 
 ## 4. Context, configuration and usage
 
@@ -103,7 +109,7 @@ The transport serializes mutations and keeps retry identity only until refresh. 
 
 ## Remaining work
 
-Batch 2 adds source-backed live/committed identity and ordered text/omission projection with the fallback limits above. History paging/gap recovery, actual rich tool/reasoning/media payloads and application custom-event schemas remain deferred. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
+Source-backed live/committed identity and ordered text/reasoning/tool/omission projection retain the fallback limits above. History paging/gap recovery, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
 
 ## shadcn gap decisions
 

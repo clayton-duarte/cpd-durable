@@ -18,19 +18,103 @@ const entry = (id: number, content: unknown, stopReason = "stop", kind = "pi.ass
 });
 
 describe("validated ordered SDK presentation", () => {
+  it("omits empty reasoning and never treats signatures as display text", () => {
+    const state = present(
+      view([
+        entry(1, [
+          { type: "thinking", thinking: "", thinkingSignature: "PRIVATE_SIGNATURE" },
+          { type: "text", text: "Answer" },
+        ]),
+      ]),
+    );
+    expect(state.messages[0]?.parts).toEqual([{ id: "1:0:1", type: "text", text: "Answer" }]);
+    expect(state.messages[0]?.text).toBe("Answer");
+    expect(JSON.stringify(state)).not.toContain("PRIVATE_SIGNATURE");
+  });
+
+  it("pairs reused call IDs in transcript order and retains orphan results without leaking details", () => {
+    const call = (id: number) =>
+      entry(
+        id,
+        [{ type: "toolCall", id: "reused", name: "bash", arguments: { command: "pwd" } }],
+        "toolUse",
+      );
+    const result = (id: number, text: string, isError = false) => ({
+      id,
+      kind: "pi.tool-result",
+      data: { diagnostics: [], details: "PRIVATE_DETAILS" },
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "reused",
+          toolName: "bash",
+          content: [{ type: "text", text }],
+          isError,
+        },
+      ],
+    });
+    const state = ChatStateSchema.parse(
+      present(
+        view([
+          result(1, "orphan"),
+          call(2),
+          result(3, "first"),
+          call(4),
+          result(5, "second", true),
+        ]),
+      ),
+    );
+    expect(state.messages.map((message) => message.id)).toEqual(["1:0", "2:0", "4:0"]);
+    expect(
+      state.messages
+        .flatMap((message) => message.parts ?? [])
+        .map((part) =>
+          part.type === "tool-call" ? [part.state, part.output, part.resultEntryId] : null,
+        ),
+    ).toEqual([
+      ["complete", "orphan", 1],
+      ["complete", "first", 3],
+      ["error", "second", 5],
+    ]);
+    expect(JSON.stringify(state)).not.toContain("PRIVATE_DETAILS");
+  });
+
+  it("overlays progress only for the current generation's unsettled calls", () => {
+    const first = entry(
+      1,
+      [{ type: "toolCall", id: "call", name: "bash", arguments: { command: "pwd" } }],
+      "toolUse",
+    );
+    const live = {
+      run: { taskId: 9 },
+      tools: [{ callId: "call", name: "bash", status: "running", output: "streamed" }],
+    };
+    expect(present(view([first], live)).messages[0]?.parts?.[0]).toMatchObject({
+      state: "running",
+      output: "streamed",
+    });
+    expect(
+      present(view([first], { ...live, run: { taskId: 10 } })).messages[0]?.parts?.[0],
+    ).toMatchObject({ state: "unavailable" });
+  });
+
   it("preserves text/omission boundaries and canonical source indexes without leaking payloads", () => {
     const result = ChatStateSchema.parse(
       present(
         view([
           entry(4, [
             { type: "text", text: "Before\n  indentation" },
-            { type: "thinking", thinking: "PRIVATE_REASONING" },
+            {
+              type: "thinking",
+              thinking: "Provider reasoning",
+              thinkingSignature: "PRIVATE_SIGNATURE",
+            },
             { type: "text", text: "After" },
             {
               type: "toolCall",
               id: "private-call",
-              name: "PRIVATE_TOOL",
-              arguments: { secret: "PRIVATE_ARGS" },
+              name: "bash",
+              arguments: { command: "echo synthetic" },
             },
             { type: "image", data: "PRIVATE_IMAGE", mimeType: "image/png" },
             { type: "PRIVATE_CUSTOM_KIND", data: "PRIVATE_DATA" },
@@ -47,9 +131,15 @@ describe("validated ordered SDK presentation", () => {
       interrupted: false,
       parts: [
         { id: "4:0:0", type: "text", text: "Before\n  indentation" },
-        { id: "4:0:1", type: "omitted", kind: "reasoning" },
+        { id: "4:0:1", type: "reasoning", text: "Provider reasoning" },
         { id: "4:0:2", type: "text", text: "After" },
-        { id: "4:0:3", type: "omitted", kind: "tool" },
+        {
+          id: "4:0:3",
+          type: "tool-call",
+          name: "bash",
+          arguments: { command: "echo synthetic" },
+          state: "unavailable",
+        },
         { id: "4:0:4", type: "omitted", kind: "image" },
         { id: "4:0:5", type: "omitted", kind: "other" },
         { id: "4:0:6", type: "omitted", kind: "other" },
@@ -125,7 +215,11 @@ describe("validated ordered SDK presentation", () => {
               role: "assistant",
               content: [
                 { type: "text", text: "Partial" },
-                { type: "thinking", thinking: "PRIVATE_THINKING" },
+                {
+                  type: "thinking",
+                  thinking: "Provider reasoning",
+                  thinkingSignature: "PRIVATE_SIGNATURE",
+                },
               ],
               provider: "PRIVATE_PROVIDER",
             },
@@ -141,7 +235,7 @@ describe("validated ordered SDK presentation", () => {
       text: "Partial",
       parts: [
         { id: "generation:1:9:2:0", type: "text", text: "Partial" },
-        { id: "generation:1:9:2:1", type: "omitted", kind: "reasoning" },
+        { id: "generation:1:9:2:1", type: "reasoning", text: "Provider reasoning" },
       ],
     });
     expect(result.partial).toBe("Partial");

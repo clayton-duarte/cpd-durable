@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -157,13 +157,20 @@ describe("single durable chat", () => {
     await again.cancel();
   });
 
-  it("uses the fixed model without tools or extensions", async () => {
+  it("uses the fixed model with native host tools and a home-directory default", async () => {
     const agent = await chat.conversation.agent(BACKGROUND_CONTEXT);
     expect(agent.model).toMatchObject({
       provider: "opencode-go",
       modelId: "deepseek-v4.1-flash",
     });
-    expect(agent.tools).toEqual([]);
+    expect(agent.tools.map((tool) => tool.name)).toEqual([
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "powershell",
+    ]);
+    expect(agent.cwd).toBe(homedir());
   });
 
   it("shows SDK failure without exposing provider diagnostics", async () => {

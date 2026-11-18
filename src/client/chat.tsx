@@ -4,13 +4,16 @@ import {
   useExternalMessageConverter,
   useExternalStoreRuntime,
   useAssistantDataUI,
+  useAuiState,
+  type ToolCallMessagePartProps,
   type AppendMessage,
   type AssistantRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
-import type { SendMode } from "../shared/chat.ts";
+import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import { ToolStateSchema, type SendMode } from "../shared/chat.ts";
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, type ChatProps } from "./chat-host.ts";
@@ -18,7 +21,30 @@ export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
 const durableCommandNames = ["queue", "steer", "continue", "reset"];
-const threadComponents = { ComposerFooter: DurableControls };
+// Adapt authoritative tool status only; the supplied ToolFallback owns presentation.
+function DurableToolFallback(props: ToolCallMessagePartProps) {
+  const states = useAuiState((state) => state.message.metadata.custom["toolStates"]);
+  const parsed = ToolStateSchema.safeParse(
+    states && typeof states === "object" ? Reflect.get(states, props.toolCallId) : undefined,
+  );
+  const status = !parsed.success
+    ? props.status
+    : parsed.data === "pending" || parsed.data === "running"
+      ? { type: "running" as const }
+      : parsed.data === "cancelled"
+        ? { type: "incomplete" as const, reason: "cancelled" as const }
+        : parsed.data === "error"
+          ? { type: "incomplete" as const, reason: "error" as const }
+          : parsed.data === "unavailable"
+            ? {
+                type: "incomplete" as const,
+                reason: "other" as const,
+                error: "Result is unavailable in the retained history.",
+              }
+            : { type: "complete" as const };
+  return <ToolFallback {...props} status={status} />;
+}
+const threadComponents = { ComposerFooter: DurableControls, ToolFallback: DurableToolFallback };
 const interruptionUI = {
   name: "interruption",
   render: () => <AgentStatus state="waiting" label="Response interrupted." />,
@@ -31,13 +57,14 @@ const omittedLabels = {
 };
 const omittedUI = {
   name: "omitted",
-  render: ({ data }: { data: { kind: keyof typeof omittedLabels } }) => (
-    <AgentStatus
-      state="waiting"
-      label={omittedLabels[data.kind]}
-      title={omittedLabels[data.kind]}
-    />
-  ),
+  render: ({ data }: { data: { kind: keyof typeof omittedLabels } }) =>
+    data.kind === "reasoning" ? null : (
+      <AgentStatus
+        state="waiting"
+        label={omittedLabels[data.kind]}
+        title={omittedLabels[data.kind]}
+      />
+    ),
 };
 
 function OfficialThread() {
