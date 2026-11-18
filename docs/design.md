@@ -1,6 +1,6 @@
 # Design direction
 
-This document records the User's settled fresh-start decisions and still-open discussion as of 2026-11-17. “Settled” means selected direction, not implemented behavior. See the [repository status](../README.md#current-status) and [problem and learning](problem-and-learning.md) for context.
+This document records the User's settled fresh-start decisions and still-open discussion as of 2026-11-18. “Settled” means selected direction, not implemented behavior. See the [repository status](../README.md#current-status) and [problem and learning](problem-and-learning.md) for context.
 
 ## Settled baseline
 
@@ -46,35 +46,41 @@ pi-durable remains the sole execution/transcript/persistence authority; this dir
 
 ## Proposal: project conversations and interactive threads
 
-A stable project conversation could develop intent and explore vague ideas. Short-lived interactive threads could own bounded tangents worth separating for model cost, context or direct User interaction: research, implementation or another focused effort. An investigation can be a bounded outcome; a thread need not be an implementation task.
+The earlier proposal is superseded for interactive conversations by the following User-approved design, with implementation authorized on 2026-11-18. The heading remains for existing links. Multi-project organization and a global attention Inbox remain deferred. Authorization is not completion.
 
-The thread owner could investigate and execute directly, using helpers when useful. The project conversation could also use helpers. This is not a selected Manager → Lead → Worker hierarchy. Names and the relationship between a helper and an interactive thread remain open.
+### Main threads, tangents and workers
 
-The intended benefit is an available project-level conversation while focused work proceeds independently. Ownership transfer must avoid parent and thread executing the same delegated outcome. Real dependencies and overlapping edits still require coordination; the User should not become the message bus.
+| Role        | Interaction and purpose                                                                                 | Default model assignment                               |
+| ----------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Main thread | Existing sidebar conversation; high-level planning, decisions and consolidation                         | High-capability tier                                   |
+| Tangent     | Fresh interactive conversation for focused exploration or involved execution, linked to one main thread | Mid-tier                                               |
+| Worker      | Headless bounded execution, supervised and reviewed by its immediate parent                             | Economical tier; parent may explicitly select mid-tier |
 
-### Proposal: a living thread brief
+Settings name the model tiers and assign real configured models. Thread and worker UI shows actual model names, not intelligence labels. These are defaults, not competence guarantees or permission boundaries; no silent model fallback or escalation is selected. Initially only main threads create interactive tangents; both main threads and tangents can delegate workers.
 
-The User proposed a living `thread-<slug>.md`, updated by the project agent and read by the execution agent. It could hold selected relevant grounding rather than clone a full transcript.
+Parents own their children's scope, coordination, deliverables and review. Code changes use separate branches and worktrees, never direct edits to `main`; concurrent access to shared files or external services still requires coordination. Separate conversation context does not isolate external effects or impose a filesystem sandbox.
 
-Unresolved mechanics include:
+### Handoffs and context
 
-- How changes reach an active thread, and how anyone knows it actually read them.
-- How stale assumptions are detected and handled.
-- When updates are safe while work is running.
-- Who can authorize a scope change and what requires renewed agreement.
+Delegation, updates, escalation and return reports use durable, versioned handoffs. Tangents start with selected grounding linked to a source conversation boundary, not an inherited full transcript. A delegation brief includes the goal, decisions, constraints and exclusions, references, suggested skills, permitted discretion and expected deliverable. Updates and escalations identify changed assumptions or decisions needed. Return reports identify outcomes, artifacts, evidence, limitations and unresolved issues.
 
-A changed file is not proof that a running model read it, and a brief update is not implicit authority to expand scope. Shared grounding is not live shared model memory. No watcher, acknowledgement state machine, directory schema or memory platform is selected by this proposal.
+The User selected the principles of the external [handoff skill](https://github.com/mattpocock/skills/tree/main/skills/productivity/handoff): tailor context to the next goal, reference existing artifacts rather than duplicate them, suggest relevant skills and redact sensitive information. Its temporary-file storage is not the application persistence contract; application handoffs belong in pi-durable records.
 
-### Other open questions
+Subsequent updates are explicit; a changed file or stored brief is not proof an active agent read it. Delivery, acknowledgement and acceptance must not be conflated. Results default to notification without automatically injecting tangent activity into the main model context. Bringing findings back is an explicit, retry-safe operation; the parent reviews and consolidates rather than treating a returned report as accepted.
 
-- What context and evidence are sufficient for each bounded handoff?
-- How do messages and results reach the accountable owner without blocking the project conversation or requiring manual relaying?
-- What distinguishes cancellation, failure and successful delivery, and where is each assignment's completion boundary?
-- How should durable project knowledge stay useful as the main conversation grows?
-- How should unpursued ideas be organized without turning every thought into a task or thread?
-- How should ownership, activity, freshness and need for human attention be shown across many projects?
+### Interaction and presentation
 
-These questions are not a committed backlog. An earlier minimum-migration proposal is not the immediate execution agenda; documentation and clarification come first.
+`/tangent` is the canonical creation command, with `/side` as an alias; clear prose requests may invoke the same real creation tool. Creation and starting work are explicit choices. Opening a pane, reading state or reconnecting never implicitly starts a paid request. Main conversation progress does not wait for tangent completion.
+
+Each parent displays its immediate children above its chat: supplied TaskCard for tangents and supplied AgentStatus for workers. All open tangents, including idle and running ones, remain visible and selectable. Selecting a tangent opens its full conversation beside the main thread with a vertical divider. One adjacent tangent is displayed at a time; drafts, scroll, model choices and controls remain independently scoped. Narrow screens use a pane switcher while retaining parent/child orientation. Closing a pane is navigation, not cancellation, conclusion or archival.
+
+Stopping a main response does not implicitly stop its independent tangent conversations. Worker foreground/background ownership and explicit stop actions must be truthful. Conversation lifecycle (open, concluded, archived), current activity and attention/reporting are separate dimensions: a settled assistant response does not conclude a tangent, and report availability does not mean parent acceptance. Status uses text and icons, not color alone; no invented progress percentages.
+
+### Delivery sequence and remaining questions
+
+Implementation proceeds through durable tangent creation and split-chat navigation, explicit context updates and return handoffs, worker lifecycle integration, then refinements from real use. Model-tier settings support launch selection. The supervisor coordinates shared schemas and integration; independently tested but unwired modules are not completed features.
+
+Remaining design work includes promotion of a tangent to a main thread, deeper interactive nesting if justified, and broader multi-project organization. A filesystem living-brief watcher, automatic context synchronization and a global attention Inbox are not selected by this authorization.
 
 ## Cockpit purposes
 
@@ -97,12 +103,12 @@ External observation of artifacts/activity is a hypothesis, not an approved clas
 
 Observations, freshness and unknowns should remain honest rather than becoming invented certainty.
 
-## Possible experiment, not authorized implementation
+## Verification experiment
 
-One project conversation, one direct-execution thread and one independent tangent could test the proposal: the User can keep discussing intent, enter either thread, route changed decisions and answer a visible request for input. Results would return with relevant evidence and durable knowledge without flooding the project conversation with execution transcripts. Cross-project navigation would also need examination.
+One main thread, two tangents and workers finishing out of order exercise the selected design: the User can keep discussing intent, enter either tangent, send changed decisions and answer a visible request for input. Results return with evidence and explicit handoffs without flooding the main context with execution transcripts. Verification must include independent drafts and Stop scope, reopening, duplicate admission, stale responses and context changes during work.
 
-This example does not select a scheduler, Ledger, fixed hierarchy or mandatory helper spawning. No runtime experiment, migration or cutover is implemented or authorized by this documentation foundation.
+This experiment is within the 2026-11-18 implementation authorization. It does not establish completed implementation or authorize a scheduler, Ledger, automatic helper spawning, legacy migration or public exposure.
 
 ## Decision provenance
 
-The fresh baseline, parallelism clarification, Cockpit purposes and living-brief discussion come from the User's 2026-11-16–17 decisions, preserved in the standalone continuation handoff. These sections state their substance so reading local records is not required. The [historical sources](problem-and-learning.md#historical-sources-and-interpretation) support the earlier lessons; they are not evidence that the fresh design is already operating.
+The fresh baseline, parallelism clarification, Cockpit purposes and earlier living-brief discussion come from the User's 2026-11-16–17 decisions. Main threads, tangents, workers, handoffs, model-tier defaults and the TaskCard/AgentStatus selection were settled in the 2026-11-18 conversation, followed by explicit implementation authorization. These sections state their substance so reading local records is not required. The [historical sources](problem-and-learning.md#historical-sources-and-interpretation) support the earlier lessons; they are not evidence that the fresh design is already operating.
