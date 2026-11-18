@@ -51,6 +51,7 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
+import { listTemplates, readTemplate } from "./template-routes.ts";
 import { ModelPolicyChangeSchema } from "../shared/model-policy.ts";
 import { ModelPolicyError } from "./model-policy.ts";
 import { BranchIdentityError } from "./branch-identity.ts";
@@ -503,6 +504,31 @@ export function createApp(
     return c.json({ status: await answerQuestion(c.get("scope"), result.data) });
   });
   routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
+  routes.get("/templates", async (c) => {
+    if (!c.req.param("chatId") || !chat.chats) return c.json({ error: "Chat not found." }, 404);
+    const scope = c.get("scope");
+    const result = await listTemplates(scope);
+    // Catalog membership is rechecked after filesystem reads. A later change
+    // can still race the response; filesystem and SDK state are not atomic.
+    if (!(await chat.chats.resolve(String(scope.conversation.id))))
+      return c.json({ error: "Chat not found." }, 404);
+    return c.json(result);
+  });
+  routes.get("/templates/:id", async (c) => {
+    if (!c.req.param("chatId") || !chat.chats) return c.json({ error: "Chat not found." }, 404);
+    const id = c.req.param("id");
+    const fingerprint = c.req.query("fingerprint") ?? "";
+    if (!/^[a-f0-9]{64}$/.test(id) || !/^[a-f0-9]{64}$/.test(fingerprint))
+      return c.json({ error: "Invalid template request." }, 400);
+    const scope = c.get("scope");
+    const result = await readTemplate(scope, id, fingerprint);
+    // Archived chats remain readable; deleted chats do not.
+    if (!(await chat.chats.resolve(String(scope.conversation.id))))
+      return c.json({ error: "Chat not found." }, 404);
+    if (!result)
+      return c.json({ error: "Template changed or unavailable. Refresh the list." }, 409);
+    return c.json(result);
+  });
   routes.get("/context", async (c) => c.json(await c.get("scope").context()));
   routes.get("/configuration", async (c) => c.json(await c.get("scope").configuration()));
   routes.post("/configuration", async (c) => {
