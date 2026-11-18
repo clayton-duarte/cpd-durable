@@ -5,7 +5,7 @@ import {
   defineExtension,
   defineTool,
   type ConversationId,
-  type Harness,
+  type Conversation,
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
@@ -13,7 +13,9 @@ import { z } from "zod";
 import {
   normalizeResolution,
   QuestionSpecSchema,
+  QuestionViewSchema,
   type QuestionSpec,
+  type QuestionView,
   type Resolution,
 } from "../shared/questions.ts";
 
@@ -44,7 +46,6 @@ export type QuestionAccessGuard = (
   conversationId: ConversationId,
   action: "read" | "resolve",
 ) => Promise<void>;
-export type QuestionView = Question & { actionable: boolean; cancelled: boolean };
 
 function live(task: Awaited<ReturnType<Tx["task"]>>, conversationId: ConversationId): boolean {
   return (
@@ -58,7 +59,7 @@ function live(task: Awaited<ReturnType<Tx["task"]>>, conversationId: Conversatio
 
 /** Read through the lifecycle guard; no model invocation or chat input is admitted. */
 export async function readQuestions(
-  harness: Harness,
+  harness: Pick<Conversation, "commit">,
   conversationId: ConversationId,
   guard: QuestionAccessGuard,
   context: Context = BACKGROUND_CONTEXT,
@@ -70,7 +71,14 @@ export async function readQuestions(
     for (const item of state.questions) {
       const active =
         item.status === "pending" && live(await tx.task(item.taskId as TaskId), conversationId);
-      result.push({ ...item, actionable: active, cancelled: item.status === "pending" && !active });
+      // Parse inside the transaction to detach nested SDK draft proxies before commit settles.
+      result.push(
+        QuestionViewSchema.parse({
+          ...item,
+          actionable: active,
+          cancelled: item.status === "pending" && !active,
+        }),
+      );
     }
     return result;
   }, context);
@@ -78,7 +86,7 @@ export async function readQuestions(
 
 /** First writer wins. A retry is identical only for the original pending revision and normalized resolution. */
 export async function resolveQuestion(
-  harness: Harness,
+  harness: Pick<Conversation, "commit">,
   conversationId: ConversationId,
   questionId: string,
   taskId: number,

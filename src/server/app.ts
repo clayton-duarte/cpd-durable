@@ -29,6 +29,8 @@ import { ChatLifecycleError } from "./chats.ts";
 import type { ChatScope } from "./chats.ts";
 import { CompactSchema } from "../shared/context.ts";
 import { ConfigurationChangeSchema } from "../shared/configuration.ts";
+import { QuestionAnswerSchema } from "../shared/questions.ts";
+import { answerQuestion, questionProjection } from "./question-routes.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -184,6 +186,18 @@ export function createApp(
       }
       throw error;
     }
+  });
+  routes.get("/questions", async (c) => {
+    if (c.req.param("chatId") === undefined) return c.json({ error: "Chat not found." }, 404);
+    return c.json(await questionProjection(c.get("scope")));
+  });
+  routes.post("/questions/resolve", async (c) => {
+    if (c.req.param("chatId") === undefined) return c.json({ error: "Chat not found." }, 404);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = QuestionAnswerSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid question answer." }, 400);
+    return c.json({ status: await answerQuestion(c.get("scope"), result.data) });
   });
   routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
   routes.get("/context", async (c) => c.json(await c.get("scope").context()));

@@ -131,3 +131,13 @@ export const QuestionViewSchema = z
       ctx.addIssue({ code: "custom", message: "Inconsistent question projection" });
   });
 export type QuestionView = z.infer<typeof QuestionViewSchema>;
+export const QuestionProjectionSchema = z.strictObject({
+  conversationId: z.string().regex(/^[1-9][0-9]*$/),
+  questions: z.array(QuestionViewSchema),
+});
+export const QuestionAnswerSchema = z.strictObject({
+  questionId: z.string().regex(/^q-[1-9][0-9]*$/),
+  taskId: z.number().int().positive().safe(),
+  revision: z.number().int().positive().safe(),
+  resolution: ResolutionSchema,
+});

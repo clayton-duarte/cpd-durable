@@ -5,6 +5,7 @@ import {
 } from "./components/assistant-ui/elements/elicitation-form";
 import { AgentStatus } from "./components/assistant-ui/elements/agent-status";
 import { ErrorState } from "./components/assistant-ui/elements/error-state";
+import { Button } from "./components/ui/button";
 import {
   normalizeResolution,
   QuestionViewSchema,
@@ -16,9 +17,11 @@ import {
 export function AgentQuestion({
   question,
   onResolve,
+  onRefresh,
 }: {
   question: unknown;
   onResolve: (question: QuestionView, resolution: Resolution) => Promise<void>;
+  onRefresh?: (() => Promise<void>) | undefined;
 }) {
   const parsed = QuestionViewSchema.safeParse(question);
   if (!parsed.success || parsed.data.cancelled) return null;
@@ -27,15 +30,18 @@ export function AgentQuestion({
       key={`${parsed.data.questionId}:${parsed.data.revision}`}
       question={parsed.data}
       onResolve={onResolve}
+      onRefresh={onRefresh}
     />
   );
 }
 function QuestionForm({
   question,
   onResolve,
+  onRefresh,
 }: {
   question: QuestionView;
   onResolve: (question: QuestionView, resolution: Resolution) => Promise<void>;
+  onRefresh?: (() => Promise<void>) | undefined;
 }) {
   const [values, setValues] = useState<Record<string, string | string[]>>(() => {
     const initial: Record<string, string | string[]> = Object.create(null) as Record<
@@ -146,14 +152,32 @@ function QuestionForm({
       </fieldset>
       {invalid && <AgentStatus state="failed" label="Complete required fields" role="alert" />}
       {failed && (
-        <ErrorState
-          title="Answer not confirmed"
-          detail="Retry the same response or refresh the question state."
-          retrying={pending}
-          onRetry={() => {
-            void send(failed);
-          }}
-        />
+        <>
+          <ErrorState
+            title="Answer not confirmed"
+            detail="Retry the same response or refresh the question state."
+            retrying={pending}
+            onRetry={() => {
+              void send(failed);
+            }}
+          />
+          {onRefresh && (
+            <Button
+              variant="ghost"
+              type="button"
+              disabled={pending}
+              onClick={() => {
+                setPending(true);
+                void onRefresh()
+                  .then(() => setFailed(null))
+                  .catch(() => {})
+                  .finally(() => setPending(false));
+              }}
+            >
+              Refresh question
+            </Button>
+          )}
+        </>
       )}
     </>
   );

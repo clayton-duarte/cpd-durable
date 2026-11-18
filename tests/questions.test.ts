@@ -8,6 +8,9 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { AgentQuestion } from "../src/client/agent-question.tsx";
+import { createApp } from "../src/server/app.ts";
+import { answerQuestion, questionProjection } from "../src/server/question-routes.ts";
+import { CatalogDoc, openChats } from "../src/server/chats.ts";
 import {
   createQuestionExtension,
   readQuestions,
@@ -97,6 +100,96 @@ async function fixture() {
 }
 
 describe("structured questions", () => {
+  it("guards scoped HTTP reads and answers through the real catalog transaction", async () => {
+    const f = await fixture();
+    try {
+      const chats = await openChats(
+        f.harness,
+        f.chat,
+        {
+          model: { provider: PROVIDER_ID, modelId: MODEL_ID },
+        },
+        f.provider.models,
+      );
+      const app = createApp({
+        conversation: f.chat,
+        chats,
+        withdraw: (id) => f.harness.abortSubmission(id, context, f.chat.id),
+      });
+      const q = await f.ask();
+      const base = `http://localhost:3000/api/chats/${f.chat.id}/questions`;
+      const get = () => app.request(base);
+      const post = (body: unknown) =>
+        app.request(`${base}/resolve`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const payload = {
+        questionId: q.questionId,
+        taskId: q.taskId,
+        revision: q.revision,
+        resolution: answer,
+      };
+      const capturedScope = (await chats.resolve(String(f.chat.id)))!;
+      await questionProjection(capturedScope);
+      const second = await chats.create(crypto.randomUUID());
+      const wrongChat = await app.request(
+        `http://localhost:3000/api/chats/${second.id}/questions/resolve`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
+      expect(wrongChat.status).toBe(409);
+      const read = await get();
+      expect(read.status).toBe(200);
+      expect(read.headers.get("cache-control")).toBe("no-store");
+      expect(
+        ((await read.json()) as { questions: { actionable: boolean }[] }).questions[0]?.actionable,
+      ).toBe(true);
+      expect(f.provider.calls).toHaveLength(1);
+      expect(
+        (await app.request(base, { headers: { origin: "http://foreign.invalid" } })).status,
+      ).toBe(403);
+      expect(
+        (await app.request(base, { headers: { "sec-fetch-site": "cross-site" } })).status,
+      ).toBe(403);
+      expect((await app.request(base, { headers: { host: "foreign.invalid" } })).status).toBe(403);
+      expect((await post({ ...payload, taskId: q.taskId + 1 })).status).toBe(409);
+      expect((await post({ ...payload, unexpected: true })).status).toBe(400);
+      await f.harness.commit(async (tx) => {
+        const item = (await tx.doc(CatalogDoc)).items.find((item) => item.id === f.chat.id)!;
+        item.status = "archived";
+      }, context);
+      const archived = await get();
+      expect(archived.status).toBe(200);
+      expect(
+        ((await archived.json()) as { questions: { actionable: boolean }[] }).questions[0]
+          ?.actionable,
+      ).toBe(false);
+      expect((await post(payload)).status).toBe(409);
+      // A previously captured active scope must not bypass the catalog check at commit time.
+      await expect(answerQuestion(capturedScope, payload)).rejects.toThrow("archived");
+      await f.harness.commit(async (tx) => {
+        const item = (await tx.doc(CatalogDoc)).items.find((item) => item.id === f.chat.id)!;
+        delete item.status;
+      }, context);
+      expect((await post(payload)).status).toBe(200);
+      expect((await post(payload)).status).toBe(200);
+      expect((await post({ ...payload, resolution: { kind: "decline" } })).status).toBe(409);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      f.provider.calls[1]!.finish("done");
+      await f.chat.waitForIdle(context);
+      await f.harness.commit(async (tx) => {
+        (await tx.doc(CatalogDoc)).items.find((item) => item.id === f.chat.id)!.status = "deleted";
+      }, context);
+      expect((await get()).status).toBe(404);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
   it("renders validated question fields through ElicitationForm without raw HTML", () => {
     const view = {
       questionId: "q-1",
