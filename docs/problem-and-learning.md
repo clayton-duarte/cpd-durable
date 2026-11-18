@@ -39,6 +39,20 @@ One accepted v0 observation was that procedural compliance displaced delivery: r
 
 Durable, attributable knowledge remains valuable. That does not establish a need for a universal operational Ledger, scheduler or state machine.
 
+## Parallel implementation is not continuous delivery
+
+During this repository's 2026-11-18 feature delivery, agents implemented several features on separate branches and worktrees from a shared baseline. Many independently edited the same integration surfaces: native chat/composer wiring, server admission and startup, shared projections, browser fixtures and capability documentation. After the User merged individual PRs, other open PRs repeatedly conflicted. Refreshing every remaining branch after each merge repeated reconciliation and verification work and made the User request conflict repair several times.
+
+The evidence is this repository's PR and merge history, including [model settings #30](https://github.com/clayton-duarte/cpd-durable/pull/30), [prompt templates #32](https://github.com/clayton-duarte/cpd-durable/pull/32), [edit receipts #38](https://github.com/clayton-duarte/cpd-durable/pull/38), and the overlapping [thread integration #40](https://github.com/clayton-duarte/cpd-durable/pull/40), plus the User's reports and agent verification returns. This is an observed coordination failure, not a measured comparison of delivery strategies. Green checks and mergeability described a particular head and base; they did not establish compatibility with subsequent merges.
+
+Separate worktrees isolated working files, not shared design, integration ownership or future merge effects. The supervisor launched overlapping integration work and reacted with repeated all-PR refreshes rather than managing dependencies and a bounded landing queue. The lesson is not to eliminate parallel work: CPD should enable **continuous parallel delivery**, not merely concurrent implementation followed by a reconciliation bottleneck.
+
+Prevention starts before dispatch: identify shared integration surfaces and dependencies, give each surface an integration owner, and delegate isolated modules and tests against explicit contracts. Land enabling interfaces before dependent integrations, or represent genuine dependencies explicitly rather than treating every branch as independent. Keep cohesive features together; do not turn these lessons into an obligatory architect/builder hierarchy or a new procedural ledger.
+
+For the current backlog, the User selected PR creation order as the landing queue. Refresh and verify the next PR against the actual merged base, let the User review and merge it, then advance the queue. Do not refresh every later branch merely to keep its mergeability indicator green. This is the present recovery policy, not a universal requirement to serialize implementation or use creation order forever.
+
+The [product implications](design.md#continuous-parallel-delivery) distinguish the selected problem from mechanisms still to be designed.
+
 ## Historical sources and interpretation
 
 Historical source links may require access to the original repository; making this repository public does not publish those sources.
