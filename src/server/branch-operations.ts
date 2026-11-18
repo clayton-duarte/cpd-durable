@@ -18,6 +18,11 @@ import {
   type EditBranchRequest,
 } from "../shared/branch-operations.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
+import {
+  compactIntentUnsettled,
+  directShellHasUnsettled,
+  directShellRequestExists,
+} from "./direct-shell.ts";
 
 type Operation = {
   requestId: string;
@@ -199,6 +204,12 @@ export function createBranchOperations(harness: Harness, catalog: BranchCatalogH
         throw new BranchOperationError("Edit preparation unavailable.", 409);
       await catalog.requireActive(tx, conversation.id);
       if (operation.submissionId !== undefined) return receipt(operation);
+      if (await directShellRequestExists(tx, conversation.id, request.requestId))
+        throw new BranchOperationError("Request identity already used.", 409);
+      if (await directShellHasUnsettled(tx, conversation.id))
+        throw new BranchOperationError("A direct shell command is running.", 409);
+      if (await compactIntentUnsettled(tx, conversation.id))
+        throw new BranchOperationError("Compaction admission is pending.", 409);
       // The prepared branch is visible to the catalog. Refuse to put the edit
       // after an intervening message, run, compaction, or queued input.
       const latest = await tx.latestEntryId(conversation.id);
