@@ -22,12 +22,23 @@ import {
 } from "./tangents/index.ts";
 import { ChatLifecycleError } from "./chats.ts";
 import { ModelPolicyError } from "./model-policy.ts";
+import { HandoffHeadChanged } from "./handoffs.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 
 export class TangentPolicyUnavailable extends Error {}
 class UnsupportedMedia extends Error {}
 const lifecycle = z.enum(["open", "concluded", "archived"]);
 const lifecycleRequest = z.strictObject({ expected: lifecycle, next: lifecycle });
 const revisionRequest = z.strictObject({ revision: z.number().int().positive().safe() });
+const deliverRequest = revisionRequest.extend({
+  expectedHead: z
+    .string()
+    .regex(/^[1-9]\d*$/)
+    .max(20)
+    .nullable()
+    .optional(),
+  acknowledgeRetired: z.boolean().optional(),
+});
 const id = (value: string | undefined) => Number(ChatIdSchema.parse(value)) as ConversationId;
 
 export function createTangentRoutes(harness: Harness, hooks: TangentHooks, models: Models) {
@@ -149,8 +160,24 @@ export function createTangentRoutes(harness: Harness, hooks: TangentHooks, model
   routes.post(`${base}/:tangentId/deliver`, async (c) => {
     const parent = id(c.req.param("mainId")),
       tangent = id(c.req.param("tangentId"));
-    const { revision } = revisionRequest.parse(await body(c.req.raw));
-    const result = await deliverReturn(harness, parent, parent, tangent, revision, hooks);
+    const request = deliverRequest.parse(await body(c.req.raw));
+    const choice =
+      request.expectedHead === undefined
+        ? undefined
+        : {
+            expectedHead: request.expectedHead,
+            acknowledgeRetired: request.acknowledgeRetired ?? false,
+          };
+    const result = await deliverReturn(
+      harness,
+      parent,
+      parent,
+      tangent,
+      request.revision,
+      hooks,
+      BACKGROUND_CONTEXT,
+      choice,
+    );
     return c.json({
       revision: result.revision,
       delivery: result.delivery,
@@ -172,17 +199,25 @@ export function createTangentRoutes(harness: Harness, hooks: TangentHooks, model
     return c.json(await returnDeliveryStatus(harness, parent, parent, tangent, revision, hooks));
   });
   routes.onError((error, c) =>
-    error instanceof UnsupportedMedia
-      ? c.json({ error: "Expected application/json." }, 415)
-      : error instanceof ZodError
-        ? c.json({ error: "Invalid tangent request." }, 400)
-        : error instanceof TangentPolicyUnavailable
-          ? c.json({ error: "Tangent model policy is unavailable." }, 503)
-          : error instanceof ChatLifecycleError
-            ? c.json({ error: error.message }, error.status)
-            : error instanceof ModelPolicyError
-              ? c.json({ error: error.message }, 409)
-              : c.json({ error: "Tangent request unavailable or changed." }, 409),
+    error instanceof HandoffHeadChanged
+      ? c.json(
+          {
+            error: "Context changed. Review and explicitly acknowledge the current context.",
+            currentHead: error.parentHead,
+          },
+          409,
+        )
+      : error instanceof UnsupportedMedia
+        ? c.json({ error: "Expected application/json." }, 415)
+        : error instanceof ZodError
+          ? c.json({ error: "Invalid tangent request." }, 400)
+          : error instanceof TangentPolicyUnavailable
+            ? c.json({ error: "Tangent model policy is unavailable." }, 503)
+            : error instanceof ChatLifecycleError
+              ? c.json({ error: error.message }, error.status)
+              : error instanceof ModelPolicyError
+                ? c.json({ error: error.message }, 409)
+                : c.json({ error: "Tangent request unavailable or changed." }, 409),
   );
   return routes;
 }

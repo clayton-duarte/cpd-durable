@@ -55,7 +55,7 @@ export function createApp(
     Partial<
       Pick<
         Awaited<ReturnType<typeof openChat>>,
-        "chats" | "attachments" | "modelPolicy" | "tangents" | "workers"
+        "chats" | "attachments" | "modelPolicy" | "tangents" | "workers" | "handoffs"
       >
     >,
 ) {
@@ -102,6 +102,7 @@ export function createApp(
   if (chat.attachments) app.route("/", chat.attachments.routes);
   if (chat.tangents) app.route("/", chat.tangents.routes);
   if (chat.workers) app.route("/", chat.workers);
+  if (chat.handoffs) app.route("/", chat.handoffs);
 
   app.get("/api/model-policy", async (c) => {
     if (!chat.modelPolicy) return c.json({ error: "Model settings unavailable." }, 503);

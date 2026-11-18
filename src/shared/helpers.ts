@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LegacyWorkerBriefSchema } from "./handoffs.ts";
 
 export const HelperLaunchSchema = z.strictObject({
   requestId: z.string().min(1).max(128),
@@ -7,17 +8,7 @@ export const HelperLaunchSchema = z.strictObject({
   modelRole: z.enum(["economical", "mid"]).default("economical"),
   assignment: z.string().trim().min(1).max(16_000),
   context: z.string().max(32_000),
-  brief: z
-    .strictObject({
-      version: z.literal(1),
-      kind: z.literal("delegate"),
-      deliverable: z.string().trim().min(1).max(8_000),
-      evidence: z.array(z.string().max(4_000)).max(20),
-      suggestedSkills: z.array(z.string().max(256)).max(20),
-      constraints: z.array(z.string().max(4_000)).max(20),
-    })
-    .nullable()
-    .default(null),
+  brief: LegacyWorkerBriefSchema.nullable().default(null),
 });
 export type HelperLaunch = z.infer<typeof HelperLaunchSchema>;
 export const WorkerStopSchema = z.strictObject({

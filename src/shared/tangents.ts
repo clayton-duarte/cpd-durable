@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { SelectionSchema } from "./configuration.ts";
+import { LegacyTangentHandoffSchema } from "./handoffs.ts";
 
 export const ResolvedTangentModelSchema = z.strictObject({
   selection: SelectionSchema,
@@ -8,20 +9,7 @@ export const ResolvedTangentModelSchema = z.strictObject({
 });
 export type ResolvedTangentModel = z.infer<typeof ResolvedTangentModelSchema>;
 
-const text = z.string().trim().max(8000);
-const lines = z.array(z.string().trim().min(1).max(1000)).max(20);
-export const HandoffSchema = z.strictObject({
-  goal: z.string().trim().min(1).max(4000),
-  decisions: lines,
-  constraints: lines,
-  exclusions: lines,
-  references: lines,
-  suggestedSkills: lines,
-  discretion: text,
-  deliverable: text,
-  evidence: text,
-  limits: text,
-});
+export const HandoffSchema = LegacyTangentHandoffSchema;
 export const CreateTangentSchema = z.strictObject({
   requestId: z.string().min(1).max(120),
   parentId: z.number().int().positive().safe(),
