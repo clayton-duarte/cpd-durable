@@ -9,6 +9,53 @@ import { DraftDoc } from "../src/server/drafts.ts";
 import { testModels } from "./models.ts";
 
 describe("draft attempt HTTP integration", () => {
+  it("admits an escaped leading bang as literal model input with its original draft snapshot", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "attempt-escaped-"));
+    const provider = testModels();
+    const host = await openChat(dir, provider.models, dir);
+    try {
+      const app = createApp(host);
+      const base = `http://localhost:3000/api/chats/${host.conversation.id}`;
+      const post = (path: string, method: string, body: unknown) =>
+        app.request(base + path, {
+          method,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const text = "\\!literal";
+      const requestId = crypto.randomUUID();
+      expect(
+        (await post("/draft", "PUT", { expectedRevision: 0, content: { text, images: [] } }))
+          .status,
+      ).toBe(200);
+      expect(
+        (
+          await post("/draft/attempt", "POST", {
+            requestId,
+            draftRevision: 1,
+            text,
+            images: [],
+            mode: "reject",
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await post("/input", "POST", {
+            requestId,
+            text: "!literal",
+            draft: { revision: 1, text, images: [], attempt: true },
+          })
+        ).status,
+      ).toBe(202);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.finish("done");
+      await host.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("does not clear a newer draft on the original first admission", async () => {
     const dir = await mkdtemp(join(tmpdir(), "attempt-late-"));
     const provider = testModels();

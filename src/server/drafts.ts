@@ -9,6 +9,7 @@ import {
 } from "../shared/drafts.ts";
 import { PendingImagesDoc } from "./attachment-catalog.ts";
 import { CatalogDoc, ChatLifecycleError, type ChatScope } from "./chats.ts";
+import { directShellRequestExists } from "./direct-shell.ts";
 import {
   DraftAttemptConflict,
   draftAttemptFingerprint,
@@ -87,6 +88,8 @@ export async function saveAttempt(scope: ChatScope, input: unknown) {
     const record = { ...request, fingerprint: draftAttemptFingerprint(request) };
     // Identical intent remains retryable after the user advances the draft.
     if (existing) return recordDraftAttempt(tx, scope.conversation.id, record);
+    if (await directShellRequestExists(tx, scope.conversation.id, request.requestId))
+      throw new DraftAttemptConflict();
     if (await tx.submissionByRequest(scope.conversation.id, request.requestId))
       throw new DraftAttemptConflict();
     const draft = await tx.doc(DraftDoc, scope.conversation.id);

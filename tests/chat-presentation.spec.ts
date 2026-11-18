@@ -2,6 +2,7 @@ import { test, expect, type Page, type Locator } from "@playwright/test";
 import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/shared/chat.ts";
 import { ConfigurationChangeSchema } from "../src/shared/configuration.ts";
 import type { ContextMeasurements } from "../src/shared/context.ts";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
 const controls = { canContinue: false, resetPending: false, queue: [] };
@@ -146,6 +147,9 @@ function historyState(
 test.beforeEach(async ({ page }) => {
   // Never let synthetic tests reach the user's live conversation.
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
+  await page.route("**/api/compact/reservation", (route) => route.fulfill({ json: null }));
+  await page.route("**/api/chats/*/compact/reservation", (route) => route.fulfill({ json: null }));
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },

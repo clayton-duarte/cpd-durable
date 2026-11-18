@@ -8,6 +8,8 @@ import { createCodeMode } from "./codemode.ts";
 import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
+import { DirectShellExtension } from "./direct-shell.ts";
+import type { openConfiguredMcp } from "./mcp/config.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -16,15 +18,20 @@ export function workingDirectory(path = "~"): string {
 }
 
 // Native host execution, deliberately not a sandbox or approval policy.
-export function createExecution(defaultCwd = workingDirectory()) {
+export function createExecution(
+  defaultCwd = workingDirectory(),
+  mcp?: Awaited<ReturnType<typeof openConfiguredMcp>>,
+) {
   const registry = createRegistry();
-  const codeMode = createCodeMode();
+  const codeMode = createCodeMode(mcp ? { namespaces: mcp.namespaces } : {});
   registry.install(CodingTools);
   registry.install(codeMode.extension);
+  if (mcp) registry.install(mcp.extension);
   registry.install(createSearchTools());
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
+  registry.install(DirectShellExtension);
   registry.install(
     defineExtension({
       name: "cpd-context",

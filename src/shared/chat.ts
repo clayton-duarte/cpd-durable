@@ -2,6 +2,7 @@ import { z } from "zod";
 import { NestedToolDisplaySchema } from "./nested-tools.ts";
 import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
 import { DraftAdmissionSchema } from "./drafts.ts";
+import { modelInputText } from "./direct-shell.ts";
 
 export const PROVIDER_ID = "opencode-go";
 export const MODEL_ID = "deepseek-v4.1-flash";
@@ -21,7 +22,7 @@ export const InputSchema = z
       (!!input.text || !!input.images?.length) &&
       new Set(input.images).size === (input.images?.length ?? 0) &&
       (!input.draft ||
-        (input.draft.text.trim() === input.text &&
+        (modelInputText(input.draft.text) === input.text &&
           JSON.stringify(input.draft.images) === JSON.stringify(input.images ?? []))),
   );
 export type ChatInput = z.infer<typeof InputSchema>;
@@ -114,7 +115,7 @@ export const ChatMessageSchema = z.strictObject({
   source: z
     .strictObject({
       entryId: RecordIdSchema,
-      // Only known SDK assistant entries receive generation-task attribution.
+      // Known SDK assistant entries and direct-shell result entries carry task attribution.
       taskId: RecordIdSchema.optional(),
     })
     .optional(),

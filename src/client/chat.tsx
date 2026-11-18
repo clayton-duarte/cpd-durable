@@ -36,6 +36,7 @@ import {
   useDraftRecovery,
   useDraftRestoration,
 } from "./draft-persistence.tsx";
+import { modelInputText, parseDirectShell } from "../shared/direct-shell.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
@@ -280,11 +281,47 @@ export function Chat(props: ChatProps) {
   useLayoutEffect(() => {
     committedProjection.current = projection;
   }, [projection]);
+  const displayMessages = useMemo(() => {
+    if (
+      !props.shell ||
+      props.state?.messages.some(
+        (message) =>
+          message.source?.taskId === Number(props.shell?.taskId) &&
+          message.parts?.some(
+            (part) => part.type === "tool-call" && part.name.startsWith("Direct shell"),
+          ),
+      )
+    )
+      return projection.messages;
+    const partId = `shell:${props.shell.taskId}`;
+    return [
+      ...projection.messages,
+      {
+        id: partId,
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: partId,
+            toolName: props.shell.includeInContext
+              ? "Direct shell"
+              : "Direct shell (not in model context)",
+            args: { command: props.shell.command },
+            argsText: JSON.stringify({ command: props.shell.command }),
+            result: `${props.shell.truncated ? "[Earlier output truncated]\n" : ""}${props.shell.output}`,
+            isPreliminary: true,
+          },
+        ],
+        metadata: { custom: { toolStates: { [partId]: "running" } } },
+        status: { type: "running" as const },
+      },
+    ];
+  }, [projection.messages, props.shell, props.state?.messages]);
   const messages = useExternalMessageConverter({
-    messages: projection.messages,
+    messages: displayMessages,
     callback: convertMessage,
     joinStrategy: "none",
-    isRunning: projection.streaming,
+    isRunning: projection.streaming || !!props.shell,
   });
   const available =
     !!props.onSend &&
@@ -351,8 +388,10 @@ export function Chat(props: ChatProps) {
     async (draft: string, mode: SendMode, nativeSend = false, ids?: string[]) => {
       const composer = runtimeRef.current?.thread.composer;
       setLocalError(null);
+      const shell = nativeSend ? parseDirectShell(draft) : undefined;
       if (
         nativeSend &&
+        !shell &&
         Array.from(draft.matchAll(/(?:^|\s)\/([a-z]*)(?=\s|$)/giu)).some((match) =>
           durableCommandNames.some((name) => name.startsWith(match[1]?.toLowerCase() ?? "")),
         )
@@ -367,8 +406,16 @@ export function Chat(props: ChatProps) {
         (mode === "steer" && !props.state?.busy)
       )
         return false;
-      const text = draft.trim();
+      const text = modelInputText(draft);
       const images = ids ?? composer?.getState().attachments.map((item) => item.id) ?? [];
+      if (shell && images.length) {
+        setLocalError("Direct shell commands cannot include image attachments.");
+        return false;
+      }
+      if (shell && !props.onShell) {
+        setLocalError("Direct shell is unavailable in this chat.");
+        return false;
+      }
       if (
         (!text && !images.length) ||
         text.length > 32_000 ||
@@ -388,6 +435,12 @@ export function Chat(props: ChatProps) {
       if (props.chatId && !writer) return false;
       writer?.beginSend();
       try {
+        if (shell && props.onShell) {
+          // Shell execution has its own durable identity; retain the draft on
+          // both success and uncertainty until shell-specific clearing exists.
+          submitted.current = null;
+          return await props.onShell(shell.command, shell.includeInContext);
+        }
         const prepared = writer
           ? await writer.prepareSend(draft, images, mode, crypto.randomUUID())
           : undefined;
@@ -413,7 +466,7 @@ export function Chat(props: ChatProps) {
         writer?.endSend();
       }
     },
-    [available, props.onSend, props.state, props.chatId, clearSubmitted],
+    [available, props.onSend, props.onShell, props.state, props.chatId, clearSubmitted],
   );
 
   const onNew = useCallback(
@@ -478,14 +531,39 @@ export function Chat(props: ChatProps) {
   const runtime = useExternalStoreRuntime({
     messages,
     onNew,
-    isRunning: props.state?.busy ?? false,
+    ...(props.onEdit
+      ? {
+          onEdit: async (message: AppendMessage) => {
+            const source = projection.messages.find((item) => item.id === message.sourceId);
+            const entryId = source?.metadata?.custom?.["sourceEntryId"];
+            if (
+              typeof entryId !== "number" ||
+              !Number.isSafeInteger(entryId) ||
+              message.role !== "user" ||
+              message.content.some((part) => part.type !== "text") ||
+              (message.attachments?.length ?? 0) !== 0
+            )
+              throw new Error("This message cannot be edited.");
+            const text = message.content
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("");
+            if (!text.trim() || text.length > 32_000) throw new Error("Enter a valid message.");
+            props.onEdit?.(entryId, text);
+          },
+        }
+      : {}),
+    isRunning: (props.state?.busy ?? false) || !!props.shell,
     isLoading: props.state === null,
     isDisabled: !props.onSend,
-    isSendDisabled: !available || (props.state?.busy ?? false),
+    isSendDisabled: !available || (props.state?.busy ?? false) || !!props.shell,
     ...(adapter ? { adapters: { attachments: adapter } } : {}),
     hasEarlier: !!props.onLoadEarlier && props.connected && (props.state?.hasEarlier ?? false),
     ...(props.onLoadEarlier ? { onLoadEarlier: props.onLoadEarlier } : {}),
-    ...(available && props.onStop ? { onCancel: props.onStop } : {}),
+    ...(props.shell && props.connected && !props.pending && props.onShellStop
+      ? { onCancel: props.onShellStop }
+      : available && !props.shell && props.onStop
+        ? { onCancel: props.onStop }
+        : {}),
   });
   runtimeRef.current = runtime;
   useLayoutEffect(() => {
@@ -552,7 +630,7 @@ export function Chat(props: ChatProps) {
             onReady={setPersistenceReady}
             onRetry={(record) => {
               if (!props.connected || props.pending || !props.onSend) return Promise.resolve(false);
-              return props.onSend(record.text.trim(), record.mode, record.images, {
+              return props.onSend(modelInputText(record.text), record.mode, record.images, {
                 requestId: record.requestId,
                 draft: {
                   revision: record.draftRevision,

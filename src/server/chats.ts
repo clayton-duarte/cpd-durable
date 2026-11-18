@@ -1,4 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   configure,
   AgentDoc,
@@ -29,9 +31,27 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { DraftDoc } from "./drafts.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
 import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
+import {
+  compactIntentUnsettled,
+  DirectShellDoc,
+  directShellHasUnsettled,
+  directShellRequestExists,
+} from "./direct-shell.ts";
+import {
+  DirectShellRequestSchema,
+  DirectShellResultSchema,
+  DirectShellStatusSchema,
+  modelInputText,
+} from "../shared/direct-shell.ts";
+import {
+  createBranchOperations,
+  BranchOperationError,
+  editableUserEntry,
+} from "./branch-operations.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
+const COMPACT_HOST = randomUUID();
 
 type CatalogItem = {
   id: number;
@@ -65,7 +85,13 @@ export class ChatLifecycleError extends Error {
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
-  return live.run === undefined && !live.compactions?.length && inbox.items.length === 0;
+  return (
+    live.run === undefined &&
+    !live.compactions?.length &&
+    inbox.items.length === 0 &&
+    !(await directShellHasUnsettled(tx, id as ConversationId)) &&
+    !(await compactIntentUnsettled(tx, id as ConversationId))
+  );
 }
 async function empty(tx: Tx, item: CatalogItem) {
   return (
@@ -99,6 +125,32 @@ export async function openChats(
       }
     }
   }, BACKGROUND_CONTEXT);
+
+  const branchOperations = createBranchOperations(harness, {
+    async requireActive(tx, id) {
+      const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
+      if (!item || item.status)
+        throw new BranchOperationError("Chat is archived or unavailable.", item ? 409 : 404);
+    },
+    async registerEdit(tx, { sourceId, branchId, forkEntryId }) {
+      const catalog = await tx.doc(CatalogDoc);
+      const source = catalog.items.find((item) => item.id === sourceId);
+      if (!source || source.status) throw new BranchOperationError("Source chat unavailable.", 409);
+      catalog.items.push({
+        id: branchId,
+        title: `Edit of ${source.title}`.slice(0, 80),
+        named: true,
+        requestId: null,
+        ...(forkEntryId === null
+          ? {}
+          : {
+              parentId: sourceId,
+              forkEntryId,
+              branchRootId: source.branchRootId ?? sourceId,
+            }),
+      });
+    },
+  });
 
   async function resolve(id: string) {
     const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
@@ -137,6 +189,8 @@ export async function openChats(
           const item = catalog.items.find((item) => item.id === conversation.id);
           if (!item || item.status)
             throw new ChatLifecycleError("Restore this chat before changing configuration.", 409);
+          if (await directShellHasUnsettled(tx, conversation.id))
+            throw new ChatLifecycleError("A direct shell command is running.", 409);
           const agent = await tx.doc(AgentDoc, conversation.id);
           const current = selection(agent);
           if (sameSelection(current, next)) return;
@@ -152,6 +206,142 @@ export async function openChats(
         }, BACKGROUND_CONTEXT);
       },
       archived: item.status === "archived",
+      shellStatus: async (requestId?: string) => {
+        if (!(await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT)))
+          return undefined;
+        return harness.commit(async (tx) => {
+          const catalog = await tx.doc(CatalogDoc);
+          if (
+            !catalog.items.some((item) => item.id === conversation.id && item.status !== "deleted")
+          )
+            return undefined;
+          const state = await tx.doc(DirectShellDoc, conversation.id);
+          const record = state.requests.find((request) =>
+            requestId === undefined
+              ? request.taskId === state.active
+              : request.requestId === requestId,
+          );
+          if (!record) return undefined;
+          const task = await tx.task(record.taskId as import("@earendil-works/pi-durable").TaskId);
+          if (!task || task.conversationId !== conversation.id || task.kind !== "cpd.direct-shell")
+            return undefined;
+          const input = DirectShellRequestSchema.safeParse(task.input);
+          if (!input.success || input.data.requestId !== record.requestId) return undefined;
+          const settled =
+            task.state.status === "terminal"
+              ? DirectShellResultSchema.safeParse(task.state.outcome.result)
+              : undefined;
+          const progress = state?.progress?.taskId === task.id ? state.progress : undefined;
+          const result = settled?.success
+            ? settled.data
+            : {
+                status:
+                  task.state.status === "terminal"
+                    ? ("unavailable" as const)
+                    : ("running" as const),
+                output: progress?.output ?? "",
+                truncated: progress?.truncated ?? false,
+              };
+          return DirectShellStatusSchema.parse({
+            conversationId: String(conversation.id),
+            taskId: String(task.id),
+            ...input.data,
+            ...result,
+          });
+        }, BACKGROUND_CONTEXT);
+      },
+      stopShell: async (requestId: string) => {
+        const id = await conversation.commit(async (tx) => {
+          await assertWritable(tx);
+          const record = (await tx.doc(DirectShellDoc, conversation.id)).requests.find(
+            (request) => request.requestId === requestId,
+          );
+          if (!record) throw new ChatLifecycleError("Shell request not found.", 404);
+          const task = await tx.task(record.taskId as import("@earendil-works/pi-durable").TaskId);
+          if (!task || task.conversationId !== conversation.id || task.kind !== "cpd.direct-shell")
+            throw new ChatLifecycleError("Shell task unavailable.", 409);
+          return task.id;
+        }, BACKGROUND_CONTEXT);
+        return harness.abortTask(id, BACKGROUND_CONTEXT);
+      },
+      compact: async (instructions?: string) => {
+        const reservation = randomUUID();
+        await conversation.commit(async (tx) => {
+          await assertWritable(tx);
+          if (
+            (await directShellHasUnsettled(tx, conversation.id)) ||
+            (await compactIntentUnsettled(tx, conversation.id))
+          )
+            throw new ChatLifecycleError("Shell or compaction admission is pending.", 409);
+          (await tx.doc(DirectShellDoc, conversation.id)).compactIntent = {
+            id: reservation,
+            owner: COMPACT_HOST,
+            inputDigest: createHash("sha256")
+              .update(JSON.stringify(instructions ?? null))
+              .digest("hex"),
+          };
+        }, BACKGROUND_CONTEXT);
+        const taskId = await conversation.compact(instructions, BACKGROUND_CONTEXT);
+        await conversation.commit(async (tx) => {
+          const doc = await tx.doc(DirectShellDoc, conversation.id);
+          if (doc.compactIntent?.id !== reservation)
+            throw new Error("Compaction reservation changed.");
+          doc.compactIntent.taskId = taskId;
+        }, BACKGROUND_CONTEXT);
+        return taskId;
+      },
+      compactReservation: async () => {
+        const doc = await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT);
+        if (!doc?.compactIntent) return null;
+        const intent = doc.compactIntent;
+        const task =
+          intent.taskId === undefined
+            ? undefined
+            : await harness.getTask(
+                intent.taskId as import("@earendil-works/pi-durable").TaskId,
+                BACKGROUND_CONTEXT,
+              );
+        return {
+          id: intent.id,
+          pending:
+            intent.taskId === undefined ||
+            !task ||
+            task.conversationId !== conversation.id ||
+            task.kind !== "pi.compaction" ||
+            task.state.status !== "terminal",
+          recoveryRequiresRestart: !intent.owner || intent.owner === COMPACT_HOST,
+          taskKnown: intent.taskId !== undefined,
+        };
+      },
+      releaseCompactReservation: async (id: string) =>
+        conversation.commit(async (tx) => {
+          await assertWritable(tx);
+          const doc = await tx.doc(DirectShellDoc, conversation.id);
+          const intent = doc.compactIntent;
+          if (!intent || intent.id !== id)
+            throw new ChatLifecycleError("Compaction reservation changed.", 409);
+          if (!intent.owner || intent.owner === COMPACT_HOST)
+            throw new ChatLifecycleError(
+              "Restart the host before resolving this reservation.",
+              409,
+            );
+          const live = await tx.doc(LiveDoc, conversation.id);
+          if (live.compactions?.length)
+            throw new ChatLifecycleError("Compaction is still active.", 409);
+          if (intent.taskId !== undefined) {
+            const task = await tx.task(
+              intent.taskId as import("@earendil-works/pi-durable").TaskId,
+            );
+            if (
+              !task ||
+              task.conversationId !== conversation.id ||
+              task.kind !== "pi.compaction" ||
+              task.state.status !== "terminal"
+            )
+              throw new ChatLifecycleError("Compaction outcome is unavailable or active.", 409);
+          }
+          delete doc.compactIntent;
+        }, BACKGROUND_CONTEXT),
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
       admit: (
@@ -167,9 +357,17 @@ export async function openChats(
           const metadata = await tx.doc(CatalogDoc);
           const item = metadata.items.find((entry) => entry.id === conversation.id);
           await assertWritable(tx);
-          const attempt = draft.requestId
-            ? await readDraftAttempt(tx, conversation.id, draft.requestId)
-            : undefined;
+          if (
+            draft.requestId &&
+            (await directShellRequestExists(tx, conversation.id, draft.requestId))
+          )
+            throw new ChatLifecycleError("Request identity already used.", 409);
+          if (await directShellHasUnsettled(tx, conversation.id))
+            throw new ChatLifecycleError("A direct shell command is running.", 409);
+          const attempt =
+            draft.requestId && z.uuid().safeParse(draft.requestId).success
+              ? await readDraftAttempt(tx, conversation.id, draft.requestId)
+              : undefined;
           if (options?.draft?.attempt && !attempt) throw new DraftAttemptConflict();
           if (attempt) {
             const original = attempt.record;
@@ -181,7 +379,7 @@ export async function openChats(
               JSON.stringify(options.draft.images) !== JSON.stringify(original.images) ||
               options.digest !==
                 imageRequestDigest({
-                  text: original.text.trim(),
+                  text: modelInputText(original.text),
                   images: original.images,
                   mode: original.mode,
                 })
@@ -240,6 +438,22 @@ export async function openChats(
   }
 
   return {
+    editBranch: branchOperations.edit,
+    recentEditOperations(id: string, at: string) {
+      return branchOperations.recent(Number(id) as ConversationId, Number(at) as EntryId);
+    },
+    async canEdit(id: string, at: string) {
+      const scoped = await resolve(id);
+      if (!scoped || scoped.archived) return false;
+      const entryId = Number(at) as EntryId;
+      const page = await scoped.conversation.entries(
+        { minEntryId: entryId, maxEntryId: entryId },
+        1,
+        undefined,
+        BACKGROUND_CONTEXT,
+      );
+      return page.items[0]?.id === entryId && editableUserEntry(page.items[0]);
+    },
     resolve,
     async list(): Promise<ChatCatalog> {
       const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
