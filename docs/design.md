@@ -34,6 +34,8 @@ The accepted [chat component mapping](chat-components.md) defines reusable conta
 
 On 2026-11-17 the User expanded the browser surface to chat creation and navigation using TanStack Router and supplied assistant-ui sidebar/thread-list elements. Independent ownerless SDK conversations share one Harness and its storage; this does not select a project/task hierarchy, forks or orchestration. ThreadListSidebar and ThreadList supply navigation. AssistantSidebar is an app/copilot split with its own Thread, not a conversation-navigation shell, so it is not nested into this workspace. See [implemented semantics and limits](chat-components.md#chat-navigation-and-creation).
 
+The User subsequently requested one active empty new chat at a time and per-chat context menus for archive/delete. New chat reuses the durable empty conversation. Archive is reversible; deletion removes the chat from the app with explicit confirmation, not physical SDK-record erasure. The pinned SDK has no public conversation-purge operation.
+
 ## Native execution and pi TUI parity
 
 On 2026-11-17, after Batch 2, the User authorized making cpd fully usable with pi TUI's tools and features, without cpd-added approval prompts or sandbox restrictions, and selected `~/` as the default working directory. It is a starting context, not a filesystem boundary. Tools execute with the server account's OS permissions and inherited environment; cpd does not bypass OS access controls or supply unavailable external programs.

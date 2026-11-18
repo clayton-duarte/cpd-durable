@@ -67,7 +67,7 @@ test("routes, back/forward and drafts stay isolated while another chat runs", as
   await expect(draft(page)).toHaveValue("Original draft");
   await page.goForward();
   await expect(draft(page)).toHaveValue("Second draft");
-  await expect(page.getByRole("button", { name: "More options" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "More options" })).toHaveCount(2);
   await expect(page.locator('[data-slot="aui_thread-list-group-label"]')).toHaveCount(0);
 });
 
@@ -179,4 +179,69 @@ test("switching preserves the reading position of retained history", async ({ pa
   await page.getByRole("button", { name: /Original chat/ }).click();
   await page.getByRole("button", { name: "Second chat", exact: true }).click();
   await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBe(400);
+});
+
+test("New chat reselects the existing empty chat without clearing its draft", async ({ page }) => {
+  await workspace(page);
+  await page.route("**/api/chats", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    return route.fulfill({
+      status: 201,
+      json: { id: "2", title: "Second chat", running: false, status: "regular" },
+    });
+  });
+  await page.goto("/chats/2");
+  await draft(page).fill("Unsent empty-chat draft");
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await expect(page).toHaveURL(/\/chats\/2$/);
+  await expect(draft(page)).toHaveValue("Unsent empty-chat draft");
+});
+
+test("chat context menus archive, restore and confirm deletion without resurrecting rows", async ({
+  page,
+}) => {
+  await workspace(page);
+  let chats = [
+    { id: "1", title: "Original chat", running: false, status: "regular" },
+    { id: "2", title: "Second chat", running: false, status: "regular" },
+  ];
+  await page.route("**/api/chats", (route) => route.fulfill({ json: { rootId: "1", chats } }));
+  await page.route("**/api/chats/*/manage", async (route) => {
+    const id = new URL(route.request().url()).pathname.split("/")[3];
+    const { action } = route.request().postDataJSON() as { action: string };
+    chats =
+      action === "delete"
+        ? chats.filter((chat) => chat.id !== id)
+        : chats.map((chat) =>
+            chat.id === id
+              ? { ...chat, status: action === "archive" ? "archived" : "regular" }
+              : chat,
+          );
+    await route.fulfill({ json: { rootId: "1", chats } });
+  });
+  await page.goto("/chats/2");
+  await draft(page).fill("Retain on archive");
+  await page.getByRole("button", { name: "Second chat", exact: true }).click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Rename" })).toHaveCount(0);
+  await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+  await expect(page).toHaveURL(/\/chats\/1$/);
+  await expect(page.getByRole("button", { name: "Second chat", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Archived chats", exact: true }).click();
+  const row = page.locator('[data-slot="aui_thread-list-item"]').filter({ hasText: "Second chat" });
+  await row.getByRole("button", { name: "More options" }).click();
+  await page.getByRole("menuitem", { name: "Restore", exact: true }).click();
+  await page.getByRole("button", { name: "Second chat", exact: true }).click();
+  await expect(draft(page)).toHaveValue("Retain on archive");
+  await row.getByRole("button", { name: "More options" }).click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toContainText("Underlying pi-durable records remain");
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(draft(page)).toHaveValue("Retain on archive");
+  await row.getByRole("button", { name: "More options" }).click();
+  await page.getByRole("menuitem", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Delete chat", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Second chat", exact: true })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Second chat", exact: true })).toHaveCount(0);
 });

@@ -18,7 +18,8 @@ import {
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
 import type { openChat } from "./chat.ts";
-import { ChatIdSchema, CreateChatSchema } from "../shared/chats.ts";
+import { ChatIdSchema, CreateChatSchema, ChatActionSchema } from "../shared/chats.ts";
+import { ChatLifecycleError } from "./chats.ts";
 import type { ChatScope } from "./chats.ts";
 
 export function createApp(
@@ -75,6 +76,16 @@ export function createApp(
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
     return c.json(await chat.chats.create(result.data.requestId), 201);
   });
+  app.post("/api/chats/:chatId/manage", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const action = ChatActionSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!id.success || !action.success) return c.json({ error: "Invalid chat action." }, 400);
+    if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
+    await chat.chats.change(id.data, action.data.action);
+    return c.json(await chat.chats.list());
+  });
   const routes = new Hono<{
     Variables: { scope: ChatScope; history: ReturnType<typeof createHistory> };
   }>();
@@ -83,15 +94,18 @@ export function createApp(
     if (id !== undefined && !ChatIdSchema.safeParse(id).success)
       return c.json({ error: "Chat not found." }, 404);
     const scope =
-      id === undefined
+      id === undefined && !chat.chats
         ? {
             conversation: chat.conversation,
+            archived: false,
             withdraw: chat.withdraw,
             admit: (draft: Parameters<ChatScope["admit"]>[0]) =>
               chat.conversation.submit(draft, BACKGROUND_CONTEXT),
           }
-        : await chat.chats?.resolve(id);
+        : await chat.chats?.resolve(id ?? String(chat.conversation.id));
     if (!scope) return c.json({ error: "Chat not found." }, 404);
+    if (scope.archived && c.req.method !== "GET" && !c.req.path.endsWith("/history"))
+      return c.json({ error: "Restore this archived chat before sending or changing it." }, 409);
     const key = String(scope.conversation.id);
     let history = histories.get(key);
     if (!history) {
@@ -243,7 +257,11 @@ export function createApp(
 
   app.route("/api/chats/:chatId", routes);
   app.route("/api", routes);
-  app.onError((_error, c) => c.json({ error: "Conversation unavailable. Try reconnecting." }, 503));
+  app.onError((error, c) =>
+    error instanceof ChatLifecycleError
+      ? c.json({ error: error.message }, error.status)
+      : c.json({ error: "Conversation unavailable. Try reconnecting." }, 503),
+  );
   app.notFound((c) => c.json({ error: "Not found." }, 404));
   return app;
 }

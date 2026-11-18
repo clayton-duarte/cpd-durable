@@ -27,6 +27,11 @@ export function createExecution(defaultCwd = workingDirectory()) {
           { tag: false },
         ),
         section("cwd", ({ env }) => env?.cwd),
+        section("model", ({ agent }) =>
+          agent.model
+            ? `Host-configured provider: ${agent.model.provider}\nHost-configured model: ${agent.model.modelId}\nThis is the model configuration for this request, supplied by the host. Use it when asked which model is running; it is not independent verification of the provider's underlying weights.`
+            : undefined,
+        ),
       ],
     }),
   );

@@ -3,6 +3,14 @@ import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/share
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
 const controls = { canContinue: false, resetPending: false, queue: [] };
+function textLive(
+  taskId: number,
+  afterEntryId: number,
+  text: string,
+): NonNullable<ChatState["live"]> {
+  const id = `generation:1:${taskId}:1`;
+  return { id, taskId, afterEntryId, text, parts: [{ id: `${id}:0`, type: "text", text }] };
+}
 async function connect(page: Page, state: ChatState = { ...empty, controls }) {
   await page.addInitScript((initial) => {
     class TestEventSource extends EventTarget {
@@ -131,6 +139,56 @@ test("native earlier loading prepends history while preserving draft, row identi
   await expect(draft).toHaveValue("Keep this unsent draft");
   await expect.poll(async () => Math.abs((await row.boundingBox())!.y - before)).toBeLessThan(6);
   expect(requests).toHaveLength(1);
+});
+
+test("loaded-history search steps and wraps real text hits without searching hidden reasoning", async ({
+  page,
+}) => {
+  const initial = historyState(1, 40, 1);
+  initial.messages[0]!.text = "Needle first and needle again";
+  initial.messages[1]!.text = "Needle second";
+  initial.messages[3]!.parts = [{ id: "4:0:0", type: "reasoning", text: "private needle" }];
+  initial.messages[3]!.text = "";
+  await connect(page, initial);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Find in loaded history" }).click();
+  const search = page.locator('[data-slot="conversation-search"]');
+  await search.getByRole("textbox", { name: "Find in conversation" }).fill("needle");
+  await expect(search).toContainText("1/3");
+  await search.getByRole("button", { name: "Next match" }).click();
+  await expect(search).toContainText("2/3");
+  await search.getByRole("textbox").press("Enter");
+  await expect(search).toContainText("3/3");
+  await search.getByRole("textbox").press("Enter");
+  await expect(search).toContainText("1/3");
+  await search.getByRole("textbox").press("Shift+Enter");
+  await expect(search).toContainText("3/3");
+  await search.getByRole("textbox").fill("not loaded");
+  await search.getByRole("button", { name: "Next match" }).click();
+  await expect(search).toContainText("0");
+  await expect(search).toHaveAttribute("aria-label", /unloaded messages are not searched/);
+});
+
+test("conversation map selects actual loaded turns and preserves the native draft", async ({
+  page,
+}) => {
+  await connect(page, historyState(1, 50, 1));
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep navigation draft");
+  const map = page.getByRole("navigation", { name: "Conversation map" });
+  await expect(map.getByRole("button")).toHaveCount(25);
+  await map.getByRole("button", { name: "Turn 1", exact: true }).click();
+  const row = page.locator('[data-durable-id="1:0"]');
+  await expect
+    .poll(() =>
+      row.evaluate((element) => {
+        const viewport = element.closest('[data-slot="aui_thread-viewport"]')!;
+        return Math.abs(element.getBoundingClientRect().top - viewport.getBoundingClientRect().top);
+      }),
+    )
+    .toBeLessThan(5);
+  await expect(draft).toHaveValue("Keep navigation draft");
 });
 
 test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
@@ -1133,6 +1191,178 @@ test("provider reasoning uses the supplied Reasoning disclosure, not a paused st
   await expect(page.getByText("Legacy answer", { exact: true })).toBeVisible();
   await expect(page.getByText(/Reasoning content is not shown/)).toHaveCount(0);
   await expect(page.locator('[data-slot="agent-status"]')).toHaveCount(0);
+});
+
+for (const width of [1100, 375]) {
+  test(`short streaming turns reserve no blank page and the composer stays fixed on completion (${width}px)`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 1000 });
+    const state: ChatState = {
+      ...empty,
+      controls,
+      conversationId: 1,
+      window: { entryIds: [1] },
+      busy: true,
+      messages: [
+        { id: "1:0", role: "user", text: "Prompt", interrupted: false, source: { entryId: 1 } },
+      ],
+      live: textLive(9, 1, "Short partial"),
+    };
+    await connect(page, state);
+    await page.goto("/");
+    await expect(page.getByText("Short partial", { exact: true })).toBeVisible();
+    const viewport = page.locator('[data-slot="aui_thread-viewport"]');
+    await expect
+      .poll(() => viewport.evaluate((element) => element.scrollHeight - element.clientHeight))
+      .toBeLessThan(3);
+    await expect(page.getByText("Working…", { exact: true })).toHaveCount(0);
+    const composer = page.locator('[data-slot="aui_composer-shell"]');
+    const before = await composer.boundingBox();
+    await update(page, {
+      ...state,
+      busy: false,
+      live: null,
+      window: { entryIds: [1, 2] },
+      messages: [
+        ...state.messages,
+        {
+          id: "2:0",
+          role: "assistant",
+          text: "Short answer",
+          interrupted: false,
+          outcome: "complete",
+          source: { entryId: 2, taskId: 9 },
+        },
+      ],
+    });
+    await expect(page.getByText("Short answer", { exact: true })).toBeVisible();
+    await expect
+      .poll(async () => Math.abs((await composer.boundingBox())!.y - before!.y))
+      .toBeLessThan(2);
+    await expect(page.getByRole("button", { name: "Scroll to bottom", exact: true })).toBeHidden();
+  });
+}
+
+test("untouched streams follow the bottom through growth and handover, but respect reading older text", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 700 });
+  const state: ChatState = {
+    ...empty,
+    controls,
+    conversationId: 1,
+    window: { entryIds: [1] },
+    busy: true,
+    messages: [
+      { id: "1:0", role: "user", text: "Prompt", interrupted: false, source: { entryId: 1 } },
+    ],
+    live: textLive(9, 1, "Initial partial"),
+  };
+  await connect(page, state);
+  await page.goto("/");
+  await expect(page.getByText("Initial partial", { exact: true })).toBeVisible();
+  const viewport = page.locator('[data-slot="aui_thread-viewport"]');
+  const distance = () =>
+    viewport.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop);
+  const composer = page.locator('[data-slot="aui_composer-shell"]');
+  const composerTop = (await composer.boundingBox())!.y;
+  let text = "";
+  for (const count of [25, 45, 65]) {
+    text = Array.from({ length: count }, (_, index) => `Streaming paragraph ${index}.`).join(
+      "\n\n",
+    );
+    await update(page, { ...state, live: textLive(9, 1, text) });
+    await expect.poll(distance).toBeLessThan(3);
+    await expect
+      .poll(async () => Math.abs((await composer.boundingBox())!.y - composerTop))
+      .toBeLessThan(2);
+  }
+  const settled: ChatState = {
+    ...state,
+    busy: false,
+    live: null,
+    window: { entryIds: [1, 2] },
+    messages: [
+      ...state.messages,
+      {
+        id: "2:0",
+        role: "assistant",
+        text,
+        interrupted: false,
+        outcome: "complete",
+        source: { entryId: 2, taskId: 9 },
+      },
+    ],
+  };
+  await update(page, settled);
+  await expect.poll(distance).toBeLessThan(3);
+  await expect
+    .poll(async () => Math.abs((await composer.boundingBox())!.y - composerTop))
+    .toBeLessThan(2);
+  await expect(page.getByRole("button", { name: "Scroll to bottom", exact: true })).toBeHidden();
+  await viewport.hover({ position: { x: 100, y: 100 } });
+  expect(
+    await viewport.evaluate((element) => element.scrollHeight - element.clientHeight),
+  ).toBeGreaterThan(300);
+  await page.mouse.wheel(0, -450);
+  await expect.poll(distance).toBeGreaterThan(200);
+  const top = await viewport.evaluate((element) => element.scrollTop);
+  await update(page, {
+    ...settled,
+    busy: true,
+    live: textLive(10, 2, "Another partial"),
+  });
+  // A new run intentionally scrolls to latest. User scrolling during that run
+  // must still suspend following subsequent token updates.
+  await expect.poll(distance).toBeLessThan(3);
+  await page.mouse.wheel(0, -450);
+  await expect.poll(distance).toBeGreaterThan(200);
+  const reading = await viewport.evaluate((element) => element.scrollTop);
+  await update(page, {
+    ...settled,
+    busy: true,
+    live: textLive(10, 2, "Another partial\n\nMore text"),
+  });
+  await expect.poll(() => viewport.evaluate((element) => element.scrollTop)).toBe(reading);
+  expect(top).toBeGreaterThan(0);
+});
+
+test("collapsed reasoning/tool rows use their actual compact height, including offscreen history", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    controls,
+    messages: Array.from({ length: 20 }, (_, index) => ({
+      id: `${index + 1}:0`,
+      role: "assistant" as const,
+      text: "",
+      interrupted: false,
+      outcome: "complete" as const,
+      parts: [
+        { id: `${index + 1}:0:0`, type: "reasoning" as const, text: "Hidden reasoning" },
+        {
+          id: `${index + 1}:0:1`,
+          type: "tool-call" as const,
+          callId: `call-${index}`,
+          name: "bash",
+          arguments: { command: "pwd" },
+          state: "complete" as const,
+          output: "Done",
+        },
+      ],
+    })),
+  });
+  await page.goto("/");
+  await expect(page.locator('[data-slot="aui_assistant-message-root"]')).toHaveCount(20);
+  await expect
+    .poll(() =>
+      page
+        .locator('[data-slot="aui_assistant-message-root"]')
+        .evaluateAll((rows) => Math.max(...rows.map((row) => row.getBoundingClientRect().height))),
+    )
+    .toBeLessThan(140);
 });
 
 for (const finalState of ["complete", "error", "cancelled"] as const) {

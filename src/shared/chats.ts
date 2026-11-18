@@ -8,6 +8,7 @@ export const ChatSummarySchema = z.strictObject({
   id: ChatIdSchema,
   title: z.string(),
   running: z.boolean(),
+  status: z.enum(["regular", "archived"]).default("regular"),
 });
 export const ChatCatalogSchema = z
   .strictObject({
@@ -17,11 +18,10 @@ export const ChatCatalogSchema = z
   .refine(
     (catalog) => new Set(catalog.chats.map((chat) => chat.id)).size === catalog.chats.length,
     "Duplicate chat identity",
-  )
-  .refine(
-    (catalog) => catalog.chats.some((chat) => chat.id === catalog.rootId),
-    "Missing original chat",
   );
 export const CreateChatSchema = z.strictObject({ requestId: z.uuid() });
+export const ChatActionSchema = z.strictObject({
+  action: z.enum(["archive", "unarchive", "delete"]),
+});
 export type ChatSummary = z.infer<typeof ChatSummarySchema>;
 export type ChatCatalog = z.infer<typeof ChatCatalogSchema>;
