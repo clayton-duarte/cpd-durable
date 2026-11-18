@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AssistantRuntime } from "@assistant-ui/react";
-import { DraftViewSchema, type DraftView } from "../shared/drafts.ts";
+import {
+  DraftAttemptRecoveryPageSchema,
+  DraftContentSchema,
+  DraftViewSchema,
+  type DraftAttemptRecoveryPage,
+  type DraftView,
+} from "../shared/drafts.ts";
 
 type Props = {
   runtime: AssistantRuntime;
@@ -190,4 +196,214 @@ export function useDraftRestoration({ runtime, chatId, enabled, readOnly, localR
   }, [conflict, chatId]);
   const keepMine = useCallback(() => setConflict(null), []);
   return { conflict: conflict?.chatId === chatId, error, useSaved, keepMine };
+}
+
+/** Read-only discovery: callers must offer explicit retry; reading never sends input. */
+export function useDraftRecovery(chatId: string | undefined, enabled: boolean) {
+  const [attempts, setAttempts] = useState<DraftAttemptRecoveryPage["attempts"]>([]);
+  const [capped, setCapped] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [scope, setScope] = useState<string>();
+  const loadMoreRef = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => {
+    setScope(chatId);
+    setAttempts([]);
+    setCapped(false);
+    setError(null);
+    if (!enabled || !chatId || !/^[1-9]\d*$/.test(chatId)) return;
+    const controller = new AbortController();
+    let cursor: string | null = null;
+    let loading = false;
+    const load = async () => {
+      if (loading || controller.signal.aborted) return;
+      loading = true;
+      const requestedCursor = cursor;
+      try {
+        const query = requestedCursor ? `?cursor=${encodeURIComponent(requestedCursor)}` : "";
+        const response = await fetch(`/api/chats/${chatId}/draft/attempts${query}`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Recovery unavailable");
+        const page = DraftAttemptRecoveryPageSchema.parse((await response.json()) as unknown);
+        if (controller.signal.aborted) return;
+        setAttempts((previous) =>
+          requestedCursor ? [...previous, ...page.attempts] : page.attempts,
+        );
+        cursor = page.nextCursor;
+        setCapped(page.capped);
+        setError(null);
+      } catch {
+        if (!controller.signal.aborted) setError("Delivery recovery could not be loaded.");
+      } finally {
+        loading = false;
+      }
+    };
+    loadMoreRef.current = load;
+    void load();
+    return () => {
+      controller.abort();
+      loadMoreRef.current = null;
+    };
+  }, [chatId, enabled]);
+  const current = enabled && scope === chatId;
+  return {
+    attempts: current ? attempts : [],
+    capped: current && capped,
+    error: current ? error : null,
+    loadMore: () => (current ? loadMoreRef.current?.() : undefined),
+  };
+}
+
+/**
+ * Serialized CAS writer for the native composer. Start only after restoration has
+ * settled; the caller owns conflict presentation and send/ack coordination. This
+ * is intentionally not mounted until the admission protocol is wired.
+ */
+export function createDraftAutosave(options: {
+  runtime: AssistantRuntime;
+  chatId: string;
+  initial: DraftView;
+  onConflict(saved: DraftView): void;
+  onError(message: string): void;
+}) {
+  const composer = options.runtime.thread.composer;
+  const metadata = new Map(options.initial.content.images.map((image) => [image.id, image]));
+  const controller = new AbortController();
+  let saved = DraftViewSchema.parse(options.initial);
+  let stopped = false;
+  let conflicted = false;
+  let generation = 0;
+  let sendPending = false;
+  let suppressDetachedEmpty = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let running: Promise<void> | undefined;
+  let last = "";
+
+  const snapshot = () => {
+    const state = composer.getState();
+    const images = state.attachments.map((item) => {
+      const known = metadata.get(item.id);
+      const size = item.file?.size ?? known?.size;
+      return { id: item.id, name: item.name, mimeType: item.contentType, size };
+    });
+    const parsed = DraftContentSchema.safeParse({ text: state.text, images });
+    return parsed.success ? parsed.data : undefined;
+  };
+  const fingerprint = () => {
+    const state = composer.getState();
+    return JSON.stringify([
+      state.text,
+      state.attachments.map((item) => [item.id, item.name, item.contentType, item.file?.size]),
+    ]);
+  };
+  const active = () => !stopped && !controller.signal.aborted;
+  const schedule = () => {
+    if (!active() || conflicted) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      void flush();
+    }, 250);
+  };
+  const flush = async (): Promise<void> => {
+    if (!active() || conflicted) return;
+    if (running) {
+      await running;
+      if (active() && !conflicted) schedule();
+      return;
+    }
+    const content = snapshot();
+    if (!content || (suppressDetachedEmpty && !content.text && !content.images.length)) return;
+    if (JSON.stringify(content) === JSON.stringify(saved.content)) return;
+    const started = generation;
+    running = (async () => {
+      try {
+        const response = await fetch(`/api/chats/${options.chatId}/draft`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedRevision: saved.revision, content }),
+          signal: controller.signal,
+        });
+        if (response.status === 409) {
+          const current = await fetch(`/api/chats/${options.chatId}/draft`, {
+            signal: controller.signal,
+          });
+          if (!current.ok) throw new Error("Draft unavailable");
+          const remote = DraftViewSchema.parse((await current.json()) as unknown);
+          if (active()) {
+            conflicted = true;
+            options.onConflict(remote);
+          }
+          return;
+        }
+        if (!response.ok) throw new Error("Draft unavailable");
+        const accepted = DraftViewSchema.parse((await response.json()) as unknown);
+        if (!active()) return;
+        saved = accepted;
+        for (const image of accepted.content.images) metadata.set(image.id, image);
+        if (generation !== started) schedule();
+      } catch {
+        if (active()) options.onError("Draft could not be saved.");
+      }
+    })();
+    try {
+      await running;
+    } finally {
+      running = undefined;
+    }
+  };
+  last = fingerprint();
+  const unsubscribe = composer.subscribe(() => {
+    const next = fingerprint();
+    if (last === next) return;
+    last = next;
+    generation++;
+    const content = snapshot();
+    if (content && (content.text || content.images.length) && !sendPending)
+      suppressDetachedEmpty = false;
+    schedule();
+  });
+  return {
+    flush,
+    /** Suppress only native-send's transient empty state, not later nonempty edits. */
+    beginSend() {
+      sendPending = true;
+      suppressDetachedEmpty = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+    },
+    endSend(serverDraft?: DraftView) {
+      if (serverDraft) {
+        saved = DraftViewSchema.parse(serverDraft);
+        for (const image of saved.content.images) metadata.set(image.id, image);
+      }
+      sendPending = false;
+      const content = snapshot();
+      // A detached empty composer isn't permission to clear the server draft.
+      if (content && (content.text || content.images.length)) {
+        suppressDetachedEmpty = false;
+        schedule();
+      }
+    },
+    /** Called only after an explicit conflict choice, with the fetched revision. */
+    keepMine(remote: DraftView) {
+      saved = DraftViewSchema.parse(remote);
+      for (const image of saved.content.images) metadata.set(image.id, image);
+      conflicted = false;
+      schedule();
+    },
+    /** Call after the native composer has successfully restored the chosen server draft. */
+    useSaved(remote: DraftView) {
+      saved = DraftViewSchema.parse(remote);
+      for (const image of saved.content.images) metadata.set(image.id, image);
+      conflicted = false;
+      last = fingerprint();
+    },
+    stop() {
+      stopped = true;
+      controller.abort();
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+    },
+  };
 }
