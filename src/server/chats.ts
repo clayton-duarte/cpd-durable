@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { ChatCatalog, ChatSummary } from "../shared/chats.ts";
 import { accounting } from "./accounting.ts";
+import { inspectContext } from "./context.ts";
 
 type CatalogItem = {
   id: number;
@@ -43,7 +44,7 @@ export class ChatLifecycleError extends Error {
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
-  return live.run === undefined && inbox.items.length === 0;
+  return live.run === undefined && !live.compactions?.length && inbox.items.length === 0;
 }
 async function empty(tx: Tx, item: CatalogItem) {
   return (
@@ -81,6 +82,7 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
     return {
       conversation,
       accounting: () => accounting(harness, conversation.id),
+      context: () => inspectContext(harness, conversation),
       archived: item.status === "archived",
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),

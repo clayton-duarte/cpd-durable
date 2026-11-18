@@ -21,6 +21,7 @@ import type { openChat } from "./chat.ts";
 import { ChatIdSchema, CreateChatSchema, ChatActionSchema } from "../shared/chats.ts";
 import { ChatLifecycleError } from "./chats.ts";
 import type { ChatScope } from "./chats.ts";
+import { CompactSchema } from "../shared/context.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -101,6 +102,9 @@ export function createApp(
             accounting: async () => {
               throw new Error("Accounting unavailable");
             },
+            context: async () => {
+              throw new Error("Context unavailable");
+            },
             withdraw: chat.withdraw,
             admit: (draft: Parameters<ChatScope["admit"]>[0]) =>
               chat.conversation.submit(draft, BACKGROUND_CONTEXT),
@@ -150,6 +154,17 @@ export function createApp(
     }
   });
   routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
+  routes.get("/context", async (c) => c.json(await c.get("scope").context()));
+  routes.post("/compact", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = CompactSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid compaction request." }, 400);
+    const taskId = await c
+      .get("scope")
+      .conversation.compact(result.data.instructions || undefined, BACKGROUND_CONTEXT);
+    return c.json({ taskId: String(taskId) }, 202);
+  });
 
   routes.post("/control", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))

@@ -17,6 +17,7 @@ export function ChatPage({
       <Chat
         chatId={chatId}
         active={active}
+        readOnly={readOnly}
         title="CPD Durable"
         description={`OpenCode Go · ${MODEL_ID}`}
         state={chat.state}
