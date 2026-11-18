@@ -23,7 +23,7 @@ export interface ChatProps {
   onRetryHistory?: () => Promise<void>;
   onLoadEarlier?: () => Promise<void>;
   onFillGap?: (gap: HistoryGap) => Promise<void>;
-  onSend?: (text: string, mode?: SendMode) => Promise<boolean>;
+  onSend?: (text: string, mode?: SendMode, images?: string[]) => Promise<boolean>;
   onStop?: () => Promise<void>;
   onContinue?: () => Promise<boolean>;
   onReset?: (handoff: string) => Promise<boolean>;

@@ -190,10 +190,13 @@ export function useChat(chatId?: string, observing = true) {
     }
   }
 
-  function send(text: string, mode: SendMode = "reject") {
+  function send(text: string, mode: SendMode = "reject", images: string[] = []) {
     const previous = uncertain.current;
-    if (previous?.path === "/api/input" && previous.body.text === text) return perform(previous);
-    return perform({ path: "/api/input", body: { text, mode, requestId: crypto.randomUUID() } });
+    if (previous?.path === "/api/input") return perform(previous);
+    return perform({
+      path: "/api/input",
+      body: { text, mode, ...(images.length ? { images } : {}), requestId: crypto.randomUUID() },
+    });
   }
 
   return {
