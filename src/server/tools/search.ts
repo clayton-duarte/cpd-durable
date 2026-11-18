@@ -146,9 +146,9 @@ async function ripgrep(
   if (!result.ok) {
     if (result.error.code === "spawn_error")
       throw new Error(
-        `Could not start ripgrep (${JSON.stringify(executable)}). Install rg on the host or configure its executable, and verify the working directory exists. ${result.error.message}`,
+        "Could not start ripgrep. Install rg on the host or configure its executable, and verify the working directory exists.",
       );
-    throw result.error;
+    throw new Error(`Search process failed (${result.error.code}).`);
   }
   // rg: 0 = matches/files, 1 = none, 2 = error (possibly partial results).
   if (result.value.exitCode !== 0 && result.value.exitCode !== 1)
@@ -171,6 +171,8 @@ function traversalFlags(input: { hidden: boolean; ignore: boolean }) {
  * be followed. Hidden paths and ignore handling are separate switches. rg's
  * normal ignore rules apply by default; .git metadata requires explicit paths
  * or globs under rg's rules. No project resource discovery/loading is performed.
+ * These read-only operations are replay-safe, but a retry after interruption
+ * can observe files that changed since the earlier attempt.
  *
  * Results stream in traversal order (not globally sorted). grep counts matching
  * lines, find counts file paths, ls counts immediate entries. The result limit
@@ -186,7 +188,7 @@ export function createSearchTools(options: { ripgrep?: string } = {}) {
       defineTool({
         name: "grep",
         description:
-          "Search text files using ripgrep. pattern is a Rust regex (no lookaround/backreferences), or exact text with literal=true; ignoreCase is optional. Returns filename, 1-based line number and matching line, not match occurrences. Binary files are normally skipped; no multiline matching. path defaults to cwd; absolute/parent paths work. Optional glob uses ripgrep gitignore-style syntax. hidden=false and ignore=true by default (ignore files/global rules apply); explicit paths/globs can override exclusions per rg. Discovered symlinks are not followed. Requires host rg. limit defaults to 100 matching lines; output/record bounds are labeled, not a timeout. No shell interpolation.",
+          "Search text files using ripgrep. pattern is a Rust regex (no lookaround/backreferences), or exact text with literal=true; ignoreCase is optional. Returns filename, 1-based line number and matching line, not match occurrences. Binary files are normally skipped; no multiline matching. path defaults to cwd; absolute/parent paths work. Optional glob uses ripgrep gitignore-style syntax. hidden=false and ignore=true by default (ignore files/global rules apply); explicit paths/globs can override exclusions per rg. Discovered symlinks are not followed. Requires host rg. limit defaults to 100 matching lines; output/record bounds are labeled, not a timeout. No shell interpolation. A replay after interruption may read changed files.",
         parameters: z.toJSONSchema(GrepInput, { io: "input" }),
         replay: "safe",
         outputLimits,
@@ -236,7 +238,7 @@ export function createSearchTools(options: { ripgrep?: string } = {}) {
       defineTool({
         name: "find",
         description:
-          "Find file paths using ripgrep --files and a required gitignore-style glob pattern (e.g. **/*.ts), not shell find predicates or a regex. Lists files, not directories; discovered symlinks are not followed. path defaults to cwd; absolute/parent paths work. A matching positive glob overrides hidden and ignore exclusions, so *.txt can include hidden or ignored files even with hidden=false and ignore=true; explicitly selected paths also override exclusions. Requires host rg. Output is JSON-quoted paths in traversal order, limit=1000 by default. Limits bound output, not runtime. No shell interpolation.",
+          "Find file paths using ripgrep --files and a required gitignore-style glob pattern (e.g. **/*.ts), not shell find predicates or a regex. Lists files, not directories; discovered symlinks are not followed. path defaults to cwd; absolute/parent paths work. A matching positive glob overrides hidden and ignore exclusions, so *.txt can include hidden or ignored files even with hidden=false and ignore=true; explicitly selected paths also override exclusions. Requires host rg. Output is JSON-quoted paths in traversal order, limit=1000 by default. Limits bound output, not runtime. No shell interpolation. A replay after interruption may read changed files.",
         parameters: z.toJSONSchema(FindInput, { io: "input" }),
         replay: "safe",
         outputLimits,
@@ -266,7 +268,7 @@ export function createSearchTools(options: { ripgrep?: string } = {}) {
       defineTool({
         name: "ls",
         description:
-          "List immediate directory entries through the host filesystem; no external executable. JSON-quoted names prefixed with file/directory/symlink; symlinks are listed, not traversed. An explicitly selected symlink directory may be opened. path defaults to cwd; absolute/parent paths work. Includes dotfiles by default (hidden=true), ignores no gitignore rules. Filesystem traversal order, not sorted. limit=1000 by default; labeled output bounds, no timeout.",
+          "List immediate directory entries through the host filesystem; no external executable. JSON-quoted names prefixed with file/directory/symlink; symlinks are listed, not traversed. An explicitly selected symlink directory may be opened. path defaults to cwd; absolute/parent paths work. Includes dotfiles by default (hidden=true), ignores no gitignore rules. Filesystem traversal order, not sorted. limit=1000 by default; labeled output bounds, no timeout. A replay after interruption may read changed files.",
         parameters: z.toJSONSchema(LsInput, { io: "input" }),
         replay: "safe",
         outputLimits,

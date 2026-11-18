@@ -17,6 +17,7 @@ import {
 } from "@earendil-works/pi-durable/env";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { openChat } from "../src/server/chat.ts";
 import { createSearchTools } from "../src/server/tools/search.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
@@ -159,6 +160,7 @@ describe("optional search tools through pi-durable", () => {
     const result = await call("grep", { pattern: "anything" });
     expect(result.error).toBe(true);
     expect(result.text).toContain("Install rg");
+    expect(result.text).not.toContain(join(directory, "missing-rg"));
   });
 
   it("propagates Stop to an in-flight search without imposing a deadline", async () => {
@@ -201,5 +203,42 @@ describe("optional search tools through pi-durable", () => {
     await conversation.abort(BACKGROUND_CONTEXT);
     expect(cancelled).toBe(true);
     await conversation.waitForIdle(BACKGROUND_CONTEXT);
+  });
+});
+
+describe("search tools in the application registry", () => {
+  it("offers and executes the tools through openChat with temporary storage", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cpd-search-integration-"));
+    const provider = testModels();
+    let chat: Awaited<ReturnType<typeof openChat>> | undefined;
+    try {
+      const cwd = join(directory, "work");
+      await mkdir(cwd);
+      await writeFile(join(cwd, "sample.txt"), "needle\n");
+      chat = await openChat(join(directory, "data"), provider.models, cwd);
+      const tools = (await chat.conversation.agent(BACKGROUND_CONTEXT)).tools.map(
+        (tool) => tool.name,
+      );
+      expect(tools).toEqual(expect.arrayContaining(["read", "bash", "grep", "find", "ls"]));
+      expect(provider.calls).toHaveLength(0);
+      await chat.conversation.submit(
+        { type: "input", content: "Search the fixture." },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([{ id: "search", name: "grep", arguments: { pattern: "needle" } }]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      const result = provider.calls[1]!.context.messages.findLast(
+        (message) => message.role === "toolResult",
+      );
+      expect(result?.role).toBe("toolResult");
+      expect(JSON.stringify(result)).toContain("sample.txt");
+      expect(JSON.stringify(result)).toContain("needle");
+      provider.calls[1]!.finish("Done.");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await chat?.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });
