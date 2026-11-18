@@ -49,6 +49,7 @@ import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
 import { DirectShellRequestSchema } from "../shared/direct-shell.ts";
 import { admitDirectShell } from "./direct-shell.ts";
+import { createFeedbackRoutes } from "./feedback-routes.ts";
 import { z } from "zod";
 import { BranchOperationError } from "./branch-operations.ts";
 import {
@@ -101,6 +102,11 @@ export function createApp(
   );
   app.use("/api/*", limitRequests);
   if (chat.attachments) app.route("/", chat.attachments.routes);
+  if (chat.chats)
+    app.route(
+      "/",
+      createFeedbackRoutes(async (id) => (await chat.chats?.resolve(id))?.conversation),
+    );
 
   app.get("/api/chats", async (c) => {
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
