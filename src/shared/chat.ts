@@ -1,16 +1,24 @@
 import { z } from "zod";
 import { NestedToolDisplaySchema } from "./nested-tools.ts";
+import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
 
 export const PROVIDER_ID = "opencode-go";
 export const MODEL_ID = "deepseek-v4.1-flash";
 
 export const SendModeSchema = z.enum(["reject", "followUp", "steer"]);
 export type SendMode = z.infer<typeof SendModeSchema>;
-export const InputSchema = z.strictObject({
-  requestId: z.uuid(),
-  text: z.string().trim().min(1).max(32_000),
-  mode: SendModeSchema.optional(),
-});
+export const InputSchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    text: z.string().trim().max(32_000),
+    images: z.array(AttachmentIdSchema).max(4).optional(),
+    mode: SendModeSchema.optional(),
+  })
+  .refine(
+    (input) =>
+      (!!input.text || !!input.images?.length) &&
+      new Set(input.images).size === (input.images?.length ?? 0),
+  );
 export type ChatInput = z.infer<typeof InputSchema>;
 
 export const ControlSchema = z.discriminatedUnion("type", [
@@ -56,9 +64,15 @@ export const ToolStateSchema = z.enum([
   "cancelled",
   "unavailable",
 ]);
+export const ToolResultPartSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("text"), text: z.string() }),
+  z.strictObject({ type: z.literal("image"), source: SavedImageReferenceSchema }),
+  z.strictObject({ type: z.literal("omitted") }),
+]);
 export const ChatPartSchema = z.discriminatedUnion("type", [
   z.strictObject({ id: z.string(), type: z.literal("text"), text: z.string() }),
   z.strictObject({ id: z.string(), type: z.literal("reasoning"), text: z.string() }),
+  z.strictObject({ id: z.string(), type: z.literal("image"), source: SavedImageReferenceSchema }),
   z.strictObject({
     id: z.string(),
     type: z.literal("tool-call"),
@@ -68,6 +82,7 @@ export const ChatPartSchema = z.discriminatedUnion("type", [
     argumentsUnavailable: z.boolean().optional(),
     state: ToolStateSchema,
     output: z.string().optional(),
+    resultParts: z.array(ToolResultPartSchema).optional(),
     resultEntryId: RecordIdSchema.optional(),
     nested: NestedToolDisplaySchema.optional(),
   }),

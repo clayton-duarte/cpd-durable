@@ -11,6 +11,7 @@ export default defineConfig({
     "chat-sidebar.spec.ts",
     "theme.spec.ts",
     "codemode.spec.ts",
+    "questions.spec.ts",
   ],
   workers: 1,
   use: { baseURL },

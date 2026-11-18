@@ -2,11 +2,15 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { Harness, type SubmissionId, type AgentChange } from "@earendil-works/pi-durable";
+import { AgentDoc, Harness, type SubmissionId, type AgentChange } from "@earendil-works/pi-durable";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
-import { openChats } from "./chats.ts";
+import { modelKey, openChats } from "./chats.ts";
+import { selection } from "./configuration.ts";
+import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
+import { createPendingImageCatalog } from "./attachment-catalog.ts";
 
 export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -44,11 +48,40 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       maxTurns: null,
     };
     const chats = await openChats(harness, conversation, defaults, models);
+    const processor = await createNodePhotonImages();
+    const attachments = createAttachmentBackend({
+      harness,
+      root: dataDir,
+      processor,
+      resolve: (id) => chats.resolve(id),
+      catalog: (host, scope) =>
+        createPendingImageCatalog(host, scope.conversation.id, (tx) => scope.assertWritable(tx)),
+      model: async (scope) => {
+        const current = selection(
+          await harness!.snapshot(AgentDoc, scope.conversation.id, BACKGROUND_CONTEXT),
+        );
+        const model = (await models.getAvailable(current.provider)).find(
+          (item) => item.id === current.modelId,
+        );
+        return model ? { key: modelKey(current), input: model.input } : null;
+      },
+      admit: async (scope, draft, expectedModelKey, digest) => {
+        const current = await chats.resolve(String(scope.conversation.id));
+        if (!current) throw new AttachmentAccessError(404);
+        const title = Array.isArray(draft.content)
+          ? draft.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ||
+            "Image attachment"
+          : draft.content;
+        const result = await current.admit(draft, { digest, expectedModelKey, title });
+        return { id: String(result.id) };
+      },
+    });
     harness.resume();
     let closed = false;
     return {
       conversation,
       chats,
+      attachments,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

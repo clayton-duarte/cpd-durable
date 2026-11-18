@@ -91,4 +91,41 @@ describe("code-mode nested presentation", () => {
       nested: { state: "unavailable", calls: [] },
     });
   });
+
+  it("keeps ordered image results and nested receipts together without exposing a spill path", () => {
+    const result = {
+      id: 2,
+      kind: "pi.tool-result",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "parent",
+          toolName: "codemode",
+          isError: false,
+          content: [
+            { type: "text", text: "before /private/testfile" },
+            { type: "image", mimeType: "image/png", data: "synthetic" },
+            { type: "text", text: "after" },
+          ],
+          details: {
+            fullOutputPath: "/private/testfile",
+            calls: [{ id: 1, name: "read", status: "ok" }],
+          },
+        },
+      ],
+    };
+    const state = ChatStateSchema.parse(present(view([assistant, result])));
+    expect(state.messages[0]?.parts?.[0]).toMatchObject({
+      resultParts: [
+        { type: "text", text: "before [host file]" },
+        { type: "image", source: { entryId: 2, modelIndex: 0, partIndex: 1 } },
+        { type: "text", text: "after" },
+      ],
+      nested: { calls: [{ callId: "parent/c1", state: "complete" }] },
+    });
+    const projected = projectAssistantMessages(state);
+    expect(JSON.stringify(projected.messages)).toContain("toolResultParts");
+    expect(JSON.stringify(projected.messages)).toContain("nestedTools");
+    expect(JSON.stringify(projected.messages)).not.toContain("/private/testfile");
+  });
 });

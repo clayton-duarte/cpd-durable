@@ -6,6 +6,7 @@ import {
   presentLiveNested,
   sanitizeCodeModeOutput,
 } from "./nested-tool-presentation.ts";
+import { SavedImageReferenceSchema, ImageMimeSchema } from "../shared/attachments.ts";
 
 // Allowlist presentation fields; unknown payloads and provider diagnostics never cross the wire.
 const RecordIdSchema = z.number().int().positive().safe();
@@ -15,6 +16,11 @@ const MessageSchema = z.looseObject({
   stopReason: z.string().optional(),
 });
 const PartSchema = z.looseObject({ type: z.string(), text: z.string().optional() });
+const ImagePartSchema = z.looseObject({
+  type: z.literal("image"),
+  mimeType: ImageMimeSchema,
+  data: z.string(),
+});
 const ToolCallSchema = z.looseObject({
   type: z.literal("toolCall"),
   id: z.string(),
@@ -79,12 +85,17 @@ function partsOf(
   content: z.infer<typeof MessageSchema>["content"],
   prefix: string,
   assistant = false,
+  saved?: { entryId: number; modelIndex: number },
 ): ChatPart[] {
   if (typeof content === "string")
     return content ? [{ id: `${prefix}:0`, type: "text", text: content }] : [];
   return content.flatMap((raw, index): ChatPart[] => {
     const part = PartSchema.safeParse(raw);
     const id = `${prefix}:${index}`;
+    if (saved && ImagePartSchema.safeParse(raw).success) {
+      const source = SavedImageReferenceSchema.safeParse({ ...saved, partIndex: index });
+      if (source.success) return [{ id, type: "image", source: source.data }];
+    }
     const reasoning = assistant ? ReasoningSchema.safeParse(raw) : null;
     if (reasoning?.success)
       return reasoning.data.thinking
@@ -190,6 +201,28 @@ export function present(
           .join("\n");
         const output =
           result.toolName === "codemode" ? sanitizeCodeModeOutput(raw, rawOutput) : rawOutput;
+        const resultParts = result.content.map((raw, partIndex) => {
+          const text = PartSchema.safeParse(raw);
+          if (text.success && text.data.type === "text" && text.data.text !== undefined)
+            return {
+              type: "text" as const,
+              text:
+                result.toolName === "codemode"
+                  ? sanitizeCodeModeOutput(resultMessage.data, text.data.text)
+                  : text.data.text,
+            };
+          const source = SavedImageReferenceSchema.safeParse({
+            entryId: entry.id,
+            modelIndex: index,
+            partIndex,
+          });
+          return source.success && ImagePartSchema.safeParse(raw).success
+            ? { type: "image" as const, source: source.data }
+            : { type: "omitted" as const };
+        });
+        const imageOutput = result.content.some(
+          (raw) => PartSchema.safeParse(raw).data?.type === "image",
+        );
         const diagnostics = z
           .looseObject({
             diagnostics: z.array(z.looseObject({ code: z.string().optional() })),
@@ -214,6 +247,7 @@ export function present(
         if (call && call.name === result.toolName) {
           call.state = state;
           call.output = output;
+          if (imageOutput) call.resultParts = resultParts;
           call.resultEntryId = entry.id;
           if (nested) call.nested = nested;
           pending.delete(result.toolCallId);
@@ -237,6 +271,7 @@ export function present(
                 argumentsUnavailable: true,
                 state,
                 output,
+                ...(imageOutput ? { resultParts } : {}),
                 resultEntryId: entry.id,
                 ...(nested ? { nested } : {}),
               },
@@ -253,6 +288,9 @@ export function present(
         message.content,
         id,
         entry.kind === "pi.assistant" && message.role === "assistant",
+        entry.kind === "pi.user" && message.role === "user"
+          ? { entryId: entry.id, modelIndex: index }
+          : undefined,
       );
       if (parts.length === 0) continue;
       for (const part of parts) {

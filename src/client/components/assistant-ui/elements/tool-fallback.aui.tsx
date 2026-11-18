@@ -1100,7 +1100,7 @@ function ToolFallbackApprovalImpl({
   );
 }
 
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+const ToolFallbackImpl = ({
   toolCallId,
   toolName,
   argsText,
@@ -1113,7 +1113,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   interrupt,
   approval,
   respondToApproval,
-}) => {
+  renderResult,
+}: ToolCallMessagePartProps & { renderResult?: () => React.ReactNode }) => {
   const nestedByCall = useAuiState((state) => state.message.metadata.custom["nestedTools"]);
   const nested = NestedToolDisplaySchema.safeParse(
     nestedByCall && typeof nestedByCall === "object"
@@ -1190,7 +1191,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
             }}
           />
         )}
-        <ToolFallbackResult result={result as unknown} />
+        {renderResult ? renderResult() : <ToolFallbackResult result={result as unknown} />}
         {nested.success && nested.data.state === "unavailable" && (
           <ToolFallbackResult result="Nested call receipt unavailable." />
         )}
@@ -1235,6 +1236,7 @@ const ToolFallback = memo(ToolFallbackImpl) as unknown as ToolCallMessagePartCom
   Error: typeof ToolFallbackError;
   Approval: typeof ToolFallbackApproval;
 };
+const ToolFallbackWithResult = memo(ToolFallbackImpl);
 
 ToolFallback.displayName = "ToolFallback";
 ToolFallback.Root = ToolFallbackRoot;
@@ -1249,6 +1251,7 @@ export {
   formatUnknownValue,
   offersInterruptAction,
   ToolFallback,
+  ToolFallbackWithResult,
   ToolFallbackRoot,
   ToolFallbackTrigger,
   ToolFallbackContent,

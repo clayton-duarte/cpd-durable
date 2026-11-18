@@ -9,6 +9,9 @@ test("nested code-mode calls use supplied disclosures without inventing output",
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
     }),
   );
+  await page.route("**/api/chats/1/images/2/0/1", (route) =>
+    route.fulfill({ path: "tests/fixtures/attachments/sample.png", contentType: "image/png" }),
+  );
   await page.addInitScript(() => {
     class SyntheticSource extends EventTarget {
       constructor() {
@@ -33,6 +36,12 @@ test("nested code-mode calls use supplied disclosures without inventing output",
                         name: "codemode",
                         arguments: { code: "test" },
                         state: "complete",
+                        output: "before\n[Non-text tool output is not displayed.]\nafter",
+                        resultParts: [
+                          { type: "text", text: "before" },
+                          { type: "image", source: { entryId: 2, modelIndex: 0, partIndex: 1 } },
+                          { type: "text", text: "after" },
+                        ],
                         nested: {
                           state: "available",
                           outputSpilled: true,
@@ -77,6 +86,9 @@ test("nested code-mode calls use supplied disclosures without inventing output",
   await page.goto("/");
   await page.getByRole("button", { name: "1 tool call" }).click();
   await page.getByRole("button", { name: /Used tool.*codemode/ }).click();
+  await expect(page.getByText("before", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("after", { exact: true })).toHaveCount(1);
+  await expect(page.locator('img[src="/api/chats/1/images/2/0/1"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Pending tool: write" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Tool status unavailable: bash" })).toBeVisible();
   await expect(
