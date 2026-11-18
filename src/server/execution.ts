@@ -4,6 +4,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createRegistry, defineExtension, section } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools, createPowerShellTool } from "@earendil-works/pi-durable/tools";
+import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
 
@@ -19,6 +20,7 @@ export function createExecution(defaultCwd = workingDirectory()) {
   registry.install(CodingTools);
   registry.install(createSearchTools());
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
+  registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
   registry.install(
     defineExtension({

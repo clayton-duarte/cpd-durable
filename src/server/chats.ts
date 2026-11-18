@@ -100,7 +100,7 @@ export async function openChats(
     return {
       conversation,
       accounting: () => accounting(harness, conversation.id),
-      context: () => inspectContext(harness, conversation),
+      context: () => inspectContext(harness, conversation, models),
       configuration: async () => ({
         conversationId: String(conversation.id),
         selection: selection(await harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)),
