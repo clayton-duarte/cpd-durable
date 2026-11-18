@@ -7,12 +7,16 @@ export function ChatPage({
   readOnly = false,
   onFork,
   onEdit,
+  draftGuards,
+  onUnsavedDraft,
 }: {
   chatId?: string;
   active?: boolean;
   readOnly?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;
+  draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
+  onUnsavedDraft?: (chatId: string) => void;
 }) {
   const chat = useChat(chatId, active);
   return (
@@ -23,6 +27,8 @@ export function ChatPage({
         readOnly={readOnly}
         onFork={onFork}
         onEdit={onEdit}
+        {...(draftGuards ? { draftGuards } : {})}
+        {...(onUnsavedDraft ? { onUnsavedDraft } : {})}
         title="CPD Durable"
         description="Durable chat · model settings in Chat details"
         state={chat.state}

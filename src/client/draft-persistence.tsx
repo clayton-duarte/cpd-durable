@@ -410,6 +410,36 @@ export function createDraftAutosave(options: {
   });
   return {
     flush,
+    hasUnsaved() {
+      const content = snapshot();
+      return (
+        !active() ||
+        !!running ||
+        !!failedWrite ||
+        conflicted ||
+        preparing ||
+        sendPending ||
+        !content ||
+        JSON.stringify(content) !== JSON.stringify(saved.content)
+      );
+    },
+    /** Wait for the latest native snapshot, not merely the current in-flight write. */
+    async settleForArchive() {
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      for (;;) {
+        if (!active() || conflicted || preparing || sendPending || failedWrite) return false;
+        if (running) {
+          await running;
+          continue;
+        }
+        const content = snapshot();
+        if (!content) return false;
+        if (JSON.stringify(content) === JSON.stringify(saved.content)) return true;
+        if (suppressDetachedEmpty && !content.text && !content.images.length) return false;
+        await flush();
+      }
+    },
     /** Reconcile an uncertain PUT without overwriting an independently changed revision. */
     async retrySave() {
       if (!active() || conflicted || preparing || !failedWrite) return false;
@@ -424,16 +454,12 @@ export function createDraftAutosave(options: {
         const unchanged =
           remote.revision === failed.expectedRevision &&
           JSON.stringify(remote.content) === JSON.stringify(saved.content);
-        const committed =
-          remote.revision === failed.expectedRevision + 1 &&
-          JSON.stringify(remote.content) === JSON.stringify(failed.content);
-        if (!unchanged && !committed) {
+        if (!unchanged) {
           failedWrite = undefined;
           conflicted = true;
           options.onConflict(remote);
           return false;
         }
-        if (committed) saved = remote;
         failedWrite = undefined;
         await flush();
         if (!failedWrite && !conflicted && active()) {
@@ -563,8 +589,11 @@ export function createDraftAutosave(options: {
         saved.content.text === original.text &&
         JSON.stringify(saved.content.images.map((image) => image.id)) ===
           JSON.stringify(original.images)
-      )
+      ) {
         saved = { revision, content: { text: "", images: [] } };
+        return true;
+      }
+      return false;
     },
     /** Called only after an explicit conflict choice, with the fetched revision. */
     keepMine(remote: DraftView) {

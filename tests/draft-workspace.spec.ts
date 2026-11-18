@@ -106,6 +106,194 @@ for (const delayed of [false, true]) {
   });
 }
 
+for (const scenario of ["debounced", "inflight", "failure", "conflict"] as const) {
+  test(`archive ${scenario === "failure" || scenario === "conflict" ? `is blocked on ${scenario}` : `waits for the ${scenario} draft`}`, async ({
+    page,
+  }) => {
+    await syntheticEvents(page);
+    const image = {
+      id: "11111111-1111-4111-8111-111111111111",
+      name: "saved.png",
+      mimeType: "image/png",
+      size: png.length,
+    };
+    let draft = { revision: 1, content: { text: "old", images: [image] } };
+    let archived = false;
+    let puts = 0;
+    let archives = 0;
+    const operations: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const catalog = () => ({
+      rootId: "1",
+      chats: [
+        { id: "1", title: "First", running: false, status: archived ? "archived" : "regular" },
+        { id: "2", title: "Second", running: false, status: "regular" },
+      ],
+    });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const method = route.request().method();
+      if (path === "/api/chats") return route.fulfill({ json: catalog() });
+      if (path.endsWith("/draft/attempts"))
+        return route.fulfill({ json: { attempts: [], capped: false, nextCursor: null } });
+      if (path === "/api/chats/2/draft")
+        return route.fulfill({ json: { revision: 0, content: { text: "", images: [] } } });
+      if (path === "/api/chats/1/draft" && method === "GET") return route.fulfill({ json: draft });
+      if (path === "/api/chats/1/draft" && method === "PUT") {
+        const body = route.request().postDataJSON() as {
+          expectedRevision: number;
+          content: typeof draft.content;
+        };
+        puts++;
+        operations.push("put");
+        if (scenario === "inflight") await gate;
+        if (scenario === "failure") return route.fulfill({ status: 503, json: {} });
+        if (scenario === "conflict") {
+          draft = { revision: 2, content: { text: "other tab", images: [image] } };
+          return route.fulfill({ status: 409, json: {} });
+        }
+        if (body.expectedRevision !== draft.revision)
+          return route.fulfill({ status: 409, json: {} });
+        draft = { revision: draft.revision + 1, content: body.content };
+        operations.push("saved");
+        return route.fulfill({ json: draft });
+      }
+      if (path === "/api/chats/1/manage") {
+        archives++;
+        operations.push("archive");
+        archived = true;
+        return route.fulfill({ json: catalog() });
+      }
+      if (path.includes("/attachments/"))
+        return route.fulfill({ body: png, contentType: "image/png" });
+      return route.fulfill({ status: 404, json: {} });
+    });
+    await page.goto("/chats/1");
+    const input = page.getByRole("textbox", { name: "Message input" });
+    await expect(input).toHaveValue("old");
+    await input.fill("save before archive");
+    if (scenario === "inflight") await expect.poll(() => puts).toBe(1);
+    if (scenario !== "failure" && scenario !== "conflict")
+      await page.getByRole("button", { name: "Second", exact: true }).click();
+    const row = page.locator('[data-slot="aui_thread-list-item"]').filter({ hasText: "First" });
+    await row.getByRole("button", { name: "More options" }).click();
+    await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+    if (scenario === "inflight") {
+      expect(archives).toBe(0);
+      release();
+    }
+    if (scenario === "failure" || scenario === "conflict") {
+      await expect(page.getByText(/Draft could not be saved before archiving/)).toBeVisible();
+      expect(archives).toBe(0);
+      await expect(input).toHaveValue("save before archive");
+    } else {
+      await expect.poll(() => archives).toBe(1);
+      expect(operations.indexOf("saved")).toBeLessThan(operations.indexOf("archive"));
+      expect(draft.content.images).toEqual([image]);
+      await page.goto("/chats/1");
+      await expect(input).toHaveValue("save before archive");
+      await expect(input).toBeDisabled();
+      await expect(page.getByText("saved.png").first()).toBeVisible();
+    }
+  });
+}
+
+test("an external archive reports unconfirmed local draft changes", async ({ page }) => {
+  await syntheticEvents(page);
+  let archived = false;
+  let entered = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: {
+          rootId: "1",
+          chats: [
+            { id: "1", title: "First", running: false, status: archived ? "archived" : "regular" },
+          ],
+        },
+      });
+    if (path.endsWith("/draft/attempts"))
+      return route.fulfill({
+        json: {
+          attempts: [],
+          capped: false,
+          nextCursor: null,
+        },
+      });
+    if (path.endsWith("/draft") && route.request().method() === "GET")
+      return route.fulfill({
+        json: { revision: 0, content: { text: "", images: [] } },
+      });
+    if (path.endsWith("/draft") && route.request().method() === "PUT") {
+      entered = true;
+      await gate;
+      return route.fulfill({ status: 409, json: {} }).catch(() => {});
+    }
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto("/chats/1");
+  await page.getByRole("textbox", { name: "Message input" }).fill("unsaved");
+  await expect.poll(() => entered).toBe(true);
+  archived = true;
+  await expect(page.getByText(/archived elsewhere with unsaved draft changes/)).toBeVisible();
+  release();
+});
+
+test("archive is blocked while an attachment upload is pending", async ({ page }) => {
+  await syntheticEvents(page);
+  let uploadStarted = false;
+  let archives = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "First", running: false }] },
+      });
+    if (path.endsWith("/draft/attempts"))
+      return route.fulfill({ json: { attempts: [], capped: false, nextCursor: null } });
+    if (path.endsWith("/draft"))
+      return route.fulfill({ json: { revision: 0, content: { text: "", images: [] } } });
+    if (path.endsWith("/attachments") && route.request().method() === "POST") {
+      uploadStarted = true;
+      await gate;
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: "11111111-1111-4111-8111-111111111111",
+          mimeType: "image/png",
+          size: png.length,
+          prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+        },
+      });
+    }
+    if (path.endsWith("/manage")) archives++;
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto("/chats/1");
+  const chooserPromise = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Add Attachment" }).click();
+  await (await chooserPromise).setFiles({ name: "new.png", mimeType: "image/png", buffer: png });
+  await expect.poll(() => uploadStarted).toBe(true);
+  const row = page.locator('[data-slot="aui_thread-list-item"]').filter({ hasText: "First" });
+  await row.getByRole("button", { name: "More options" }).click();
+  await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
+  await expect(page.getByText(/Draft could not be saved before archiving/)).toBeVisible();
+  expect(archives).toBe(0);
+  release();
+});
+
 test("recovery retry clears only the unchanged original and adopts the confirmed revision", async ({
   page,
 }) => {
@@ -174,6 +362,67 @@ test("recovery retry clears only the unchanged original and adopts the confirmed
   await expect.poll(() => draft.content.text).toBe("next");
   expect(writes).toEqual([2]);
   await expect(page.getByText("Draft changed in another session.")).toHaveCount(0);
+});
+
+test("retry without a clear receipt retains an equal-content newer revision and image", async ({
+  page,
+}) => {
+  await syntheticEvents(page);
+  const image = {
+    id: "11111111-1111-4111-8111-111111111111",
+    name: "saved.png",
+    mimeType: "image/png",
+    size: png.length,
+  };
+  const record = {
+    requestId: "22222222-2222-4222-8222-222222222222",
+    draftRevision: 1,
+    text: "same",
+    images: [image.id],
+    mode: "reject",
+    fingerprint: "a".repeat(64),
+  };
+  // Revision 3 represents edit-away/back or remove/re-add of the same reference.
+  let draft = { revision: 3, content: { text: "same", images: [image] } };
+  const expected: number[] = [];
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const method = route.request().method();
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "First", running: false }] },
+      });
+    if (path.endsWith("/draft/attempts"))
+      return route.fulfill({
+        json: { attempts: [{ record, admission: "unknown" }], capped: false, nextCursor: null },
+      });
+    if (path.endsWith("/draft") && method === "GET") return route.fulfill({ json: draft });
+    if (path.endsWith("/draft") && method === "PUT") {
+      const body = route.request().postDataJSON() as {
+        expectedRevision: number;
+        content: typeof draft.content;
+      };
+      expected.push(body.expectedRevision);
+      if (body.expectedRevision !== draft.revision) return route.fulfill({ status: 409, json: {} });
+      draft = { revision: draft.revision + 1, content: body.content };
+      return route.fulfill({ json: draft });
+    }
+    if (path.includes("/attachments/"))
+      return route.fulfill({ body: png, contentType: "image/png" });
+    if (path.endsWith("/input")) return route.fulfill({ status: 202, json: { id: "1" } });
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto("/chats/1");
+  const input = page.getByRole("textbox", { name: "Message input" });
+  await expect(input).toHaveValue("same");
+  await page.getByRole("button", { name: "Retry original" }).click();
+  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(input).toHaveValue("same");
+  await expect(page.getByText("saved.png").first()).toBeVisible();
+  await input.fill("subsequent edit");
+  await expect.poll(() => draft.content.text).toBe("subsequent edit");
+  expect(expected).toEqual([3]);
+  expect(draft.content.images).toEqual([image]);
 });
 
 test("recovery acknowledgement cannot clear a draft after a new upload starts", async ({
@@ -338,7 +587,8 @@ test("recovery identifies each unknown attempt and displays admitted receipts wi
   page,
 }) => {
   await syntheticEvents(page);
-  const records = ["first payload", "second payload", "admitted payload"].map((text, i) => ({
+  const fullText = `second payload ${"x".repeat(200)}`;
+  const records = ["first payload", fullText, "admitted payload"].map((text, i) => ({
     requestId: `${i + 1}`.repeat(8) + "-1111-4111-8111-111111111111",
     draftRevision: i + 1,
     text,
@@ -375,7 +625,9 @@ test("recovery identifies each unknown attempt and displays admitted receipts wi
   });
   await page.goto("/chats/1");
   await expect(page.getByText("first payload")).toBeVisible();
-  await expect(page.getByText("second payload")).toBeVisible();
+  await expect(page.getByText(/second payload/).first()).toBeVisible();
+  await page.getByText("View full original text").click();
+  await expect(page.getByText(fullText, { exact: true })).toBeVisible();
   await expect(page.getByText(/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/)).toBeVisible();
   await expect(page.getByText("admitted payload")).toBeVisible();
   await expect(page.getByText("Submission 7")).toBeVisible();

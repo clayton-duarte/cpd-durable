@@ -127,10 +127,16 @@ test("preparation stops on a CAS conflict without recording an intent", async ({
   expect(requests).toEqual(["PUT /api/chats/1/draft", "GET /api/chats/1/draft"]);
 });
 
-test("explicit persistence retry reconciles an uncertain committed PUT and saves newer edits", async ({
+test("an uncertain committed PUT requires explicit conflict choice before newer edits save", async ({
   page,
 }) => {
-  let server = { revision: 0, content: { text: "", images: [] as never[] } };
+  const image = {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "saved.png",
+    mimeType: "image/png",
+    size: 5,
+  };
+  let server = { revision: 0, content: { text: "", images: [image] } };
   let puts = 0;
   await page.route("**/api/chats/1/draft", async (route) => {
     if (route.request().method() === "GET") return route.fulfill({ json: server });
@@ -144,16 +150,48 @@ test("explicit persistence retry reconciles an uncertain committed PUT and saves
     if (puts === 1) return route.abort();
     return route.fulfill({ json: server });
   });
-  await page.goto("/tests/fixtures/draft-autosave/");
+  await page.goto("/tests/fixtures/draft-autosave/?image");
   const input = page.getByRole("textbox", { name: "Draft" });
   await input.fill("uncertain");
   await expect(page.getByRole("button", { name: "Retry saving draft" })).toBeVisible();
   await input.fill("newer");
   expect(puts).toBe(1);
   await page.getByRole("button", { name: "Retry saving draft" }).click();
+  await expect(page.getByRole("button", { name: "Keep mine" })).toBeVisible();
+  expect(puts).toBe(1);
+  await page.getByRole("button", { name: "Keep mine" }).click();
   await expect.poll(() => server.content.text).toBe("newer");
   await expect(page.getByRole("button", { name: "Retry saving draft" })).toHaveCount(0);
   expect(puts).toBe(2);
+  expect(server.content.images).toEqual([image]);
+});
+
+test("an equal-content write from another tab still requires explicit conflict choice", async ({
+  page,
+}) => {
+  let puts = 0;
+  const image = {
+    id: "33333333-3333-4333-8333-333333333333",
+    name: "saved.png",
+    mimeType: "image/png",
+    size: 5,
+  };
+  await page.route("**/api/chats/1/draft", async (route) => {
+    if (route.request().method() === "GET")
+      return route.fulfill({ json: { revision: 1, content: { text: "same", images: [image] } } });
+    puts++;
+    expect(route.request().postDataJSON()).toMatchObject({ content: { images: [image] } });
+    return route.abort();
+  });
+  await page.goto("/tests/fixtures/draft-autosave/?image");
+  const input = page.getByRole("textbox", { name: "Draft" });
+  await input.fill("same");
+  await expect(page.getByRole("button", { name: "Retry saving draft" })).toBeVisible();
+  await input.fill("newer");
+  await page.getByRole("button", { name: "Retry saving draft" }).click();
+  await expect(page.getByRole("button", { name: "Keep mine" })).toBeVisible();
+  expect(puts).toBe(1);
+  await expect(input).toHaveValue("newer");
 });
 
 test("persistence retry does not overwrite a different concurrent draft", async ({ page }) => {

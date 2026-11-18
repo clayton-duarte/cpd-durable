@@ -32,6 +32,11 @@ import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
 import { Button } from "@/components/ui/button";
 import {
+  CollapsibleRoot,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/assistant-ui/elements/collapsible-root";
+import {
   createDraftAutosave,
   useDraftRecovery,
   useDraftRestoration,
@@ -159,6 +164,7 @@ function PersistenceBridge({
   localRevision,
   onReady,
   onRetry,
+  onUnsavedDraft,
 }: {
   runtime: AssistantRuntime;
   chatId: string;
@@ -167,6 +173,7 @@ function PersistenceBridge({
   writer: React.RefObject<DraftWriter | null>;
   localRevision: () => number;
   onReady: (ready: boolean) => void;
+  onUnsavedDraft?: (chatId: string) => void;
   onRetry: (record: {
     requestId: string;
     draftRevision: number;
@@ -177,6 +184,10 @@ function PersistenceBridge({
 }) {
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<string[]>([]);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const unsavedRef = useRef(onUnsavedDraft);
+  unsavedRef.current = onUnsavedDraft;
   const conflictHandler = useRef<(saved: import("../shared/drafts.ts").DraftView) => void>(
     () => {},
   );
@@ -188,7 +199,10 @@ function PersistenceBridge({
     readOnly,
     localRevision,
     onResolved: (saved, choice) => {
-      if (readOnly) return;
+      if (readOnly) {
+        onReady(true);
+        return;
+      }
       if (writer.current) {
         if (choice === "mine") writer.current.keepMine(saved);
         else writer.current.useSaved(saved);
@@ -210,13 +224,25 @@ function PersistenceBridge({
     },
   });
   conflictHandler.current = restoration.offerConflict;
+  useEffect(() => {
+    if (readOnly && restoration.error) onReady(true);
+  }, [onReady, readOnly, restoration.error]);
   useEffect(
     () => () => {
+      if (
+        !readOnly &&
+        readOnlyRef.current &&
+        (writer.current?.hasUnsaved() ??
+          (runtime.thread.composer.getState().text !== "" ||
+            runtime.thread.composer.getState().attachments.length > 0 ||
+            localRevision() > 0))
+      )
+        unsavedRef.current?.(chatId);
       writer.current?.stop();
       writer.current = null;
       onReady(false);
     },
-    [chatId, enabled, onReady, readOnly, writer],
+    [chatId, enabled, localRevision, onReady, readOnly, runtime, writer],
   );
   return (
     <>
@@ -254,6 +280,14 @@ function PersistenceBridge({
               {record.text.slice(0, 160)}
               {record.text.length > 160 ? "…" : ""}
             </p>
+            {record.text.length > 160 && (
+              <CollapsibleRoot>
+                <CollapsibleTrigger>View full original text</CollapsibleTrigger>
+                <CollapsibleContent>
+                  <pre className="whitespace-pre-wrap break-words">{record.text}</pre>
+                </CollapsibleContent>
+              </CollapsibleRoot>
+            )}
             <p>{record.images.length ? `Images: ${record.images.join(", ")}` : "No images"}</p>
             {attempt.admission === "admitted" && <p>Submission {attempt.submissionId}</p>}
             {!admitted && !readOnly && (
@@ -285,6 +319,7 @@ function PersistenceBridge({
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
   const revision = useRef(0);
+  const pendingUploads = useRef(0);
   const persistence = useRef<DraftWriter | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const localRevision = useCallback(() => revision.current, []);
@@ -361,6 +396,10 @@ export function Chat(props: ChatProps) {
     return createImageAttachmentAdapter({
       onAddStart: () => {
         revision.current++;
+        pendingUploads.current++;
+      },
+      onAddEnd: () => {
+        pendingUploads.current--;
       },
       upload: async (file) => {
         try {
@@ -573,7 +612,9 @@ export function Chat(props: ChatProps) {
       : {}),
     isRunning: (props.state?.busy ?? false) || !!props.shell,
     isLoading: props.state === null,
-    isDisabled: !props.onSend,
+    // Hydration needs native attachment insertion; the read-only thread is inert
+    // until restoration finishes, then the runtime itself becomes disabled.
+    isDisabled: !props.onSend && (!props.chatId || persistenceReady),
     isSendDisabled: !available || (props.state?.busy ?? false) || !!props.shell,
     ...(adapter ? { adapters: { attachments: adapter } } : {}),
     hasEarlier: !!props.onLoadEarlier && props.connected && (props.state?.hasEarlier ?? false),
@@ -585,6 +626,27 @@ export function Chat(props: ChatProps) {
         : {}),
   });
   runtimeRef.current = runtime;
+  useLayoutEffect(() => {
+    const id = props.chatId;
+    const guards = props.draftGuards?.current;
+    if (!id || !guards) return;
+    const guard = async () => {
+      const writer = persistence.current;
+      if (!writer || pendingUploads.current) return false;
+      const version = revision.current;
+      const settled = await writer.settleForArchive();
+      return (
+        settled &&
+        persistence.current === writer &&
+        pendingUploads.current === 0 &&
+        revision.current === version
+      );
+    };
+    guards.set(id, guard);
+    return () => {
+      if (guards.get(id) === guard) guards.delete(id);
+    };
+  }, [props.chatId, props.draftGuards]);
   useLayoutEffect(() => {
     const composer = runtime.thread.composer;
     let lastSubmission: string | undefined;
@@ -647,6 +709,7 @@ export function Chat(props: ChatProps) {
             writer={persistence}
             localRevision={localRevision}
             onReady={setPersistenceReady}
+            {...(props.onUnsavedDraft ? { onUnsavedDraft: props.onUnsavedDraft } : {})}
             onRetry={async (record) => {
               if (!props.connected || props.pending || !props.onSend || !persistence.current)
                 return false;
@@ -664,6 +727,7 @@ export function Chat(props: ChatProps) {
                 images: [...record.images],
                 attempt: true as const,
               };
+              let confirmedClear = false;
               const admitted = await props.onSend(
                 modelInputText(record.text),
                 record.mode,
@@ -671,10 +735,13 @@ export function Chat(props: ChatProps) {
                 {
                   requestId: record.requestId,
                   draft,
-                  onClear: (nextRevision) => writer?.acknowledgeClear(draft, nextRevision),
+                  onClear: (nextRevision) => {
+                    if (nextRevision !== draft.revision + 1) return;
+                    confirmedClear = writer?.acknowledgeClear(draft, nextRevision) ?? false;
+                  },
                 },
               );
-              if (admitted && original) {
+              if (admitted && confirmedClear && original) {
                 writer?.beginSend();
                 submitted.current = original;
                 clearSubmitted();
@@ -684,7 +751,12 @@ export function Chat(props: ChatProps) {
             }}
           />
         )}
-        <OfficialThread />
+        <div
+          className="h-full min-h-0"
+          inert={!props.onSend && !!props.chatId && !persistenceReady}
+        >
+          <OfficialThread />
+        </div>
       </AssistantRuntimeProvider>
     </ChatHostContext.Provider>
   );

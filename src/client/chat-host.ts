@@ -7,6 +7,8 @@ import type { z } from "zod";
 
 export interface ChatProps {
   chatId?: string | undefined;
+  draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
+  onUnsavedDraft?: (chatId: string) => void;
   active?: boolean;
   readOnly?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
