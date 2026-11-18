@@ -17,14 +17,23 @@ type Item = {
   request: HelperLaunch;
   taskId: number;
   childId: number | null;
+  model: { provider: string; modelId: string } | null;
   receipt: { status: "success" | "failure" | "cancelled"; answerEntryId: number | null } | null;
 };
-type SavedAgent = {
+export type WorkerAgentSelection = {
   model: { provider: string; modelId: string } | null;
   thinkingLevel: NonNullable<Awaited<ReturnType<Conversation["agent"]>>["thinkingLevel"]> | null;
   cwd: string | null;
 };
-type Input = { request: HelperLaunch; agent: SavedAgent };
+/** Host-provided, synchronous policy: no implicit provider/model fallback. */
+export type WorkerModelResolver = (
+  role: HelperLaunch["modelRole"],
+  savedParent: Readonly<WorkerAgentSelection>,
+) => {
+  model: { provider: string; modelId: string };
+  thinkingLevel: WorkerAgentSelection["thinkingLevel"];
+};
+type Input = { request: HelperLaunch; agent: WorkerAgentSelection };
 
 export const HelpersDoc = defineDoc<{ items: Item[] }>({
   kind: "cpd.helpers",
@@ -62,7 +71,14 @@ export const ForegroundHelperTask = defineTask<Input, { phase: "run" }, null>({
       const submission = await child.submit(
         {
           type: "input",
-          content: `Assignment:\n${task.input.request.assignment}\n\nExplicit context:\n${task.input.request.context}`,
+          content: [
+            `Assignment:\n${task.input.request.assignment}`,
+            `Explicit context:\n${task.input.request.context}`,
+            ...(task.input.request.brief
+              ? [`Delegation metadata (version 1):\n${JSON.stringify(task.input.request.brief)}`]
+              : []),
+            "For code changes, work on a separate branch in a separate worktree; leave the primary checkout untouched. Do not discard or clean up others' work.",
+          ].join("\n\n"),
           requestId: `cpd-helper:${task.id}`,
         },
         context,
@@ -106,28 +122,36 @@ export const HelpersExtension = defineExtension({
 });
 
 /** Admission is atomic with the request identity and saved parent agent snapshot. */
-export async function launchHelper(conversation: Conversation, raw: unknown) {
+export async function launchHelper(
+  conversation: Conversation,
+  raw: unknown,
+  resolveWorkerModel: WorkerModelResolver,
+) {
   const request = HelperLaunchSchema.parse(raw);
   return conversation.commit(async (tx) => {
     const doc = await tx.doc(HelpersDoc, conversation.id);
     const prior = doc.items.find((item) => item.request.requestId === request.requestId);
     if (prior) {
-      if (JSON.stringify(prior.request) !== JSON.stringify(request))
+      if (JSON.stringify(HelperLaunchSchema.parse(prior.request)) !== JSON.stringify(request))
         throw new Error("Helper request identity already used with different input");
       return String(prior.taskId);
     }
     const agent = await tx.doc(AgentDoc, conversation.id);
-    const saved: SavedAgent = {
+    const saved: WorkerAgentSelection = {
       model: agent.model ? { provider: agent.model.provider, modelId: agent.model.modelId } : null,
       thinkingLevel: agent.thinkingLevel ?? null,
       cwd: agent.cwd ?? null,
     };
+    const chosen = resolveWorkerModel(request.modelRole, saved);
+    if (!chosen.model.provider.trim() || !chosen.model.modelId.trim())
+      throw new Error("Worker model policy did not select a model");
+    const worker = { ...saved, model: chosen.model, thinkingLevel: chosen.thinkingLevel };
     const taskId = await tx.createTask(
       request.mode === "background" ? BackgroundHelperTask : ForegroundHelperTask,
-      { request, agent: saved },
+      { request, agent: worker },
       { ownership: { kind: "conversation" }, background: request.mode === "background" },
     );
-    doc.items.push({ request, taskId, childId: null, receipt: null });
+    doc.items.push({ request, taskId, childId: null, model: chosen.model, receipt: null });
     return String(taskId);
   }, BACKGROUND_CONTEXT);
 }
@@ -177,6 +201,7 @@ export async function inspectHelpers(harness: Harness, conversation: Conversatio
         taskId: String(item.taskId),
         childId: item.childId === null ? null : String(item.childId),
         mode: item.request.mode,
+        model: item.model ?? null,
         status,
         answerEntryId:
           status === "success" && item.receipt?.answerEntryId !== null

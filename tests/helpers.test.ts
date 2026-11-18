@@ -17,7 +17,7 @@ import {
   HelpersExtension,
   helperHasUnsettled,
   inspectHelpers,
-  launchHelper,
+  launchHelper as launchHelperWithPolicy,
   stopHelper,
   stopHelpersIncludingBackground,
 } from "../src/server/helpers.ts";
@@ -28,9 +28,18 @@ const request = {
   requestId: "helper-one",
   mode: "foreground",
   delivery: "notify-only",
+  modelRole: "economical",
+  brief: null,
   assignment: "Investigate the bounded question",
   context: "Only this chosen context",
 } as const;
+
+function launchHelper(conversation: Conversation, raw: unknown) {
+  return launchHelperWithPolicy(conversation, raw, (_role, saved) => ({
+    model: { provider: PROVIDER_ID, modelId: MODEL_ID },
+    thinkingLevel: saved.thinkingLevel,
+  }));
+}
 
 describe("foreground helpers", () => {
   let directory: string;
@@ -75,6 +84,69 @@ describe("foreground helpers", () => {
   it("rejects unsupported delivery modes", async () => {
     await expect(launchHelper(parent, { ...request, delivery: "follow-up" })).rejects.toThrow();
     expect((await view()).helpers).toEqual([]);
+  });
+
+  it("requires injected model policy and persists the selected model and delegation metadata", async () => {
+    const selected = provider.models.getModels(PROVIDER_ID).find((model) => model.id !== MODEL_ID);
+    expect(selected).toBeDefined();
+    const seen: string[] = [];
+    await launchHelperWithPolicy(
+      parent,
+      {
+        ...request,
+        modelRole: "mid",
+        brief: {
+          version: 1,
+          kind: "delegate",
+          deliverable: "Return evidence",
+          evidence: ["Relevant reference"],
+          suggestedSkills: ["review"],
+          constraints: ["Do not modify unrelated work"],
+        },
+      },
+      (role, saved) => {
+        seen.push(role);
+        return {
+          model: { provider: selected!.provider, modelId: selected!.id },
+          thinkingLevel: saved.thinkingLevel,
+        };
+      },
+    );
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    expect(seen).toEqual(["mid"]);
+    expect((await view()).helpers[0]?.model).toEqual({
+      provider: selected!.provider,
+      modelId: selected!.id,
+    });
+    expect(JSON.stringify(provider.calls[0]!.context)).toContain("Return evidence");
+    expect(JSON.stringify(provider.calls[0]!.context)).toContain("separate branch");
+    provider.calls[0]!.finish("done");
+    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("success"));
+  });
+
+  it("does not launch if the injected model policy cannot select a model", async () => {
+    await expect(
+      launchHelperWithPolicy(parent, request, () => {
+        throw new Error("model unavailable");
+      }),
+    ).rejects.toThrow("model unavailable");
+    expect((await view()).helpers).toEqual([]);
+  });
+
+  it("defaults the model role to economical", async () => {
+    const { modelRole: _role, ...withoutRole } = request;
+    const seen: string[] = [];
+    await launchHelperWithPolicy(parent, withoutRole, (role, saved) => {
+      seen.push(role);
+      return {
+        model: { provider: PROVIDER_ID, modelId: MODEL_ID },
+        thinkingLevel: saved.thinkingLevel,
+      };
+    });
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    expect(seen).toEqual(["economical"]);
+    provider.calls[0]!.finish("done");
+    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("success"));
   });
 
   it("keeps a background anchor alive across normal Stop, then stops it explicitly", async () => {
@@ -233,7 +305,7 @@ describe("foreground helpers", () => {
   it("treats a missing task record as unknown and blocks lifecycle changes", async () => {
     await parent.commit(async (tx) => {
       const doc = await tx.doc(HelpersDoc, parent.id);
-      doc.items.push({ request, taskId: 987654321, childId: null, receipt: null });
+      doc.items.push({ request, taskId: 987654321, childId: null, model: null, receipt: null });
     }, BACKGROUND_CONTEXT);
     expect((await view()).helpers[0]?.status).toBe("unknown");
     expect(await parent.commit((tx) => helperHasUnsettled(tx, parent.id), BACKGROUND_CONTEXT)).toBe(
