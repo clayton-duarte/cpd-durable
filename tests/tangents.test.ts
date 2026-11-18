@@ -63,6 +63,9 @@ async function fixture() {
       const item = (await tx.doc(Catalog)).items.find((item) => item.id === id);
       if (!item || item.status === "deleted") throw new Error("Main unavailable");
     },
+    async isMainReadOnly(tx, id) {
+      return (await tx.doc(Catalog)).items.find((item) => item.id === id)?.status === "archived";
+    },
     async register(tx, tangent) {
       (await tx.doc(Catalog)).items.push({ id: tangent.id, status: "tangent" });
     },
@@ -302,7 +305,9 @@ describe("interactive tangents", () => {
         expectedRevision: 1,
         handoff: { ...handoff, goal: "Result" },
       };
-      await expect(recordReturn(f.harness, f.main.id, draft, f.hooks)).rejects.toThrow("Caller");
+      await expect(recordReturn(f.harness, f.main.id, f.main.id, draft, f.hooks)).rejects.toThrow(
+        "Caller",
+      );
       await expect(
         deliverReturn(
           f.harness,
@@ -323,13 +328,26 @@ describe("interactive tangents", () => {
           f.hooks,
         ),
       ).rejects.toThrow("Caller");
-      const result = await recordReturn(f.harness, child.id as ConversationId, draft, f.hooks);
+      const result = await recordReturn(
+        f.harness,
+        child.id as ConversationId,
+        f.main.id,
+        draft,
+        f.hooks,
+      );
       expect(result.delivery).toBe("available");
       expect(
-        (await recordReturn(f.harness, child.id as ConversationId, draft, f.hooks)).revision,
+        (await recordReturn(f.harness, child.id as ConversationId, f.main.id, draft, f.hooks))
+          .revision,
       ).toBe(2);
       await expect(
-        recordReturn(f.harness, child.id as ConversationId, { ...draft, handoff }, f.hooks),
+        recordReturn(
+          f.harness,
+          child.id as ConversationId,
+          f.main.id,
+          { ...draft, handoff },
+          f.hooks,
+        ),
       ).rejects.toThrow("conflicts");
       expect(f.provider.calls).toHaveLength(1);
       await expect(

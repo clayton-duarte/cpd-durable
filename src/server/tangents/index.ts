@@ -68,6 +68,7 @@ export const TangentsDoc = defineDoc<JsonRepresentation<State>>({
 export type TangentHooks = {
   assertMain(tx: Tx, mainId: ConversationId): Promise<void>;
   assertMainReadable(tx: Tx, mainId: ConversationId): Promise<void>;
+  isMainReadOnly(tx: Tx, mainId: ConversationId): Promise<boolean>;
   register(
     tx: Tx,
     tangent: { id: ConversationId; parentId: ConversationId; title: string },
@@ -80,6 +81,12 @@ export type TangentHooks = {
     parent: ConversationId,
     tangent: ConversationId,
     action: "return" | "deliver" | "accept" | "lifecycle" | "read",
+  ): Promise<void>;
+  assertNoUnsettled?(tx: Tx, tangent: ConversationId): Promise<void>;
+  onLifecycle?(
+    tx: Tx,
+    tangent: ConversationId,
+    next: "open" | "concluded" | "archived",
   ): Promise<void>;
   cwd(sourceCwd: string | undefined): string;
 };
@@ -260,24 +267,35 @@ export async function listTangents(
 ) {
   return driver.commit(async (tx) => {
     await hooks.assertMainReadable(tx, parentId);
+    const parentReadOnly = await hooks.isMainReadOnly(tx, parentId);
     const state = await tx.doc(TangentsDoc);
     const result: {
       tangent: Tangent;
       activity: "running" | "waiting" | "idle" | "interrupted" | "failed";
+      readOnly: boolean;
     }[] = [];
     for (const item of state.tangents.filter((t) => t.parentId === parentId)) {
       const live = await tx.doc(LiveDoc, item.id as ConversationId);
+      const inbox = await tx.doc(InboxDoc, item.id as ConversationId);
       const failure = live.runFailure?.reason;
       const activity = live.run
         ? live.tools?.some((tool) => tool.name === "ask_user" && tool.status === "running")
           ? "waiting"
           : "running"
-        : failure === "aborted" || failure === "interrupted"
-          ? "interrupted"
-          : failure
-            ? "failed"
-            : "idle";
-      result.push({ tangent: copy(item), activity });
+        : live.compactions?.length
+          ? "running"
+          : inbox.items.length
+            ? "waiting"
+            : failure === "aborted" || failure === "interrupted"
+              ? "interrupted"
+              : failure
+                ? "failed"
+                : "idle";
+      result.push({
+        tangent: copy(item),
+        activity,
+        readOnly: parentReadOnly || item.lifecycle !== "open",
+      });
     }
     return result;
   }, context);
@@ -287,6 +305,7 @@ export async function listTangents(
 export async function recordReturn(
   driver: Pick<Driver, "commit">,
   caller: ConversationId,
+  parentId: ConversationId,
   input: unknown,
   hooks: TangentHooks,
   context: Context = BACKGROUND_CONTEXT,
@@ -295,7 +314,7 @@ export async function recordReturn(
   return driver.commit(async (tx) => {
     const state = await tx.doc(TangentsDoc);
     const item = state.tangents.find((t) => t.id === request.tangentId);
-    if (!item) throw new Error("Tangent not found");
+    if (!item || item.parentId !== parentId) throw new Error("Tangent not found");
     if (caller !== item.id) throw new Error("Caller is not the tangent");
     await hooks.assertCaller(
       tx,
@@ -459,7 +478,9 @@ export async function setTangentLifecycle(
       const inbox = await tx.doc(InboxDoc, tangentId);
       if (live.run || live.compactions?.length || inbox.items.length)
         throw new Error("Tangent has active work");
+      await hooks.assertNoUnsettled?.(tx, tangentId);
     }
+    await hooks.onLifecycle?.(tx, tangentId, next);
     item.lifecycle = next;
     return copy(item);
   }, context);
