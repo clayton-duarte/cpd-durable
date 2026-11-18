@@ -22,6 +22,7 @@ import { ChatIdSchema, CreateChatSchema, ChatActionSchema } from "../shared/chat
 import { ChatLifecycleError } from "./chats.ts";
 import type { ChatScope } from "./chats.ts";
 import { CompactSchema } from "../shared/context.ts";
+import { ConfigurationChangeSchema } from "../shared/configuration.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -105,6 +106,12 @@ export function createApp(
             context: async () => {
               throw new Error("Context unavailable");
             },
+            configuration: async () => {
+              throw new Error("Configuration unavailable");
+            },
+            configure: async () => {
+              throw new Error("Configuration unavailable");
+            },
             withdraw: chat.withdraw,
             admit: (draft: Parameters<ChatScope["admit"]>[0]) =>
               chat.conversation.submit(draft, BACKGROUND_CONTEXT),
@@ -155,6 +162,17 @@ export function createApp(
   });
   routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
   routes.get("/context", async (c) => c.json(await c.get("scope").context()));
+  routes.get("/configuration", async (c) => c.json(await c.get("scope").configuration()));
+  routes.post("/configuration", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = ConfigurationChangeSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!result.success) return c.json({ error: "Invalid configuration." }, 400);
+    await c.get("scope").configure(result.data.expected, result.data.selection);
+    return c.json(await c.get("scope").configuration());
+  });
   routes.post("/compact", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))
       return c.json({ error: "Expected application/json." }, 415);

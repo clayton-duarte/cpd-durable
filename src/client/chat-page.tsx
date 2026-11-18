@@ -1,6 +1,5 @@
 import { Chat } from "./chat.tsx";
 import { useChat } from "./use-chat.ts";
-import { MODEL_ID } from "../shared/chat.ts";
 
 export function ChatPage({
   chatId,
@@ -19,7 +18,7 @@ export function ChatPage({
         active={active}
         readOnly={readOnly}
         title="CPD Durable"
-        description={`OpenCode Go · ${MODEL_ID}`}
+        description="Durable chat · model settings in Chat details"
         state={chat.state}
         connected={chat.connected}
         pending={chat.pending}

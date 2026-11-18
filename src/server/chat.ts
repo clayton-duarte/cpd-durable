@@ -30,7 +30,7 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
   );
   try {
     const conversation = await harness.root(BACKGROUND_CONTEXT);
-    // Apply the fixed provider to reopened sessions too, without discarding history.
+    // Initialize new chats; retain each reopened conversation's saved model/thinking.
     const defaults: AgentChange = {
       model: { provider: PROVIDER_ID, modelId: MODEL_ID },
       cwd: workingDirectory(cwd),
@@ -39,7 +39,7 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       modelTools: null,
       maxTurns: null,
     };
-    const chats = await openChats(harness, conversation, defaults);
+    const chats = await openChats(harness, conversation, defaults, models);
     harness.resume();
     let closed = false;
     return {
