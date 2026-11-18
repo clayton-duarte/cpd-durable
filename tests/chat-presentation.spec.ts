@@ -191,6 +191,60 @@ test("conversation map selects actual loaded turns and preserves the native draf
   await expect(draft).toHaveValue("Keep navigation draft");
 });
 
+test("details use chat/session SDK scopes and read retries never resend the draft", async ({
+  page,
+}) => {
+  await connect(page);
+  let reads = 0;
+  await page.route("**/api/chats/1/accounting", async (route) => {
+    if (++reads === 1) return route.abort();
+    return route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        conversation: {
+          cost: 0.5,
+          totalTokens: 37,
+          lines: [
+            {
+              label: "test/model",
+              input: 10,
+              output: 20,
+              cacheRead: 3,
+              cacheWrite: 4,
+              totalTokens: 37,
+              cost: 0.5,
+              billed: false,
+            },
+          ],
+        },
+        session: { cost: 1, totalTokens: 74, lines: [] },
+        activity: {
+          phase: "retrying",
+          attempt: 2,
+          retryAt: 2000,
+          pollAt: null,
+          toolRounds: 1,
+          failure: null,
+        },
+      },
+    });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Unsent accounting draft");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Details unavailable");
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(dialog.locator('[data-slot="cost-meter"]')).toContainText("this chat");
+  await expect(dialog).toContainText("$1.00 session");
+  await expect(dialog).toContainText("SDK phase: retrying");
+  await expect(dialog).not.toContainText("this run");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Unsent accounting draft");
+});
+
 test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
   await connect(page, historyState(61, 90, 1));
   let release!: () => void;
