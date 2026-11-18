@@ -8,6 +8,8 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import {
   admitDirectShell,
+  DirectShellDoc,
+  directShellHasUnsettled,
   DirectShellEntry,
   DirectShellExtension,
 } from "../src/server/direct-shell.ts";
@@ -207,4 +209,35 @@ it("never reruns an interrupted side effect after reopening", async () => {
     result: { status: "interrupted" },
   });
   expect(await readFile(join(dir, "effect"), "utf8")).toBe("x");
+});
+
+it("publishes observed output and retains committed partial output after Stop", async () => {
+  const id = await run("stream", "printf streamed-marker; sleep 30");
+  await vi.waitFor(async () =>
+    expect(
+      (await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT))?.progress
+        ?.output,
+    ).toContain("streamed-marker"),
+  );
+  await conversation.abort(BACKGROUND_CONTEXT);
+  const settled = await harness.waitForTask(id, BACKGROUND_CONTEXT);
+  expect(settled.state.outcome).toMatchObject({
+    result: { status: "cancelled", output: "streamed-marker", outputMayBeIncomplete: true },
+  });
+  expect(JSON.stringify((await conversation.context(BACKGROUND_CONTEXT)).messages)).toContain(
+    "streamed-marker",
+  );
+});
+
+it("fails closed when an active task record is missing", async () => {
+  await conversation.commit(async (tx) => {
+    (await tx.doc(DirectShellDoc, conversation.id)).active = 999999;
+  }, BACKGROUND_CONTEXT);
+  expect(
+    await conversation.commit(
+      (tx) => directShellHasUnsettled(tx, conversation.id),
+      BACKGROUND_CONTEXT,
+    ),
+  ).toBe(true);
+  await expect(run("missing", "printf no")).rejects.toThrow("busy");
 });

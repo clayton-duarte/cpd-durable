@@ -18,6 +18,7 @@ type Result = {
   status: "complete" | "failed" | "cancelled" | "interrupted";
   output: string;
   truncated: boolean;
+  outputMayBeIncomplete?: boolean;
   exitCode?: number;
 };
 type State = { phase: "execute" };
@@ -28,7 +29,17 @@ export const DirectShellEntry = defineEntry<{
   includeInContext: boolean;
   result: Result;
 }>("cpd.direct-shell");
-export const DirectShellDoc = defineDoc<{ requests: Stored[]; active: number | null }>({
+export const DirectShellDoc = defineDoc<{
+  requests: Stored[];
+  active: number | null;
+  progress?: {
+    taskId: number;
+    command: string;
+    includeInContext: boolean;
+    output: string;
+    truncated: boolean;
+  };
+}>({
   kind: "cpd.direct-shell.requests",
   version: 1,
   scope: "conversation",
@@ -42,7 +53,7 @@ export async function directShellHasUnsettled(tx: Tx, id: ConversationId): Promi
   const state = await tx.doc(DirectShellDoc, id);
   if (state.active === null) return false;
   const task = await tx.task(state.active as TaskId);
-  return task !== undefined && task.state.status !== "terminal";
+  return task === undefined || task.state.status !== "terminal";
 }
 
 export async function directShellRequestExists(
@@ -63,6 +74,33 @@ export const DirectShellTask = defineTask<Input, State, Result>({
       let output = "";
       let truncated = false;
       let result: Result;
+      let dirty = false;
+      let writer: Promise<void> | undefined;
+      const publish = () => {
+        dirty = true;
+        if (writer) return;
+        writer = (async () => {
+          while (dirty && !runtime.signal.aborted) {
+            dirty = false;
+            const nextOutput = output;
+            const nextTruncated = truncated;
+            await runtime.commit(async (tx) => {
+              const doc = await tx.doc(DirectShellDoc, runtime.conversationId);
+              if (doc.active === runtime.taskId && doc.progress?.taskId === runtime.taskId) {
+                doc.progress.output = nextOutput;
+                doc.progress.truncated = nextTruncated;
+              }
+            }, context);
+          }
+        })()
+          .catch(() => {
+            // The invocation can end while progress is being committed.
+          })
+          .finally(() => {
+            writer = undefined;
+            if (dirty && !runtime.signal.aborted) publish();
+          });
+      };
       try {
         const env = await runtime.env(context);
         if (!env) throw new Error("Execution environment unavailable.");
@@ -76,6 +114,7 @@ export const DirectShellTask = defineTask<Input, State, Result>({
                 output = bytes.subarray(bytes.length - LIMIT).toString("utf8");
                 truncated = true;
               }
+              publish();
             },
           },
           context,
@@ -93,9 +132,11 @@ export const DirectShellTask = defineTask<Input, State, Result>({
         if (runtime.signal.aborted) return;
         result = { status: "failed", output, truncated };
       }
+      while (writer) await writer;
       await runtime.commit(async (tx) => {
         const doc = await tx.doc(DirectShellDoc, runtime.conversationId);
         doc.active = null;
+        delete doc.progress;
         await tx.appendEntry(DirectShellEntry, runtime.conversationId, {
           data: {
             command: task.input.command,
@@ -119,14 +160,17 @@ export const DirectShellTask = defineTask<Input, State, Result>({
     },
   },
   abort: async (task, runtime, context) => {
-    const result: Result = {
-      status: task.abortReason === "restart" ? "interrupted" : "cancelled",
-      output: "",
-      truncated: false,
-    };
     await runtime.commit(async (tx) => {
       const doc = await tx.doc(DirectShellDoc, runtime.conversationId);
+      const progress = doc.progress?.taskId === runtime.taskId ? doc.progress : undefined;
+      const result: Result = {
+        status: task.abortReason === "restart" ? "interrupted" : "cancelled",
+        output: progress?.output ?? "",
+        truncated: progress?.truncated ?? false,
+        outputMayBeIncomplete: true,
+      };
       doc.active = null;
+      delete doc.progress;
       await tx.appendEntry(DirectShellEntry, runtime.conversationId, {
         data: {
           command: task.input.command,
@@ -138,7 +182,7 @@ export const DirectShellTask = defineTask<Input, State, Result>({
               model: [
                 {
                   role: "user" as const,
-                  content: `Shell command: ${task.input.command}\nStatus: ${result.status}; effects may be uncertain.`,
+                  content: `Shell command: ${task.input.command}\n${result.truncated ? "[Earlier output truncated]\n" : ""}${result.output}\nStatus: ${result.status}; output may be incomplete and effects uncertain.`,
                   timestamp: Date.now(),
                 },
               ],
@@ -191,6 +235,13 @@ export async function admitDirectShell(
     });
     doc.requests.push({ requestId: input.requestId, digest, taskId: id });
     doc.active = id;
+    doc.progress = {
+      taskId: id,
+      command: input.command,
+      includeInContext: input.includeInContext,
+      output: "",
+      truncated: false,
+    };
     return id;
   }, context);
 }
