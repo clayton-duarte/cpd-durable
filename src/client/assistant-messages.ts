@@ -71,6 +71,11 @@ function committedMessage(
         toolStates: Object.fromEntries(
           parts.filter((part) => part.type === "tool-call").map((part) => [part.id, part.state]),
         ),
+        nestedTools: Object.fromEntries(
+          parts
+            .filter((part) => part.type === "tool-call" && part.nested !== undefined)
+            .map((part) => [part.id, part.type === "tool-call" ? part.nested : undefined]),
+        ),
         toolResultParts: Object.fromEntries(
           parts
             .filter((part) => part.type === "tool-call" && part.resultParts)
