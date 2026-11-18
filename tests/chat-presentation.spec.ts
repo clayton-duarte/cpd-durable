@@ -155,6 +155,91 @@ test.beforeEach(async ({ page }) => {
   );
 });
 
+test("private feedback ignores late reads, preserves edits on conflict and late save", async ({
+  page,
+}) => {
+  const state = historyState(1, 4, 1, false);
+  state.messages[1]!.source!.feedbackModelIndex = 0;
+  state.messages[3]!.source!.feedbackModelIndex = 3;
+  await connect(page, state);
+  let releaseFirst: (() => void) | undefined;
+  let releaseSave: (() => void) | undefined;
+  let revision = 0;
+  let current: { vote: string; comment: string | null } | null = null;
+  let posts = 0;
+  await page.route("**/api/chats/1/feedback/*/*", async (route) => {
+    const segments = new URL(route.request().url()).pathname.split("/");
+    const entryId = Number(segments[5]);
+    const modelIndex = Number(segments[6]);
+    const result = () => ({
+      conversationId: "1",
+      target: { entryId, modelIndex },
+      revision: entryId === 4 ? revision : 0,
+      value: entryId === 4 ? current : null,
+      readOnly: false,
+    });
+    if (entryId === 2) {
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      return route.fulfill({ json: result() });
+    }
+    if (route.request().method() === "GET") return route.fulfill({ json: result() });
+    posts++;
+    if (posts === 1) {
+      revision = 1;
+      current = { vote: "helpful", comment: "Other writer" };
+      return route.fulfill({ status: 409, json: { error: "Conflict" } });
+    }
+    if (posts === 3) {
+      expect(route.request().postDataJSON()).toMatchObject({ expectedRevision: 2, value: null });
+      revision = 3;
+      current = null;
+      return route.fulfill({ json: result() });
+    }
+    const payload = route.request().postDataJSON() as {
+      expectedRevision: number;
+      value: { vote: string; comment: string };
+    };
+    expect(payload.expectedRevision).toBe(1);
+    await new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    revision = 2;
+    current = payload.value;
+    return route.fulfill({ json: result() });
+  });
+  await page.goto("/");
+  const second = page.locator('[data-durable-id="4:0"]');
+  await second.getByRole("button", { name: "Not helpful" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Optional comment").fill("Keep my draft");
+  releaseFirst?.();
+  await dialog.getByRole("button", { name: "Save feedback" }).click();
+  await expect(dialog).toContainText("Feedback changed");
+  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Keep my draft");
+  await expect(dialog.getByRole("button", { name: "Save feedback" })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Refresh feedback" }).click();
+  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Keep my draft");
+  await dialog.getByRole("button", { name: "Save feedback" }).click();
+  await expect.poll(() => posts).toBe(2);
+  await dialog.getByLabel("Optional comment").fill("Edited while saving");
+  releaseSave?.();
+  await expect(dialog).toContainText("Saved revision 2");
+  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Edited while saving");
+  await expect(dialog).toContainText("does not promise physical erasure");
+  await dialog.getByRole("button", { name: "Clear feedback" }).click();
+  await expect(dialog).toContainText("No current feedback.");
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await expect(second.getByRole("button", { name: "Not helpful" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(
+    page.locator('[data-durable-id="2:0"]').getByRole("button", { name: "Not helpful" }),
+  ).toHaveAttribute("aria-pressed", "false");
+});
+
 test("native earlier loading prepends history while preserving draft, row identity and scroll anchor", async ({
   page,
 }) => {

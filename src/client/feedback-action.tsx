@@ -139,7 +139,19 @@ function FeedbackControl({
       )
         throw new Error("Mismatched feedback target");
       if (generation.current === current && canWrite.current) {
-        setView(next);
+        // A retry receipt describes the original operation, not necessarily the
+        // current value if another writer has since changed or cleared it.
+        const latestResponse = await fetch(url);
+        if (!latestResponse.ok) throw new Error("Feedback refresh unavailable");
+        const latest = FeedbackViewSchema.parse(await latestResponse.json());
+        if (
+          latest.conversationId !== chatId ||
+          latest.target.entryId !== entryId ||
+          latest.target.modelIndex !== modelIndex
+        )
+          throw new Error("Mismatched feedback target");
+        if (generation.current !== current || !canWrite.current) return;
+        setView(latest);
         setAttempt(undefined);
         setError(undefined);
       }

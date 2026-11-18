@@ -55,6 +55,9 @@ describe("private response feedback", () => {
     expect(first.status).toBe(200);
     expect(await first.json()).toEqual(await retry.json());
     expect(
+      JSON.stringify((await chat.conversation.context(BACKGROUND_CONTEXT)).messages),
+    ).not.toContain("Synthetic private comment");
+    expect(
       (
         await app.request(
           url(),
@@ -68,6 +71,17 @@ describe("private response feedback", () => {
       post({ requestId: "clear", expectedRevision: 1, value: null }),
     );
     expect(FeedbackViewSchema.parse(await clear.json())).toMatchObject({
+      revision: 2,
+      value: null,
+    });
+    // A clear changes the current value; the retry receipt intentionally survives it.
+    expect(
+      FeedbackViewSchema.parse(await (await app.request(url(), post(change))).json()),
+    ).toMatchObject({
+      revision: 1,
+      value: change.value,
+    });
+    expect(FeedbackViewSchema.parse(await (await app.request(url())).json())).toMatchObject({
       revision: 2,
       value: null,
     });
@@ -103,6 +117,10 @@ describe("private response feedback", () => {
     expect(FeedbackViewSchema.parse(await (await app.request(url())).json()).value?.vote).toBe(
       "helpful",
     );
+    expect(provider.calls).toHaveLength(1);
+    expect(
+      JSON.stringify((await chat.conversation.context(BACKGROUND_CONTEXT)).messages),
+    ).not.toContain("Synthetic private comment");
     const other = await chat.chats.create(crypto.randomUUID());
     expect((await app.request(url(other.id))).status).toBe(404);
     expect((await app.request(url(original, entryId, 1))).status).toBe(404);
@@ -124,6 +142,38 @@ describe("private response feedback", () => {
     ).toBe(409);
     await chat.chats.change(id, "delete");
     expect((await app.request(url())).status).toBe(404);
+  });
+  it("uses original model-message indexes independently within an SDK entry", async () => {
+    const entries = await chat.conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+    const assistant = entries.items.find((entry) => entry.id === entryId)?.model?.[0];
+    expect(assistant?.role).toBe("assistant");
+    if (!assistant || assistant.role !== "assistant") throw new Error("Missing assistant fixture");
+    const multi = await chat.conversation.commit(
+      async (tx) =>
+        (
+          await tx.appendEntry(chat.conversation.id, {
+            kind: "pi.assistant",
+            model: [assistant, assistant],
+          })
+        ).id,
+      BACKGROUND_CONTEXT,
+    );
+    const app = createApp(chat);
+    expect(
+      (await app.request(url(String(chat.conversation.id), multi, 1), post(change))).status,
+    ).toBe(200);
+    expect(
+      FeedbackViewSchema.parse(
+        await (await app.request(url(String(chat.conversation.id), multi, 0))).json(),
+      ),
+    ).toMatchObject({ revision: 0, value: null });
+    expect(
+      FeedbackViewSchema.parse(
+        await (await app.request(url(String(chat.conversation.id), multi, 1))).json(),
+      ),
+    ).toMatchObject({ revision: 1, value: change.value });
+    expect((await app.request(url(String(chat.conversation.id), multi, 2))).status).toBe(404);
+    expect(provider.calls).toHaveLength(1);
   });
   it("rejects a committed tool-only assistant entry and never accepts a live identifier", async () => {
     const app = createApp(chat);
