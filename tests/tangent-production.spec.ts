@@ -677,3 +677,263 @@ test("loading earlier child history keeps main history and both native drafts in
   );
   expect(historyCalls).toEqual(["/api/chats/2/history"]);
 });
+
+test("templates and typed tool receipts stay scoped across native main and tangent drafts", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1600, height: 1400 });
+  const requests: string[] = [];
+  const saved: Record<string, string[]> = {};
+  page.on("request", (request) => {
+    const match = /\/api\/chats\/(1|3)\/draft$/.exec(new URL(request.url()).pathname);
+    if (request.method() !== "PUT" || !match?.[1]) return;
+    const body = request.postDataJSON() as { content: { text: string } };
+    (saved[match[1]] ??= []).push(body.content.text);
+  });
+  let upload = 0;
+  let stopRequested = false;
+  let policyRevision = 1;
+  let workerSelection: { provider: string; modelId: string; thinkingLevel: string } | null = null;
+  const inputs: unknown[] = [];
+  const inputGate = Promise.resolve();
+  await page.addInitScript(() => {
+    class Synthetic extends EventTarget {
+      onerror: (() => void) | null = null;
+      closed = false;
+      constructor(url: string) {
+        super();
+        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        queueMicrotask(() => {
+          if (!this.closed)
+            this.dispatchEvent(
+              new MessageEvent("state", {
+                data: JSON.stringify({
+                  conversationId: id,
+                  messages:
+                    id === 3
+                      ? [
+                          {
+                            id: "1:0",
+                            role: "assistant",
+                            text: "",
+                            interrupted: false,
+                            outcome: "complete",
+                            parts: [
+                              {
+                                id: "1:0:0",
+                                type: "tool-call",
+                                callId: "table",
+                                name: "display_table",
+                                arguments: {},
+                                state: "complete",
+                                output: "Table receipt.",
+                                table: {
+                                  version: 1,
+                                  table: {
+                                    columns: [{ id: "x", label: "X" }],
+                                    rows: [{ x: "row" }],
+                                  },
+                                },
+                              },
+                              {
+                                id: "1:0:1",
+                                type: "tool-call",
+                                callId: "edit",
+                                name: "edit",
+                                arguments: {},
+                                state: "complete",
+                                output: "Edit receipt.",
+                                editDiff: {
+                                  kind: "patch",
+                                  patch: "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+                                },
+                              },
+                            ],
+                          },
+                        ]
+                      : [],
+                  partial: "",
+                  busy: false,
+                  hasEarlier: false,
+                  failure: null,
+                  controls: { canContinue: false, resetPending: false, queue: [] },
+                }),
+              }),
+            );
+        });
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+    Object.defineProperty(window, "EventSource", { value: Synthetic });
+  });
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    requests.push(`${request.method()} ${path}`);
+    if (path === "/api/model-policy" && request.method() === "POST") {
+      const body = request.postDataJSON() as { assignments: { worker: typeof workerSelection } };
+      workerSelection = body.assignments.worker;
+      policyRevision++;
+      return route.fulfill({
+        json: {
+          revision: policyRevision,
+          assignments: {
+            main: null,
+            tangent: { provider: "test", modelId: "mid", thinkingLevel: "off" },
+            worker: workerSelection,
+          },
+        },
+      });
+    }
+    if (path === "/api/model-policy")
+      return route.fulfill({
+        json: {
+          revision: policyRevision,
+          assignments: {
+            main: null,
+            tangent: { provider: "test", modelId: "mid", thinkingLevel: "off" },
+            worker: workerSelection,
+          },
+          choices: [
+            { provider: "test", modelId: "mid", name: "Mid", thinkingLevels: ["off"] },
+            { provider: "test", modelId: "cheap", name: "Cheap", thinkingLevels: ["off"] },
+          ],
+        },
+      });
+    if (path === "/api/chats/1/input" && request.method() === "POST") {
+      inputs.push(request.postDataJSON());
+      await inputGate;
+      return route.fulfill({ status: 202, json: { id: "admitted" } });
+    }
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+      });
+    if (path === "/api/chats/1/tangents")
+      return route.fulfill({
+        json: {
+          tangents: [tangent(2, "Running child", "running"), tangent(3, "Idle child", "idle")],
+        },
+      });
+    const templateMatch = /^\/api\/chats\/(1|3)\/templates(?:\/([a-f0-9]+))?$/.exec(path);
+    if (templateMatch) {
+      const id = templateMatch[1]!;
+      const template = {
+        id: "a".repeat(64),
+        fingerprint: "b".repeat(64),
+        name: "example",
+        path: "/example/.pi/prompts/example.md",
+        truncated: false,
+      };
+      return route.fulfill({
+        json: templateMatch[2]
+          ? { conversationId: id, template, text: `Template ${id}` }
+          : { conversationId: id, templates: [template], issues: [], omitted: 0 },
+      });
+    }
+    if (path.endsWith("/questions"))
+      return route.fulfill({
+        json: {
+          conversationId: path.split("/")[3],
+          questions: path.includes("/3/")
+            ? [
+                {
+                  questionId: "q-9",
+                  taskId: 9,
+                  revision: 1,
+                  status: "pending",
+                  actionable: true,
+                  cancelled: false,
+                  spec: {
+                    message: "Child question",
+                    fields: [{ id: "answer", kind: "text", label: "Answer", required: true }],
+                  },
+                },
+              ]
+            : [],
+        },
+      });
+    if (path.endsWith("/workers")) {
+      const id = path.split("/")[3];
+      return route.fulfill({
+        json: {
+          hasUnsettled: true,
+          helpers: [
+            {
+              requestId: `request-${id}`,
+              taskId: `task-${id}`,
+              childId: null,
+              mode: "background",
+              model: { provider: "test", modelId: `worker-${id}` },
+              modelName: `Worker model ${id}`,
+              stop: id === "2" && stopRequested ? "requested" : "none",
+              status: id === "1" ? "unknown" : "running",
+              answerEntryId: null,
+              delivery: "notify-only",
+            },
+          ],
+        },
+      });
+    }
+    if (path === "/api/chats/2/workers/task-2/stop") {
+      stopRequested = true;
+      return route.fulfill({ status: 202, json: { status: "requested" } });
+    }
+    if (path === "/api/chats/2/workers/task-2/result")
+      return route.fulfill({
+        json: {
+          taskId: "task-2",
+          childId: "20",
+          answerEntryId: "5",
+          text: "Review this result",
+          truncated: false,
+          review: "unreviewed",
+        },
+      });
+    if (path.endsWith("/attachments") && request.method() === "POST")
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: ids[upload++],
+          mimeType: "image/png",
+          size: png.length,
+          prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+        },
+      });
+    if (path.includes("/attachments/"))
+      return route.fulfill({ status: 200, contentType: "image/png", body: png });
+    return route.abort();
+  });
+  await syntheticDrafts(page);
+  await page.goto("/chats/1?tangent=3");
+  const main = page.getByRole("region", { name: "Main chat: Main" });
+  const child = page.getByRole("region", { name: "Tangent chat: Idle child" });
+  for (const [scope, id] of [
+    [main, "1"],
+    [child, "3"],
+  ] as const) {
+    const box = scope.getByRole("textbox", { name: "Message input" });
+    await addFile(page, scope, `scope-${id}.png`);
+    await box.fill(`Draft ${id} /`);
+    await scope.getByRole("option", { name: /templates/i }).click();
+    await page.getByRole("option", { name: /example/ }).click();
+    await page.getByRole("button", { name: "Append to draft" }).click();
+    await expect(box).toHaveValue(`Draft ${id} \nTemplate ${id}`);
+    await expect.poll(() => saved[id]).toContain(`Draft ${id} \nTemplate ${id}`);
+    await expect(scope.getByRole("button", { name: `Remove scope-${id}.png` })).toBeVisible();
+  }
+  await child
+    .getByRole("button", { name: "2 tool calls", exact: true })
+    .last()
+    .click({ timeout: 5000 });
+  await child.getByRole("button", { name: /Used tool.*display_table/ }).click({ timeout: 5000 });
+  await child.getByRole("button", { name: /Used tool.*edit/ }).click({ timeout: 5000 });
+  await expect(child.locator('[data-slot="data-table"]')).toContainText("row");
+  await expect(child.locator('[data-slot="code-diff"]')).toContainText("after");
+  expect(requests.filter((r) => r.includes("/templates"))).toEqual(
+    expect.arrayContaining(["GET /api/chats/1/templates", "GET /api/chats/3/templates"]),
+  );
+  expect(inputs).toHaveLength(0);
+});

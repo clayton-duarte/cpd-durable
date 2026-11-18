@@ -14,6 +14,7 @@ import type { createWorkerTools } from "./worker-tools.ts";
 import { createHandoffTools } from "./handoff-tools.ts";
 import { createHandoffGuards } from "./handoffs.ts";
 import { DirectShellExtension } from "./direct-shell.ts";
+import { createTableExtension } from "./structured-table.ts";
 import type { openConfiguredMcp } from "./mcp/config.ts";
 
 export function workingDirectory(path = "~"): string {
@@ -43,6 +44,7 @@ export function createExecution(
   if (workerTools) registry.install(workerTools);
   registry.install(createHandoffTools(createHandoffGuards()));
   registry.install(DirectShellExtension);
+  registry.install(createTableExtension());
   registry.install(
     defineExtension({
       name: "cpd-context",

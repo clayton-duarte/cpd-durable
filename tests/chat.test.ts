@@ -216,6 +216,7 @@ describe("single durable chat", () => {
       "inspect_handoffs",
       "collect_handoff",
       "review_handoff",
+      "display_table",
     ]);
     expect(agent.cwd).toBe(homedir());
   });

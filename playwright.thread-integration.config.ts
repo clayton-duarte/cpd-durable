@@ -11,6 +11,8 @@ export default defineConfig({
     "direct-shell.spec.ts",
     "edit-branch.spec.ts",
     "edit-diff.spec.ts",
+    "structured-table.spec.ts",
+    "templates.spec.ts",
     "history-operations.spec.ts",
     "questions.spec.ts",
     "model-policy.spec.ts",

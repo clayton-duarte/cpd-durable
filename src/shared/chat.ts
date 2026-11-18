@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { NestedToolDisplaySchema } from "./nested-tools.ts";
 import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
+import { TableDetailsSchema } from "./structured-table.ts";
 import { EditDiffSchema } from "./edit-diff.ts";
 import { DraftAdmissionSchema } from "./drafts.ts";
 import { modelInputText } from "./direct-shell.ts";
@@ -92,6 +93,7 @@ export const ChatPartSchema = z.discriminatedUnion("type", [
     resultParts: z.array(ToolResultPartSchema).optional(),
     resultEntryId: RecordIdSchema.optional(),
     nested: NestedToolDisplaySchema.optional(),
+    table: TableDetailsSchema.optional(),
     editDiff: EditDiffSchema.optional(),
   }),
   z.strictObject({
