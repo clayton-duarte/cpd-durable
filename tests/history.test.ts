@@ -46,6 +46,17 @@ describe("SDK-owned paged history", () => {
     return { id, close: subscription.unsubscribe, state: () => latest! };
   }
 
+  it("keeps literal history available when optional association fails", async () => {
+    await seed(1);
+    history = createHistory(chat.conversation, () => {
+      throw new Error("association unavailable");
+    });
+    const view = await observe();
+    expect(view.state().messages[0]?.text).toBe("Turn 0");
+    expect(view.state().messages[0]?.applicationHandoff).toBeUndefined();
+    expect(view.state().history?.epoch).toBeDefined();
+  });
+
   it("loads bounded earlier pages, coalesces duplicate reads and keeps browser views independent", async () => {
     await seed(130);
     const first = await observe();

@@ -4,6 +4,7 @@ import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts"
 import { TableDetailsSchema } from "./structured-table.ts";
 import { EditDiffSchema } from "./edit-diff.ts";
 import { DraftAdmissionSchema } from "./drafts.ts";
+import { ApplicationHandoffSchema } from "./application-handoff.ts";
 import { modelInputText } from "./direct-shell.ts";
 
 export const PROVIDER_ID = "opencode-go";
@@ -116,6 +117,7 @@ export const ChatMessageSchema = z.strictObject({
   interrupted: z.boolean(),
   parts: z.array(ChatPartSchema).optional(),
   outcome: MessageOutcomeSchema.optional(),
+  applicationHandoff: ApplicationHandoffSchema.optional(),
   source: z
     .strictObject({
       entryId: RecordIdSchema,
@@ -183,6 +185,13 @@ export const ChatStateSchema = z
     if (new Set(state.messages.map((message) => message.id)).size !== state.messages.length)
       context.addIssue({ code: "custom", message: "Duplicate message identity" });
     for (const message of state.messages) {
+      if (
+        message.applicationHandoff &&
+        (message.role !== "user" ||
+          message.source?.entryId !== message.applicationHandoff.canonicalEntryId ||
+          message.id !== `${message.applicationHandoff.canonicalEntryId}:0`)
+      )
+        context.addIssue({ code: "custom", message: "Invalid handoff message source" });
       if (
         message.parts &&
         new Set(message.parts.map((part) => part.id)).size !== message.parts.length

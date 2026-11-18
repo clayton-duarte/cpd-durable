@@ -85,6 +85,7 @@ export function createApp(
         | "tangents"
         | "workers"
         | "handoffs"
+        | "projectApplicationHandoffs"
       >
     >,
 ) {
@@ -400,7 +401,7 @@ export function createApp(
     const key = String(scope.conversation.id);
     let history = histories.get(key);
     if (!history) {
-      history = createHistory(scope.conversation);
+      history = createHistory(scope.conversation, chat.projectApplicationHandoffs);
       histories.set(key, history);
     }
     c.set("scope", scope);
