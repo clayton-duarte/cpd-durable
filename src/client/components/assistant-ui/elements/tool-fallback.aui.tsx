@@ -1085,7 +1085,7 @@ function ToolFallbackApprovalImpl({
   );
 }
 
-const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+const ToolFallbackImpl = ({
   toolName,
   argsText,
   result,
@@ -1097,7 +1097,8 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   interrupt,
   approval,
   respondToApproval,
-}) => {
+  renderResult,
+}: ToolCallMessagePartProps & { renderResult?: () => React.ReactNode }) => {
   const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
   const isRequiresAction = status?.type === "requires-action";
   const shouldRenderApproval =
@@ -1168,7 +1169,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
             }}
           />
         )}
-        <ToolFallbackResult result={result as unknown} />
+        {renderResult ? renderResult() : <ToolFallbackResult result={result as unknown} />}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
@@ -1183,6 +1184,7 @@ const ToolFallback = memo(ToolFallbackImpl) as unknown as ToolCallMessagePartCom
   Error: typeof ToolFallbackError;
   Approval: typeof ToolFallbackApproval;
 };
+const ToolFallbackWithResult = memo(ToolFallbackImpl);
 
 ToolFallback.displayName = "ToolFallback";
 ToolFallback.Root = ToolFallbackRoot;
@@ -1197,6 +1199,7 @@ export {
   formatUnknownValue,
   offersInterruptAction,
   ToolFallback,
+  ToolFallbackWithResult,
   ToolFallbackRoot,
   ToolFallbackTrigger,
   ToolFallbackContent,

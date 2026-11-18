@@ -7,6 +7,7 @@ import {
   type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { Hono } from "hono";
+import { createMiddleware } from "hono/factory";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import {
@@ -37,10 +38,19 @@ import {
 import { searchTranscripts } from "./search.ts";
 import { exportTranscripts, transcriptExportJson, transcriptExportMarkdown } from "./export.ts";
 import type { ResolveTranscript } from "./transcript-reader.ts";
+import {
+  admissionDigest,
+  AdmissionIdentityError,
+  imageRequestDigest,
+} from "./attachment-catalog.ts";
+import { AttachmentAccessError } from "./attachment-routes.ts";
+import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
+import { QuestionAnswerSchema } from "../shared/questions.ts";
+import { answerQuestion, questionProjection } from "./question-routes.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
-    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats">>,
+    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments">>,
 ) {
   const app = new Hono();
   const histories = new Map<string, ReturnType<typeof createHistory>>();
@@ -72,13 +82,17 @@ export function createApp(
     c.header("Cache-Control", "no-store");
     await next();
   });
-  app.use(
-    "/api/*",
-    bodyLimit({
-      maxSize: 128_000,
-      onError: (c) => c.json({ error: "Request too large." }, 413),
-    }),
+  const jsonLimit = bodyLimit({
+    maxSize: 128_000,
+    onError: (c) => c.json({ error: "Request too large." }, 413),
+  });
+  const limitRequests = createMiddleware((c, next) =>
+    c.req.method === "POST" && /^\/api\/chats\/[1-9]\d*\/attachments$/.test(c.req.path)
+      ? next()
+      : jsonLimit(c, next),
   );
+  app.use("/api/*", limitRequests);
+  if (chat.attachments) app.route("/", chat.attachments.routes);
 
   app.get("/api/chats", async (c) => {
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
@@ -199,6 +213,7 @@ export function createApp(
         ? {
             conversation: chat.conversation,
             archived: false,
+            assertWritable: async () => {},
             accounting: async () => {
               throw new Error("Accounting unavailable");
             },
@@ -212,8 +227,9 @@ export function createApp(
               throw new Error("Configuration unavailable");
             },
             withdraw: chat.withdraw,
-            admit: (draft: Parameters<ChatScope["admit"]>[0]) =>
-              chat.conversation.submit(draft, BACKGROUND_CONTEXT),
+            admit: async (_draft: Parameters<ChatScope["admit"]>[0]) => {
+              throw new Error("Transactional admission unavailable.");
+            },
           }
         : await chat.chats?.resolve(id ?? String(chat.conversation.id));
     if (!scope) return c.json({ error: "Chat not found." }, 404);
@@ -238,13 +254,32 @@ export function createApp(
     const result = InputSchema.safeParse(await c.req.json<unknown>().catch(() => null));
     if (!result.success) return c.json({ error: "Invalid message." }, 400);
     try {
-      const submission = await c.get("scope").admit({
-        type: "input",
-        content: result.data.text,
-        requestId: result.data.requestId,
-        whenBusy: result.data.mode ?? "reject",
-        ...(result.data.mode === "steer" ? { whenIdle: "reject" as const } : {}),
-      });
+      if (result.data.images?.length) {
+        if (!chat.attachments) return c.json({ error: "Images unavailable." }, 503);
+        return c.json(
+          await chat.attachments.admit(String(c.get("scope").conversation.id), {
+            ...result.data,
+            images: result.data.images,
+          }),
+          202,
+        );
+      }
+      const submission = await c.get("scope").admit(
+        {
+          type: "input",
+          content: result.data.text,
+          requestId: result.data.requestId,
+          whenBusy: result.data.mode ?? "reject",
+          ...(result.data.mode === "steer" ? { whenIdle: "reject" as const } : {}),
+        },
+        {
+          digest: imageRequestDigest({
+            text: result.data.text,
+            images: [],
+            mode: result.data.mode ?? "reject",
+          }),
+        },
+      );
       return c.json({ id: String(submission.id) }, 202);
     } catch (error) {
       if (error instanceof ConversationBusy) {
@@ -258,6 +293,18 @@ export function createApp(
       }
       throw error;
     }
+  });
+  routes.get("/questions", async (c) => {
+    if (c.req.param("chatId") === undefined) return c.json({ error: "Chat not found." }, 404);
+    return c.json(await questionProjection(c.get("scope")));
+  });
+  routes.post("/questions/resolve", async (c) => {
+    if (c.req.param("chatId") === undefined) return c.json({ error: "Chat not found." }, 404);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const result = QuestionAnswerSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!result.success) return c.json({ error: "Invalid question answer." }, 400);
+    return c.json({ status: await answerQuestion(c.get("scope"), result.data) });
   });
   routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
   routes.get("/context", async (c) => c.json(await c.get("scope").context()));
@@ -309,6 +356,13 @@ export function createApp(
                   : {}),
               },
             },
+        {
+          digest: admissionDigest([
+            "control",
+            control.type,
+            control.type === "reset" ? control.handoff : null,
+          ]),
+        },
       );
       return c.json({ id: String(submission.id) }, 202);
     } catch (error) {
@@ -394,9 +448,15 @@ export function createApp(
   app.route("/api/chats/:chatId", routes);
   app.route("/api", routes);
   app.onError((error, c) =>
-    error instanceof ChatLifecycleError
+    error instanceof ChatLifecycleError || error instanceof AttachmentAccessError
       ? c.json({ error: error.message }, error.status)
-      : c.json({ error: "Conversation unavailable. Try reconnecting." }, 503),
+      : error instanceof AdmissionIdentityError
+        ? c.json({ error: "Request ID does not match its original action." }, 409)
+        : error instanceof AttachmentNotFound
+          ? c.json({ error: "Image not found." }, 404)
+          : error instanceof AttachmentError
+            ? c.json({ error: error.message }, 400)
+            : c.json({ error: "Conversation unavailable. Try reconnecting." }, 503),
   );
   app.notFound((c) => c.json({ error: "Not found." }, 404));
   return app;

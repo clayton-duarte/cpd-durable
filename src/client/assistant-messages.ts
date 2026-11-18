@@ -9,29 +9,45 @@ export interface AssistantProjection {
   messages: ThreadMessageLike[];
 }
 
-function contentOf(parts: readonly ChatPart[]): Exclude<ThreadMessageLike["content"], string> {
+function contentOf(
+  parts: readonly ChatPart[],
+  conversationId?: number,
+): Exclude<ThreadMessageLike["content"], string> {
   return parts.map((part) =>
     part.type === "text" || part.type === "reasoning"
       ? { type: part.type, text: part.text }
-      : part.type === "tool-call"
-        ? {
-            type: "tool-call" as const,
-            toolCallId: part.id,
-            toolName: part.name,
-            args: part.arguments,
-            argsText: part.argumentsUnavailable
-              ? "Arguments are outside the retained history."
-              : JSON.stringify(part.arguments, null, 2),
-            ...(part.output !== undefined ? { result: part.output } : {}),
-            isPreliminary: part.state === "pending" || part.state === "running",
-            isError:
-              part.state === "error" || part.state === "cancelled" || part.state === "unavailable",
-          }
-        : { type: "data-omitted" as const, data: { kind: part.kind } },
+      : part.type === "image"
+        ? conversationId === undefined
+          ? { type: "data-omitted" as const, data: { kind: "image" } }
+          : {
+              type: "image" as const,
+              image: `/api/chats/${conversationId}/images/${part.source.entryId}/${part.source.modelIndex}/${part.source.partIndex}`,
+            }
+        : part.type === "tool-call"
+          ? {
+              type: "tool-call" as const,
+              toolCallId: part.id,
+              toolName: part.name,
+              args: part.arguments,
+              argsText: part.argumentsUnavailable
+                ? "Arguments are outside the retained history."
+                : JSON.stringify(part.arguments, null, 2),
+              ...(part.output !== undefined ? { result: part.output } : {}),
+              isPreliminary: part.state === "pending" || part.state === "running",
+              isError:
+                part.state === "error" ||
+                part.state === "cancelled" ||
+                part.state === "unavailable",
+            }
+          : { type: "data-omitted" as const, data: { kind: part.kind } },
   );
 }
 
-function committedMessage(message: ChatMessage, displayId: string): ThreadMessageLike {
+function committedMessage(
+  message: ChatMessage,
+  displayId: string,
+  conversationId?: number,
+): ThreadMessageLike {
   const outcome = message.outcome ?? (message.interrupted ? "interrupted" : "complete");
   const parts = message.parts ?? [
     { id: `${message.id}:0`, type: "text" as const, text: message.text },
@@ -43,7 +59,7 @@ function committedMessage(message: ChatMessage, displayId: string): ThreadMessag
     id: displayId,
     role: message.role,
     content: [
-      ...contentOf(parts),
+      ...contentOf(parts, conversationId),
       ...(outcome === "interrupted" ? [{ type: "data-interruption" as const, data: {} }] : []),
     ],
     metadata: {
@@ -54,6 +70,11 @@ function committedMessage(message: ChatMessage, displayId: string): ThreadMessag
         interrupted: outcome === "interrupted",
         toolStates: Object.fromEntries(
           parts.filter((part) => part.type === "tool-call").map((part) => [part.id, part.state]),
+        ),
+        toolResultParts: Object.fromEntries(
+          parts
+            .filter((part) => part.type === "tool-call" && part.resultParts)
+            .map((part) => [part.id, part.type === "tool-call" ? part.resultParts : undefined]),
         ),
       },
     },
@@ -122,7 +143,7 @@ export function projectAssistantMessages(
       : `live:${live.id}:after:${live.afterEntryId ?? 0}`
     : null;
   const messages = (snapshot?.messages ?? []).map((message) =>
-    committedMessage(message, aliases.get(message.id) ?? message.id),
+    committedMessage(message, aliases.get(message.id) ?? message.id, snapshot?.conversationId),
   );
   for (const gap of snapshot?.history?.gaps ?? []) {
     const index = snapshot!.messages.findIndex(

@@ -20,6 +20,11 @@ import { inspectContext } from "./context.ts";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
+import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
+import { AttachmentAccessError } from "./attachment-routes.ts";
+
+export const modelKey = (value: { provider: string; modelId: string }) =>
+  JSON.stringify([value.provider, value.modelId]);
 
 type CatalogItem = {
   id: number;
@@ -97,10 +102,17 @@ export async function openChats(
         ? root
         : await harness.conversation(Number(id) as ConversationId, BACKGROUND_CONTEXT);
     if (!conversation) return undefined;
+    const assertWritable = async (tx: Tx) => {
+      const metadata = await tx.doc(CatalogDoc);
+      const current = metadata.items.find((entry) => entry.id === conversation.id);
+      if (!current || current.status === "deleted") throw new AttachmentAccessError(404);
+      if (current.status === "archived") throw new AttachmentAccessError(409);
+    };
     return {
       conversation,
+      assertWritable,
       accounting: () => accounting(harness, conversation.id),
-      context: () => inspectContext(harness, conversation),
+      context: () => inspectContext(harness, conversation, models),
       configuration: async () => ({
         conversationId: String(conversation.id),
         selection: selection(await harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)),
@@ -135,15 +147,34 @@ export async function openChats(
       archived: item.status === "archived",
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
-      admit: (draft: SubmissionDraft) =>
+      admit: (
+        draft: SubmissionDraft,
+        options?: { digest?: string; expectedModelKey?: string | null; title?: string },
+      ) =>
         harness.commit(async (tx) => {
           const metadata = await tx.doc(CatalogDoc);
           const item = metadata.items.find((entry) => entry.id === conversation.id);
-          if (!item || item.status)
-            throw new ChatLifecycleError("Chat is archived or deleted.", 409);
+          await assertWritable(tx);
+          if (options?.expectedModelKey !== undefined) {
+            const current = selection(await tx.doc(AgentDoc, conversation.id));
+            if (modelKey(current) !== options.expectedModelKey)
+              throw new ChatLifecycleError("Model changed. Refresh and try again.", 409);
+          }
+          const record = draft.requestId
+            ? await checkAdmissionRequest(
+                tx,
+                conversation.id,
+                draft.requestId,
+                options?.digest ?? admissionDigest(draft),
+              )
+            : undefined;
           const submission = await conversation.submit(tx, draft);
-          if (item && !item.named && draft.type === "input" && typeof draft.content === "string") {
-            item.title = draft.content.trim().replace(/\s+/g, " ").slice(0, 80);
+          record?.();
+          const title =
+            options?.title ??
+            (draft.type === "input" && typeof draft.content === "string" ? draft.content : "");
+          if (item && !item.named && draft.type === "input" && title) {
+            item.title = title.trim().replace(/\s+/g, " ").slice(0, 80);
             item.named = true;
           }
           return { id: submission };

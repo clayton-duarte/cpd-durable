@@ -1,9 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  useAui,
-  unstable_useSlashCommandAdapter,
-  type Unstable_SlashCommand,
-} from "@assistant-ui/react";
+import { unstable_useSlashCommandAdapter, type Unstable_SlashCommand } from "@assistant-ui/react";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
@@ -24,7 +20,6 @@ import { useChatHost } from "./chat-host.ts";
 // Host bindings only: the supplied elements own all visual presentation.
 export function DurableControls() {
   const host = useChatHost();
-  const aui = useAui();
   const [resetOpen, setResetOpen] = useState(false);
   useEffect(() => {
     if (host.active === false) setResetOpen(false);
@@ -91,14 +86,7 @@ export function DurableControls() {
 
   async function retry() {
     if (!host.connected || host.pending || !host.onRetry) return;
-    const draft = aui.composer.getState().text;
-    if (
-      (await host.onRetry()) &&
-      host.retryText != null &&
-      aui.composer.getState().text === draft &&
-      draft.trim() === host.retryText
-    )
-      aui.composer.setText("");
+    await host.onRetry();
   }
 
   return (

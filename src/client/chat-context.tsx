@@ -99,6 +99,66 @@ export function ChatContext() {
           <p className="text-xs text-muted-foreground">
             {data.roles.map(({ role, count }) => `${role}: ${count}`).join(" · ")}
           </p>
+          <div className="space-y-2 text-xs">
+            <p>
+              <strong>Committed context heuristic:</strong>{" "}
+              {data.measurements.committed.tokens === null
+                ? "Unknown (images or opaque reasoning/signatures cannot be estimated)"
+                : `approximately ${data.measurements.committed.tokens.toLocaleString()} tokens`}
+              . Method: UTF-8 content bytes ÷ 4, rounded up; not a tokenizer.
+            </p>
+            <p>
+              Selected model:{" "}
+              {data.measurements.model
+                ? `${data.measurements.model.provider}/${data.measurements.model.modelId}`
+                : "unknown"}
+              {" · "}Catalog context window:{" "}
+              {data.measurements.contextWindow === null
+                ? "unknown"
+                : `${data.measurements.contextWindow.toLocaleString()} tokens`}
+              {" · "}Observed {new Date(data.measurements.observedAt).toLocaleString()}.
+            </p>
+            <p>
+              Excludes assembled system prompts, extension sections and future resources, tool
+              schemas and provider framing, provider-specific transforms, queued input and in-flight
+              output, and output/reasoning reservations. It does not guarantee the next request
+              fits.
+            </p>
+            <p>
+              <strong>Previous assistant request:</strong>{" "}
+              {data.measurements.lastRequest
+                ? `${data.measurements.lastRequest.model.provider}/${data.measurements.lastRequest.model.modelId} · message timestamp ${new Date(data.measurements.lastRequest.messageTimestamp).toLocaleString()} · ${data.measurements.lastRequest.stopReason}`
+                : data.measurements.lastRequestScan === "capped"
+                  ? "Observation unknown: the scan stopped after 200 entries."
+                  : "No durable request observation found."}
+            </p>
+            {data.measurements.lastRequest &&
+              (data.measurements.lastRequest.usage ? (
+                <p>
+                  SDK request usage: input{" "}
+                  {data.measurements.lastRequest.usage.input.toLocaleString()}
+                  {" · "}cache read {data.measurements.lastRequest.usage.cacheRead.toLocaleString()}
+                  {" · "}cache write{" "}
+                  {data.measurements.lastRequest.usage.cacheWrite.toLocaleString()}
+                  {data.measurements.lastRequest.usage.cacheWrite1h !== undefined &&
+                    ` (1h subset ${data.measurements.lastRequest.usage.cacheWrite1h.toLocaleString()})`}
+                  {" · "}output {data.measurements.lastRequest.usage.output.toLocaleString()}
+                  {" · "}reasoning{" "}
+                  {data.measurements.lastRequest.usage.reasoning === undefined
+                    ? "unknown"
+                    : `${data.measurements.lastRequest.usage.reasoning.toLocaleString()} (subset of output)`}
+                  {" · "}total {data.measurements.lastRequest.usage.totalTokens.toLocaleString()}.
+                  Cache counters are shown separately; provider conventions may differ.
+                </p>
+              ) : (
+                <p>Request usage unknown; zero defaults cannot establish a provider report.</p>
+              ))}
+            <p>
+              Previous request usage is not current occupancy or directly comparable to the
+              committed heuristic: the full assembled request is unavailable and context or model
+              may have changed. Token occupancy and headroom are unknown.
+            </p>
+          </div>
           {data.compactions.map((task) => (
             <AgentStatus
               key={task.taskId}
