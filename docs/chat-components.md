@@ -95,6 +95,14 @@ Search results stream in traversal order, not globally sorted. Result/line/recor
 
 The host also installs `load_skill`; its actual calls and results use the same tool presentation. Per-request project guidance and skill metadata are host-only prompt resources, not fabricated transcript messages or a resource browser. See [discovery, limits and trust](../README.md#project-guidance-and-skills). User-selected templates and configured extension loading remain unimplemented.
 
+### Structured agent questions
+
+The host-registered `ask_user` tool requests semantic human input, not permission to use a tool. The supplied ElicitationForm appears in the Thread footer for actual pending questions; bounded text, single-choice and multi-choice fields are supported, with multi-choice options rendered as toggles. It does not implement MCP elicitation. The answer or explicit decline goes directly to a conversation-scoped durable question service, not the busy chat-input queue, and does not consume the composer draft. No form draft is promised across a page refresh.
+
+Each request is tied to its conversation, owning task, question ID and revision. The first resolution wins atomically; an identical retry of the original identity, revision and normalized response succeeds without changing it, while conflicting or stale responses are rejected. After an uncertain delivery the form retains its values and permits the same retry, or an explicit state refresh before another response. The UI does not optimistically claim resolution. Polling runs only for the active connected chat; read failures leave visible state stale and disable answering. Disconnect or navigation is not a decline.
+
+Stop aborts the owning execution and makes its unanswered question non-actionable; it does not record a decline. The retained question record stays pending and the pending projection reports cancellation before removing it from the polling index. Forks start with no actionable inherited questions; archived chats are read-only and deleted chats reject access. GET may initialize or clean up SDK question metadata but does not submit a run or call a provider. Polling reads a separate index of outstanding questions, not the retained answer history; no active questions are arbitrarily dropped. The retained retry/history document grows with questions and is not a paginated history API; creation and resolution still access it.
+
 Known `pi.tool-result` entries attach to the preceding unmatched call with the same SDK call ID and tool name, in transcript order. Reused call IDs in later rounds do not overwrite earlier results. Result entry IDs remain metadata separate from call-part identity. If the originating call has left the window, render the result as its own authoritative row with unknown arguments, not attached to a guessed call. Live progress overlays only an unsettled call owned by the current generation task; a missing result is unavailable, not successful. Arbitrary result details/documents are ignored. Output is rendered as literal text, never executed as HTML/JS.
 
 Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Image output currently receives a non-text receipt. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
@@ -127,7 +135,7 @@ Diagnostics, detailed task recovery, compaction failure detail and custom docume
 
 ## 6. Adjacent integrations
 
-ApprovalCard, PermissionGrant, ElicitationForm, OptionList/QuestionFlow and ReviewableDiff require durable host protocols, actual evidence and authorization. ElicitationForm is no longer used for reset: a human context-reset confirmation is not model/MCP elicitation. General elicitation and approval protocols remain unavailable.
+ApprovalCard, PermissionGrant, OptionList/QuestionFlow and ReviewableDiff require durable host protocols, actual evidence and authorization. ElicitationForm is used for [structured agent questions](#structured-agent-questions), not reset or MCP elicitation. General approval protocols remain unavailable.
 
 ### Chat navigation and creation
 

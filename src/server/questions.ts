@@ -39,6 +39,18 @@ export const QuestionsDoc = defineDoc<JsonRepresentation<QuestionState>>({
   checkpointWhen: () => true,
 });
 
+// The polling projection reads only pending questions, not the retained retry records.
+// A stopped task is removed from this index when next observed; its historical record remains.
+export const PendingQuestionsDoc = defineDoc<JsonRepresentation<QuestionState>>({
+  kind: "cpd.questions.pending",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ questions: [] }),
+  checkpointWhen: () => true,
+});
+
 /** Must check existence, archive/delete and read-only policy atomically in this transaction.
  * The host must supply this guard; a prior asynchronous catalog check is insufficient. */
 export type QuestionAccessGuard = (
@@ -66,8 +78,9 @@ export async function readQuestions(
 ): Promise<QuestionView[]> {
   return harness.commit(async (tx) => {
     await guard(tx, conversationId, "read");
-    const state = await tx.doc(QuestionsDoc, conversationId);
+    const state = await tx.doc(PendingQuestionsDoc, conversationId);
     const result: QuestionView[] = [];
+    const cancelled: string[] = [];
     for (const item of state.questions) {
       const active =
         item.status === "pending" && live(await tx.task(item.taskId as TaskId), conversationId);
@@ -79,7 +92,11 @@ export async function readQuestions(
           cancelled: item.status === "pending" && !active,
         }),
       );
+      if (!active) cancelled.push(item.questionId);
     }
+    // GET may initialize or update SDK metadata, but does not submit work or call a provider.
+    if (cancelled.length > 0)
+      state.questions = state.questions.filter((item) => !cancelled.includes(item.questionId));
     return result;
   }, context);
 }
@@ -122,9 +139,11 @@ export async function resolveQuestion(
     }
     if (revision !== question.revision) throw new Error("Stale question revision");
     if (!live(task, conversationId)) throw new Error("Question is no longer actionable");
+    const pending = await tx.doc(PendingQuestionsDoc, conversationId);
     question.status = resolution.kind === "answer" ? "answered" : "declined";
     question.resolution = resolution;
     question.revision++;
+    pending.questions = pending.questions.filter((item) => item.questionId !== questionId);
     return "resolved";
   }, context);
 }
@@ -147,14 +166,17 @@ export function createQuestionExtension() {
           const questionId = `q-${api.taskId}`;
           await api.commit(async (tx) => {
             const state = await tx.doc(QuestionsDoc, api.conversationId);
-            if (!state.questions.some((q) => q.questionId === questionId))
-              state.questions.push({
+            if (!state.questions.some((q) => q.questionId === questionId)) {
+              const question = {
                 questionId,
                 taskId: api.taskId,
                 revision: 1,
                 spec,
-                status: "pending",
-              });
+                status: "pending" as const,
+              };
+              state.questions.push(question);
+              (await tx.doc(PendingQuestionsDoc, api.conversationId)).questions.push(question);
+            }
           }, context);
           const watch = await api.watchDoc(QuestionsDoc, api.conversationId, context);
           if (!watch) throw new Error("Question state unavailable");

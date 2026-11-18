@@ -11,6 +11,7 @@ import { AgentQuestion } from "../src/client/agent-question.tsx";
 import { createApp } from "../src/server/app.ts";
 import { answerQuestion, questionProjection } from "../src/server/question-routes.ts";
 import { CatalogDoc, openChats } from "../src/server/chats.ts";
+import { openChat } from "../src/server/chat.ts";
 import {
   createQuestionExtension,
   readQuestions,
@@ -100,6 +101,141 @@ async function fixture() {
 }
 
 describe("structured questions", () => {
+  it("polls every outstanding question without returning resolved history", async () => {
+    const f = await fixture();
+    try {
+      await f.chat.submit({ type: "input", content: "two questions" }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(1));
+      f.provider.calls[0]!.tools([
+        { id: "first", name: "ask_user", arguments: spec },
+        { id: "second", name: "ask_user", arguments: spec },
+      ]);
+      await vi.waitFor(async () =>
+        expect(
+          (await readQuestions(f.harness, f.chat.id, f.guard)).filter((q) => q.actionable),
+        ).toHaveLength(2),
+      );
+      const first = (await readQuestions(f.harness, f.chat.id, f.guard))[0]!;
+      await resolveQuestion(
+        f.harness,
+        f.chat.id,
+        first.questionId,
+        first.taskId,
+        first.revision,
+        answer,
+        f.guard,
+      );
+      const remaining = await readQuestions(f.harness, f.chat.id, f.guard);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0]!.questionId).not.toBe(first.questionId);
+      await resolveQuestion(
+        f.harness,
+        f.chat.id,
+        remaining[0]!.questionId,
+        remaining[0]!.taskId,
+        remaining[0]!.revision,
+        { kind: "decline" },
+        f.guard,
+      );
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      f.provider.calls[1]!.finish("done");
+      await f.chat.waitForIdle(context);
+      expect(await readQuestions(f.harness, f.chat.id, f.guard)).toEqual([]);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
+  it("uses the production host registry, real Hono routes and provider continuation", async () => {
+    const root = await mkdtemp(join(tmpdir(), "question-host-"));
+    roots.push(root);
+    const provider = testModels();
+    const chat = await openChat(join(root, "data"), provider.models, root);
+    const app = createApp(chat);
+    const base = `http://localhost:3000/api/chats/${chat.conversation.id}`;
+    const input = (text: string) =>
+      app.request(`${base}/input`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text, requestId: crypto.randomUUID() }),
+      });
+    const resolve = (body: unknown) =>
+      app.request(`${base}/questions/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    try {
+      expect((await chat.conversation.agent(context)).tools.map((tool) => tool.name)).toContain(
+        "ask_user",
+      );
+      expect((await app.request(`${base}/questions`)).status).toBe(200);
+      expect(provider.calls).toHaveLength(0);
+      expect((await input("Synthetic request")).status).toBe(202);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([{ id: "actual-host-question", name: "ask_user", arguments: spec }]);
+      let q: { questionId: string; taskId: number; revision: number } | undefined;
+      await vi.waitFor(async () => {
+        const response = await app.request(`${base}/questions`);
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as { conversationId: string; questions: (typeof q)[] };
+        expect(body.conversationId).toBe(String(chat.conversation.id));
+        q = body.questions[0];
+        expect(q).toBeDefined();
+      });
+      const question = q!;
+      expect(question.questionId).toBe(`q-${question.taskId}`);
+      expect(question.revision).toBe(1);
+      const payload = {
+        questionId: question.questionId,
+        taskId: question.taskId,
+        revision: question.revision,
+        resolution: answer,
+      };
+      expect((await resolve(payload)).status).toBe(200);
+      expect((await resolve(payload)).status).toBe(200);
+      expect((await resolve({ ...payload, resolution: { kind: "decline" } })).status).toBe(409);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      const messages = provider.calls[1]!.context.messages;
+      expect(messages.filter((message) => message.role === "user")).toHaveLength(1);
+      expect(JSON.stringify(messages)).toContain("Ada");
+      expect(
+        ((await (await app.request(`${base}/questions`)).json()) as { questions: unknown[] })
+          .questions,
+      ).toEqual([]);
+      provider.calls[1]!.finish("finished");
+      await chat.conversation.waitForIdle(context);
+      expect((await input("Another synthetic request")).status).toBe(202);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(3));
+      provider.calls[2]!.tools([{ id: "second-host-question", name: "ask_user", arguments: spec }]);
+      let second: typeof question | undefined;
+      await vi.waitFor(async () => {
+        second = (
+          (await (await app.request(`${base}/questions`)).json()) as {
+            questions: (typeof second)[];
+          }
+        ).questions[0];
+        expect(second).toBeDefined();
+      });
+      expect((await app.request(`${base}/stop`, { method: "POST" })).status).toBe(204);
+      expect(
+        (
+          await resolve({
+            questionId: second!.questionId,
+            taskId: second!.taskId,
+            revision: second!.revision,
+            resolution: { kind: "decline" },
+          })
+        ).status,
+      ).toBe(409);
+      const cancelled = (await (await app.request(`${base}/questions`)).json()) as {
+        questions: { cancelled: boolean; status: string }[];
+      };
+      expect(cancelled.questions[0]).toMatchObject({ cancelled: true, status: "pending" });
+      expect(provider.calls).toHaveLength(3);
+    } finally {
+      await chat.close();
+    }
+  });
   it("guards scoped HTTP reads and answers through the real catalog transaction", async () => {
     const f = await fixture();
     try {

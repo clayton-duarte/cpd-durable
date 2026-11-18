@@ -63,6 +63,8 @@ SDK records useful state that our wire schema intentionally omits. Enriching the
 > > > > > > > | After-run tasks | `afterRun` and `runEndTask()` can start durable follow-up tasks; answer settles before these tasks finish, while conversation stays busy | **Not integrated:** no automatic test/review/fix loop; examples are not mandatory delivery choreography |
 > > > > > > > | Execution environments | Node environment and custom filesystem/process interfaces; environments can follow each conversation's directory or sandbox | **Exposed:** native host filesystem/process access, cwd defaults to home. No sandbox or browser environment selector |
 
+**Structured agent questions:** `ask_user` and a direct durable answer service are exposed through supplied ElicitationForm. This asks for information, not tool permission or MCP elicitation; [semantics and limits](chat-components.md#structured-agent-questions) include cancellation, retries and fork behavior.
+
 MCP connectivity, credential handling and a human approval workflow require host integration; tool names or extension examples are not proof of turnkey support in this app. Similarly, a skill directory, slash-command palette, Markdown renderer, attachments UI and model picker are not supplied by the durable harness as a browser application.
 
 ## Durability, state and parallel execution
