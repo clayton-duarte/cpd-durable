@@ -12,24 +12,31 @@ import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
 import { createModelPolicy } from "./model-policy.ts";
+import { readConfiguredExtensions } from "./extensions/config.ts";
+import { loadConfiguredExtensions } from "./extensions/loader.ts";
 import { openConfiguredMcp } from "./mcp/config.ts";
 
 export async function openChat(
   dataDir: string,
   models: Models,
   cwd = workingDirectory(),
-  options: { mcpConfigPath?: string } = {},
+  options: { extensionsConfigPath?: string; mcpConfigPath?: string } = {},
 ) {
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const mcp = await openConfiguredMcp(
     options.mcpConfigPath !== undefined ? { path: options.mcpConfigPath } : {},
   );
-  let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
   let execution: ReturnType<typeof createExecution> | undefined;
+  let configured: Awaited<ReturnType<typeof loadConfiguredExtensions>> | undefined;
+  let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   try {
-    storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
     execution = createExecution(cwd, mcp);
+    configured = await loadConfiguredExtensions(
+      execution.registry,
+      await readConfiguredExtensions(options.extensionsConfigPath),
+    );
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
     harness = await Harness.open(
       storage,
       {
@@ -78,15 +85,25 @@ export async function openChat(
         );
         return model ? { key: modelKey(current), input: model.input } : null;
       },
-      admit: async (scope, draft, expectedModelKey, digest) => {
+      admit: async (scope, draft, expectedModelKey, digest, savedDraft) => {
         const current = await chats.resolve(String(scope.conversation.id));
         if (!current) throw new AttachmentAccessError(404);
         const title = Array.isArray(draft.content)
           ? draft.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ||
             "Image attachment"
           : draft.content;
-        const result = await current.admit(draft, { digest, expectedModelKey, title });
-        return { id: String(result.id) };
+        const result = await current.admit(draft, {
+          digest,
+          expectedModelKey,
+          title,
+          ...(savedDraft ? { draft: savedDraft } : {}),
+        });
+        return {
+          id: String(result.id),
+          ...(result.clearedDraftRevision === undefined
+            ? {}
+            : { clearedDraftRevision: result.clearedDraftRevision }),
+        };
       },
     });
     harness.resume();
@@ -105,9 +122,13 @@ export async function openChat(
           await harness!.close(BACKGROUND_CONTEXT);
         } finally {
           try {
-            await execution!.close();
+            await configured!.close();
           } finally {
-            await mcp.close();
+            try {
+              await execution!.close();
+            } finally {
+              await mcp.close();
+            }
           }
         }
       },
@@ -115,12 +136,16 @@ export async function openChat(
   } catch (error) {
     try {
       if (harness) await harness.close(BACKGROUND_CONTEXT);
-      else if (storage) await storage.close(BACKGROUND_CONTEXT);
+      else await storage?.close(BACKGROUND_CONTEXT);
     } finally {
       try {
-        await execution?.close();
+        await configured?.close();
       } finally {
-        await mcp.close();
+        try {
+          await execution?.close();
+        } finally {
+          await mcp.close();
+        }
       }
     }
     throw error;

@@ -23,6 +23,48 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+it("keeps shell and draft-attempt request identities distinct in both directions", async () => {
+  const path = `http://localhost:3000/api/chats/${chat.conversation.id}`;
+  const json = (suffix: string, method: string, body: unknown) =>
+    app.request(path + suffix, {
+      method,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  expect(
+    (
+      await json("/draft", "PUT", {
+        expectedRevision: 0,
+        content: { text: "draft", images: [] },
+      })
+    ).status,
+  ).toBe(200);
+  const requestId = crypto.randomUUID();
+  const attempt = { requestId, draftRevision: 1, text: "draft", images: [], mode: "reject" };
+  expect((await json("/draft/attempt", "POST", attempt)).status).toBe(200);
+  expect(
+    (
+      await json("/shell", "POST", {
+        requestId,
+        command: "printf no",
+        includeInContext: true,
+      })
+    ).status,
+  ).toBe(409);
+  const shellId = crypto.randomUUID();
+  await chat.conversation.commit(async (tx) => {
+    (await tx.doc(DirectShellDoc, chat.conversation.id)).requests.push({
+      requestId: shellId,
+      digest: "synthetic",
+      taskId: 1,
+    });
+  }, BACKGROUND_CONTEXT);
+  expect((await json("/draft/attempt", "POST", { ...attempt, requestId: shellId })).status).toBe(
+    409,
+  );
+  expect(provider.calls).toHaveLength(0);
+});
+
 it("admits, observes, retries and stops a real configured SDK shell task", async () => {
   const requestId = crypto.randomUUID();
   const body = { requestId, command: "printf observed; sleep 30", includeInContext: false };

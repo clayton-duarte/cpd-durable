@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { DraftAdmissionSchema, type DraftAdmission } from "../shared/drafts.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
   Conversation,
@@ -53,13 +54,15 @@ export type AttachmentBackendOptions = {
     draft: ImageAdmission,
     expectedModelKey: string | null,
     digest: string,
-  ): Promise<{ id: string }>;
+    savedDraft?: DraftAdmission,
+  ): Promise<{ id: string; clearedDraftRevision?: number }>;
 };
 const RequestSchema = z.strictObject({
   text: z.string(),
   images: z.array(AttachmentIdSchema),
   requestId: z.uuid(),
   mode: z.enum(["reject", "followUp", "steer"]).optional(),
+  draft: DraftAdmissionSchema.optional(),
 });
 const chatId = /^[1-9]\d*$/;
 const coordinate = /^(?:0|[1-9]\d*)$/;
@@ -211,7 +214,7 @@ export function createAttachmentBackend(options: AttachmentBackendOptions) {
         ...(input.mode === "steer" ? { whenIdle: "reject" as const } : {}),
       };
       const digest = imageRequestDigest({ ...valid, mode: input.mode ?? "reject" });
-      return options.admit(scope, draft, model?.key ?? null, digest);
+      return options.admit(scope, draft, model?.key ?? null, digest, input.draft);
     },
   };
 }
