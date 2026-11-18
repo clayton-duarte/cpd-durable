@@ -8,6 +8,7 @@ export interface TangentWorkspaceProps {
   tangents: readonly TangentChildView[];
   workers: readonly WorkerChildView[];
   selectedTangentId: string | null;
+  navigationDisabled?: boolean;
   onSelectTangent: (id: string) => void;
   onCloseTangent: () => void;
   // These must return stable, independently scoped Chat instances. All open
@@ -56,6 +57,7 @@ export function TangentWorkspace(props: TangentWorkspaceProps) {
           tangents={tangents}
           workers={workers}
           selectedTangentId={selectedId}
+          selectionDisabled={props.navigationDisabled ?? false}
           onSelectTangent={(id) => {
             setPane("tangent");
             props.onSelectTangent(id);

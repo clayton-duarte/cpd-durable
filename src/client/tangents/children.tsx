@@ -32,6 +32,7 @@ export interface TangentChildrenProps {
   tangents: readonly TangentChildView[];
   workers: readonly WorkerChildView[];
   selectedTangentId: string | null;
+  selectionDisabled?: boolean;
   onSelectTangent: (id: string) => void;
 }
 
@@ -75,6 +76,7 @@ export function TangentChildren({
   tangents,
   workers,
   selectedTangentId,
+  selectionDisabled = false,
   onSelectTangent,
 }: TangentChildrenProps) {
   const visibleTangents = tangents.filter(
@@ -102,6 +104,7 @@ export function TangentChildren({
                   variant="outline"
                   aria-label={`${selectedTangentId === item.id ? "Selected tangent" : "Open tangent"}: ${item.title}`}
                   aria-pressed={selectedTangentId === item.id}
+                  disabled={selectionDisabled}
                   onClick={() => onSelectTangent(item.id)}
                 >
                   {selectedTangentId === item.id ? "Selected tangent" : "Open tangent"}
