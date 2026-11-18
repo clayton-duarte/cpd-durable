@@ -48,7 +48,30 @@ Use **New chat** in the supplied assistant-ui sidebar. It reuses the existing em
 
 **Execution defaults to your home directory (`~/`)**, independently of the repository and session-data location. `CPD_CWD` overrides it and expands `~`/`~/…`. This is not a sandbox: tools can access absolute paths, parent directories, network programs and the server account's inherited environment with normal OS permissions. There are no cpd approval prompts, path/command restrictions, forced shell timeouts or tool-round caps. Commands can modify/delete files and expose account secrets in tool output; protect the local host and conversation data accordingly. Shell `cd` affects that invocation, not the default directory of later calls. See [pi TUI parity and remaining work](docs/pi-durable-features.md#pi-tui-parity); native tools alone are not full TUI parity.
 
-The SDK's `codemode` tool can call installed native tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled; MCP is not yet integrated.
+The SDK's `codemode` tool can call installed native tools and explicitly configured MCP tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled.
+
+### Optional MCP stdio tools
+
+MCP is disabled by default. To opt in, set `CPD_MCP_CONFIG` **only in the server environment** to a JSON file, for example:
+
+```json
+{
+  "servers": [
+    {
+      "id": "example",
+      "transport": "stdio",
+      "command": "example-server",
+      "args": [],
+      "cwd": ".",
+      "env": {}
+    }
+  ]
+}
+```
+
+The configuration path is relative to the server process directory; each required `cwd` is absolute or relative to the configuration file's directory, fixed for all chats. IDs contain only letters, digits, underscores or hyphens and must be unique. `args` is an array of strings; optional `env` supplies string overrides to the inherited server environment. Unknown fields are rejected. Protect this file and any credentials in it; never commit it. Configured commands run with the host's normal authority and can access inherited credentials. Tool descriptions, arguments and outputs can themselves contain private data and enter model context or conversation history; trust the configured servers accordingly.
+
+Startup connects explicitly configured processes once and fails if discovery fails; there is no automatic installation, reconnection, request deadline or hidden retry. Only MCP 2025-03-26 stdio tool discovery and calls are supported. Tool schemas using integers, unsupported constraints or structured output schemas are rejected rather than weakened; non-text results are omission receipts. HTTP, OAuth, resources, prompts, sampling, elicitation and MCP tasks are not supported. Changing configuration requires restarting the host. See [tool semantics](docs/chat-components.md#3-agent-activity-tools-and-tasks).
 
 ### Project guidance and skills
 

@@ -115,6 +115,8 @@ Known `pi.tool-result` entries attach to the preceding unmatched call with the s
 
 Code-mode disclosures show allowlisted nested call names, canonical IDs and actual states, under the matching parent call. Live slots are associated by the SDK parent task and call IDs; completed calls use the SDK code-mode receipt. Nested arguments, outputs and raw errors are not projected and are labeled unavailable. Missing receipts remain unavailable. A recorded spill is indicated without exposing its path; absence of a spill receipt does not prove output was never truncated.
 
+Explicitly configured MCP stdio tools are callable through code mode, not offered as direct model tools. The same nested disclosure shows their SDK identities and states; no MCP-specific browser configuration or credential projection exists. Server descriptions and tool results can contain sensitive data. Stop requests cancellation without guaranteeing a remote effect was undone; unsafe interrupted calls are not automatically replayed. The [server configuration](../README.md#optional-mcp-stdio-tools) describes protocol and schema limits.
+
 Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Saved PNG/JPEG tool images use the requesting conversation's authorized SDK history and preserve text/image order; unsupported formats remain omission receipts. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
 
 ## 4. Context, configuration and usage
