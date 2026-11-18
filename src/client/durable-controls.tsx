@@ -37,16 +37,29 @@ export function DurableControls() {
   const queue = host.state?.controls?.queue ?? [];
   const locked = !host.available;
   const error = host.localError ?? host.error ?? host.state?.failure;
-  const status = !host.onSend
-    ? "Read-only"
-    : !host.connected
-      ? host.state
-        ? "Reconnecting…"
-        : "Connecting…"
-      : null;
+  const status = host.inputBlockedReason
+    ? host.inputBlockedReason
+    : !host.onSend
+      ? "Read-only"
+      : !host.connected
+        ? host.state
+          ? "Reconnecting…"
+          : "Connecting…"
+        : null;
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
+    if (host.canRequestTangent && !busy) {
+      for (const id of ["tangent", "side"] as const) {
+        commands.push({
+          id,
+          description: "Request tangent: ask the main agent to prepare a handoff",
+          execute: () => {
+            void host.requestTangent(id);
+          },
+        });
+      }
+    }
     if (host.chatId || host.state?.conversationId)
       commands.push({
         id: "templates",

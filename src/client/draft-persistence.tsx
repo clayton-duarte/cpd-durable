@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AssistantRuntime } from "@assistant-ui/react";
 import type { SendMode } from "../shared/chat.ts";
+import type { DraftIntent } from "../shared/draft-intent.ts";
 import {
   DraftAttemptRecoveryPageSchema,
   DraftAttemptRecordSchema,
@@ -479,7 +480,13 @@ export function createDraftAutosave(options: {
      * Pin the original literal input across pending autosaves and edits. Only
      * metadata writes are paused; the native composer stays editable.
      */
-    async prepareSend(text: string, images: string[], mode: SendMode, requestId: string) {
+    async prepareSend(
+      text: string,
+      images: string[],
+      mode: SendMode,
+      requestId: string,
+      commandIntent?: DraftIntent,
+    ) {
       if (!active() || conflicted || preparing || failedWrite)
         throw new Error("Draft is not ready to send.");
       // Capture available file metadata before any asynchronous work.
@@ -537,6 +544,7 @@ export function createDraftAutosave(options: {
           text,
           images: [...images],
           mode,
+          ...(commandIntent ? { intent: commandIntent } : {}),
         };
         const response = await fetch(`/api/chats/${options.chatId}/draft/attempt`, {
           method: "POST",
@@ -552,6 +560,7 @@ export function createDraftAutosave(options: {
           confirmed.draftRevision !== draft.revision ||
           confirmed.text !== text ||
           confirmed.mode !== mode ||
+          JSON.stringify(confirmed.intent) !== JSON.stringify(commandIntent) ||
           JSON.stringify(confirmed.images) !== JSON.stringify(images)
         )
           throw new Error("Draft attempt could not be confirmed.");

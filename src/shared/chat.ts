@@ -24,7 +24,7 @@ export const InputSchema = z
       (!!input.text || !!input.images?.length) &&
       new Set(input.images).size === (input.images?.length ?? 0) &&
       (!input.draft ||
-        (modelInputText(input.draft.text) === input.text &&
+        ((input.draft.attempt === true || modelInputText(input.draft.text) === input.text) &&
           JSON.stringify(input.draft.images) === JSON.stringify(input.images ?? []))),
   );
 export type ChatInput = z.infer<typeof InputSchema>;

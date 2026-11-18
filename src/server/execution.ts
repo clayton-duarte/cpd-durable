@@ -8,6 +8,11 @@ import { createCodeMode } from "./codemode.ts";
 import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
+import { createTangentExtension, type TangentHooks } from "./tangents/index.ts";
+import { HelpersExtension } from "./helpers.ts";
+import type { createWorkerTools } from "./worker-tools.ts";
+import { createHandoffTools } from "./handoff-tools.ts";
+import { createHandoffGuards } from "./handoffs.ts";
 import { DirectShellExtension } from "./direct-shell.ts";
 import { createTableExtension } from "./structured-table.ts";
 import type { openConfiguredMcp } from "./mcp/config.ts";
@@ -21,6 +26,8 @@ export function workingDirectory(path = "~"): string {
 // Native host execution, deliberately not a sandbox or approval policy.
 export function createExecution(
   defaultCwd = workingDirectory(),
+  tangentHooks?: () => TangentHooks,
+  workerTools?: ReturnType<typeof createWorkerTools>,
   mcp?: Awaited<ReturnType<typeof openConfiguredMcp>>,
 ) {
   const registry = createRegistry();
@@ -32,6 +39,10 @@ export function createExecution(
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
+  if (tangentHooks) registry.install(createTangentExtension(tangentHooks));
+  registry.install(HelpersExtension);
+  if (workerTools) registry.install(workerTools);
+  registry.install(createHandoffTools(createHandoffGuards()));
   registry.install(DirectShellExtension);
   registry.install(createTableExtension());
   registry.install(

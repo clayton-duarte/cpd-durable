@@ -3,6 +3,7 @@ import { defineDoc, type ConversationId, type Tx } from "@earendil-works/pi-dura
 import { z } from "zod";
 import { AttachmentIdSchema, IMAGE_MAX_COUNT } from "../shared/attachments.ts";
 import { DRAFT_ATTEMPT_PAGE_SIZE } from "../shared/drafts.ts";
+import { DraftIntentSchema, type DraftIntent } from "../shared/draft-intent.ts";
 
 const PayloadSchema = z
   .strictObject({
@@ -11,6 +12,7 @@ const PayloadSchema = z
     text: z.string().max(32_000),
     images: z.array(AttachmentIdSchema).max(IMAGE_MAX_COUNT),
     mode: z.enum(["reject", "followUp", "steer"]),
+    intent: DraftIntentSchema.optional(),
   })
   .refine(
     (value) =>
@@ -25,6 +27,7 @@ const RecordSchema = z
     text: z.string().max(32_000),
     images: z.array(AttachmentIdSchema).max(IMAGE_MAX_COUNT),
     mode: z.enum(["reject", "followUp", "steer"]),
+    intent: DraftIntentSchema.optional(),
   })
   .refine(
     (value) =>
@@ -39,11 +42,18 @@ export type DraftAttemptPayload = z.infer<typeof PayloadSchema>;
 export function draftAttemptFingerprint(payload: DraftAttemptPayload): string {
   const value = PayloadSchema.parse(payload);
   return createHash("sha256")
-    .update(JSON.stringify([value.draftRevision, value.text, value.images, value.mode]))
+    .update(
+      JSON.stringify(
+        value.intent
+          ? [value.draftRevision, value.text, value.images, value.mode, value.intent]
+          : [value.draftRevision, value.text, value.images, value.mode],
+      ),
+    )
     .digest("hex");
 }
 
-const DraftAttemptsDoc = defineDoc<{ attempts: DraftAttempt[] }>({
+type StoredDraftAttempt = Omit<DraftAttempt, "intent"> & { intent?: DraftIntent };
+const DraftAttemptsDoc = defineDoc<{ attempts: StoredDraftAttempt[] }>({
   kind: "cpd.draft-attempts",
   version: 1,
   scope: "conversation",
@@ -79,12 +89,14 @@ export async function recordDraftAttempt(
       previous.draftRevision !== record.draftRevision ||
       previous.text !== record.text ||
       previous.mode !== record.mode ||
+      JSON.stringify(previous.intent) !== JSON.stringify(record.intent) ||
       JSON.stringify(previous.images) !== JSON.stringify(record.images)
     )
       throw new DraftAttemptConflict();
     return RecordSchema.parse(previous);
   }
-  doc.attempts.push(record);
+  const { intent, ...rest } = record;
+  doc.attempts.push(intent ? { ...rest, intent } : rest);
   return RecordSchema.parse(record);
 }
 

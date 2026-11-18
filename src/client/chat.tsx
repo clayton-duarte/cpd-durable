@@ -45,11 +45,12 @@ import {
   useDraftRecovery,
   useDraftRestoration,
 } from "./draft-persistence.tsx";
-import { modelInputText, parseDirectShell } from "../shared/direct-shell.ts";
+import { parseDirectShell } from "../shared/direct-shell.ts";
+import { draftInputText, type DraftIntent } from "../shared/draft-intent.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
-const durableCommandNames = ["queue", "steer", "continue", "reset"];
+const durableCommandNames = ["queue", "steer", "continue", "reset", "tangent", "side"];
 // Adapt authoritative tool status only; the supplied ToolFallback owns presentation.
 function DurableToolFallback(props: ToolCallMessagePartProps) {
   const host = useChatHost();
@@ -245,6 +246,7 @@ function PersistenceBridge({
     text: string;
     images: string[];
     mode: SendMode;
+    intent?: DraftIntent | undefined;
   }) => Promise<boolean>;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -385,6 +387,7 @@ function PersistenceBridge({
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
   const revision = useRef(0);
+  const selectionSnapshot = useRef<{ text: string; ids: string[]; after: string } | null>(null);
   const pendingUploads = useRef(0);
   const persistence = useRef<DraftWriter | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
@@ -446,6 +449,7 @@ export function Chat(props: ChatProps) {
   });
   const available =
     !!props.onSend &&
+    !props.inputBlockedReason &&
     props.connected &&
     props.state !== null &&
     !props.pending &&
@@ -470,6 +474,7 @@ export function Chat(props: ChatProps) {
       },
       upload: async (file) => {
         try {
+          if (props.mutationAllowed?.() === false) throw new Error("Chat is read-only.");
           const response = await fetch(`/api/chats/${id}/attachments`, {
             method: "POST",
             headers: { "Content-Type": file.type },
@@ -484,7 +489,13 @@ export function Chat(props: ChatProps) {
       },
       previewUrl: (attachmentId) => `/api/chats/${id}/attachments/${attachmentId}`,
     });
-  }, [props.chatId, props.state?.conversationId, props.onSend, props.attachmentAdapter]);
+  }, [
+    props.chatId,
+    props.state?.conversationId,
+    props.onSend,
+    props.attachmentAdapter,
+    props.mutationAllowed,
+  ]);
 
   const clearSubmitted = useCallback(() => {
     const composer = runtimeRef.current?.thread.composer;
@@ -510,12 +521,23 @@ export function Chat(props: ChatProps) {
   }, []);
 
   const admit = useCallback(
-    async (draft: string, mode: SendMode, nativeSend = false, ids?: string[]) => {
+    async (
+      draft: string,
+      mode: SendMode,
+      nativeSend = false,
+      ids?: string[],
+      intent?: DraftIntent,
+    ) => {
       const composer = runtimeRef.current?.thread.composer;
       setLocalError(null);
       const shell = nativeSend ? parseDirectShell(draft) : undefined;
+      if (intent && !props.canRequestTangent) {
+        setLocalError("Choose an available / command from the list; command text was not sent.");
+        return false;
+      }
       if (
         nativeSend &&
+        !intent &&
         !shell &&
         Array.from(draft.matchAll(/(?:^|\s)\/([a-z]*)(?=\s|$)/giu)).some((match) =>
           durableCommandNames.some((name) => name.startsWith(match[1]?.toLowerCase() ?? "")),
@@ -527,11 +549,17 @@ export function Chat(props: ChatProps) {
       if (
         !available ||
         !props.onSend ||
+        (intent && !props.canRequestTangent) ||
         (mode === "reject" && props.state?.busy) ||
         (mode === "steer" && !props.state?.busy)
       )
         return false;
-      const text = modelInputText(draft);
+      const text = draftInputText(draft, intent);
+      if (text === undefined) {
+        setLocalError("Enter a goal with a single complete tangent command.");
+        return false;
+      }
+
       const images = ids ?? composer?.getState().attachments.map((item) => item.id) ?? [];
       if (shell && images.length) {
         setLocalError("Direct shell commands cannot include image attachments.");
@@ -567,8 +595,9 @@ export function Chat(props: ChatProps) {
           return await props.onShell(shell.command, shell.includeInContext);
         }
         const prepared = writer
-          ? await writer.prepareSend(draft, images, mode, crypto.randomUUID())
+          ? await writer.prepareSend(draft, images, mode, crypto.randomUUID(), intent)
           : undefined;
+        if (props.mutationAllowed?.() === false) return false;
         const admitted = await props.onSend(
           text,
           mode,
@@ -591,7 +620,15 @@ export function Chat(props: ChatProps) {
         writer?.endSend();
       }
     },
-    [available, props.onSend, props.onShell, props.state, props.chatId, clearSubmitted],
+    [
+      available,
+      props.onSend,
+      props.onShell,
+      props.canRequestTangent,
+      props.state,
+      props.chatId,
+      clearSubmitted,
+    ],
   );
 
   const onNew = useCallback(
@@ -647,6 +684,16 @@ export function Chat(props: ChatProps) {
         "reject",
         true,
         (message.attachments ?? []).map((attachment) => attachment.id),
+        (() => {
+          const match = /(?:^|\s)\/(tangent|side)(?=\s|$)/u.exec(text);
+          if (!match) return undefined;
+          const intent: DraftIntent = {
+            kind: "tangent-handoff-request",
+            version: 1,
+            command: match[1] === "side" ? "side" : "tangent",
+          };
+          return draftInputText(text, intent) === undefined ? undefined : intent;
+        })(),
       );
       persistence.current?.endSend();
     },
@@ -717,6 +764,10 @@ export function Chat(props: ChatProps) {
   useLayoutEffect(() => {
     const composer = runtime.thread.composer;
     let lastSubmission: string | undefined;
+    let previous = {
+      text: composer.getState().text,
+      ids: composer.getState().attachments.map((item) => item.id),
+    };
     let last = JSON.stringify([
       composer.getState().text,
       composer.getState().attachments.map((item) => item.id),
@@ -725,6 +776,8 @@ export function Chat(props: ChatProps) {
       const state = composer.getState();
       const next = JSON.stringify([state.text, state.attachments.map((item) => item.id)]);
       if (next !== last) {
+        selectionSnapshot.current = { ...previous, after: state.text };
+        previous = { text: state.text, ids: state.attachments.map((item) => item.id) };
         last = next;
         revision.current++;
       }
@@ -763,6 +816,29 @@ export function Chat(props: ChatProps) {
         localError,
         clearLocalError: () => setLocalError(null),
         submitDraft: (mode) => admit(runtime.thread.composer.getState().text, mode),
+        requestTangent: (command) => {
+          const snapshot = selectionSnapshot.current;
+          selectionSnapshot.current = null;
+          const composer = runtime.thread.composer;
+          const current = composer.getState();
+          const intent: DraftIntent = { kind: "tangent-handoff-request", version: 1, command };
+          if (
+            !snapshot ||
+            current.text !== snapshot.after ||
+            JSON.stringify(current.attachments.map((item) => item.id)) !==
+              JSON.stringify(snapshot.ids)
+          )
+            return Promise.resolve(false);
+          composer.setText(snapshot.text);
+          if (draftInputText(snapshot.text, intent) === undefined) {
+            setLocalError(
+              "Type the complete /tangent or /side command and a goal before selecting it.",
+            );
+            return Promise.resolve(false);
+          }
+          if (props.mutationAllowed?.() === false) return Promise.resolve(false);
+          return admit(snapshot.text, "reject", false, snapshot.ids, intent);
+        },
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>
@@ -797,19 +873,16 @@ export function Chat(props: ChatProps) {
                 attempt: true as const,
               };
               let confirmedClear = false;
-              const admitted = await props.onSend(
-                modelInputText(record.text),
-                record.mode,
-                record.images,
-                {
-                  requestId: record.requestId,
-                  draft,
-                  onClear: (nextRevision) => {
-                    if (nextRevision !== draft.revision + 1) return;
-                    confirmedClear = writer?.acknowledgeClear(draft, nextRevision) ?? false;
-                  },
+              const recoveredText = draftInputText(record.text, record.intent);
+              if (recoveredText === undefined || props.mutationAllowed?.() === false) return false;
+              const admitted = await props.onSend(recoveredText, record.mode, record.images, {
+                requestId: record.requestId,
+                draft,
+                onClear: (nextRevision) => {
+                  if (nextRevision !== draft.revision + 1) return;
+                  confirmedClear = writer?.acknowledgeClear(draft, nextRevision) ?? false;
                 },
-              );
+              });
               if (admitted && confirmedClear && original && !hasPendingUploads()) {
                 writer?.beginSend();
                 submitted.current = original;

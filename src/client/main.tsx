@@ -21,6 +21,12 @@ const indexRoute = createRoute({
 const chatsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/chats/{-$chatId}",
+  validateSearch: (search: Record<string, unknown>): { tangent?: string | number } => {
+    const value = search["tangent"];
+    return value === undefined
+      ? {}
+      : { tangent: typeof value === "string" || typeof value === "number" ? value : "" };
+  },
   component: ChatWorkspace,
 });
 const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, chatsRoute]) });

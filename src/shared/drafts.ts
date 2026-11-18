@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DraftIntentSchema } from "./draft-intent.ts";
 import {
   AttachmentIdSchema,
   IMAGE_MAX_BYTES,
@@ -43,6 +44,7 @@ export const DraftAttemptRequestSchema = z
     text: z.string().max(32_000),
     images: z.array(AttachmentIdSchema).max(IMAGE_MAX_COUNT),
     mode: z.enum(["reject", "followUp", "steer"]),
+    intent: DraftIntentSchema.optional(),
   })
   .refine(
     (value) =>
