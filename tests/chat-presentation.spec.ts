@@ -1,9 +1,48 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/shared/chat.ts";
 import { ConfigurationChangeSchema } from "../src/shared/configuration.ts";
+import type { ContextMeasurements } from "../src/shared/context.ts";
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
 const controls = { canContinue: false, resetPending: false, queue: [] };
+const measurements: ContextMeasurements = {
+  observedAt: 1000,
+  model: { provider: "test", modelId: "one" },
+  contextWindow: 32000,
+  contextWindowSource: "model-catalog",
+  committed: {
+    status: "approximate",
+    tokens: 123,
+    method: "committed-content-utf8-bytes-divided-by-4-v1",
+    scope: "committed-context-only",
+    exclusions: ["system-prompt-and-extension-resource-assembly"],
+    unsupported: [],
+  },
+  lastRequest: {
+    source: "durable-assistant-message",
+    scope: "conversation-generation",
+    entryId: "2",
+    model: { provider: "test", modelId: "previous" },
+    messageTimestamp: 500,
+    stopReason: "stop",
+    usageStatus: "reported",
+    usage: {
+      input: 17,
+      output: 9,
+      cacheRead: 11,
+      cacheWrite: 3,
+      cacheWrite1h: 1,
+      reasoning: 4,
+      totalTokens: 40,
+    },
+  },
+  lastRequestScan: "found",
+  comparison: { valid: false, reasons: ["assembled-request-unavailable", "model-changed"] },
+  occupancy: { status: "unknown", tokens: null },
+  headroom: { status: "unknown", tokens: null, reason: "assembled-request-unavailable" },
+  inFlight: false,
+  queued: false,
+};
 function textLive(
   taskId: number,
   afterEntryId: number,
@@ -211,6 +250,7 @@ test("details use chat/session SDK scopes and read retries never resend the draf
       json: {
         conversationId: "1",
         observedAt: 1000,
+        measurements,
         headId: null,
         entryCount: 0,
         messageCount: 0,
@@ -282,6 +322,7 @@ test("context compaction reports admission rather than placement and never retri
         conversationId: "1",
         observedAt: 1000,
         headId: "3",
+        measurements,
         entryCount: 2,
         messageCount: 2,
         roles: [
@@ -308,6 +349,19 @@ test("context compaction reports admission rather than placement and never retri
   const context = page.getByRole("region", { name: "Active context" });
   await expect(context).toContainText("Token occupancy and headroom are unknown");
   await expect(context).toContainText("threshold compaction 5");
+  await expect(context).toContainText("Committed context heuristic: approximately 123 tokens");
+  await expect(context).toContainText("UTF-8 content bytes ÷ 4");
+  await expect(context).toContainText("test/one");
+  await expect(context).toContainText("32,000 tokens");
+  await expect(context).toContainText("future resources");
+  await expect(context).toContainText("tool schemas");
+  await expect(context).toContainText("does not guarantee the next request fits");
+  await expect(context).toContainText("Previous assistant request: test/previous");
+  await expect(context).toContainText("message timestamp");
+  await expect(context).toContainText("cache read 11");
+  await expect(context).toContainText("1h subset 1");
+  await expect(context).toContainText("reasoning 4 (subset of output)");
+  await expect(context).toContainText("not current occupancy or directly comparable");
   await context
     .getByRole("textbox", { name: "Optional summary instructions" })
     .fill("Keep decisions");
@@ -319,6 +373,84 @@ test("context compaction reports admission rather than placement and never retri
   expect(posts).toEqual([{ instructions: "Keep decisions" }]);
   await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
   await expect(draft).toHaveValue("Preserve compact draft");
+});
+
+test("context inspector reports unsupported estimates and missing counters as unknown", async ({
+  page,
+}) => {
+  await connect(page);
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        measurements: {
+          ...measurements,
+          model: null,
+          contextWindow: null,
+          committed: {
+            ...measurements.committed,
+            status: "unknown",
+            tokens: null,
+            unsupported: ["image", "opaque-thinking"],
+          },
+          lastRequest: { ...measurements.lastRequest!, usageStatus: "unknown", usage: null },
+        },
+        headId: null,
+        entryCount: 0,
+        messageCount: 0,
+        roles: [],
+        entries: [],
+        truncated: false,
+        compactions: [],
+        failure: null,
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const context = page.getByRole("region", { name: "Active context" });
+  await expect(context).toContainText("Unknown (images or opaque reasoning/signatures");
+  await expect(context).toContainText("Selected model: unknown");
+  await expect(context).toContainText("Catalog context window: unknown");
+  await expect(context).toContainText("Request usage unknown");
+  await expect(context).not.toContainText("approximately 0 tokens");
+});
+
+test("context inspector distinguishes a capped request scan from an absent observation", async ({
+  page,
+}) => {
+  await connect(page);
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        measurements: {
+          ...measurements,
+          lastRequest: null,
+          lastRequestScan: "capped",
+          comparison: {
+            valid: false,
+            reasons: ["assembled-request-unavailable", "request-observation-scan-capped"],
+          },
+        },
+        headId: null,
+        entryCount: 0,
+        messageCount: 0,
+        roles: [],
+        entries: [],
+        truncated: false,
+        compactions: [],
+        failure: null,
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const context = page.getByRole("region", { name: "Active context" });
+  await expect(context).toContainText("Observation unknown: the scan stopped after 200 entries.");
+  await expect(context).not.toContainText("No durable request observation found");
 });
 
 test("supplied model picker saves scoped choices and supported thinking without submitting the draft", async ({
@@ -551,9 +683,8 @@ test("idle composer is one surface with discoverable commands and no inert contr
     /Type \/ for commands/,
   );
   await expect(page.getByText("Ready", { exact: true })).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: /Conversation actions|Add Attachment|Refresh/ }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Conversation actions|Refresh/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add Attachment" })).toBeEnabled();
   await expect(
     page.locator('[data-slot="command-palette"], [data-slot="composer-menu"]'),
   ).toHaveCount(0);
