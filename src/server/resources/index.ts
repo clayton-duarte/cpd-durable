@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { open, opendir, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
+import { isAlias, isMap, isNode, isScalar, parseAllDocuments, visit } from "yaml";
 
 // MVP: only these exact locations are scanned, one level deep. Configured directories
 // are additional skill/prompt roots, resolved against the conversation cwd.
@@ -96,57 +97,64 @@ async function entries(path: string, issues: Issue[], budget: ScanBudget): Promi
   }
 }
 
-// A deliberately narrow YAML subset, not a general YAML parser. Other top-level
-// fields are ignored and reported; nested forms for required fields are rejected.
+// Parse metadata only. Never materialize arbitrary YAML objects or expand aliases.
 function metadata(
   text: string,
 ): { name: string; description: string; ignored: boolean } | undefined {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(text);
-  if (!match?.[1]) return undefined;
-  const fields = new Map<string, string>();
-  let ignored = false;
-  let ignoringField = false;
-  for (const line of match[1].split(/\r?\n/)) {
-    if (!line.trim() || line.startsWith("#")) continue;
-    if (/^\s/.test(line)) {
-      if (!ignoringField) return undefined;
-      continue;
-    }
-    const m = /^([a-zA-Z][\w-]*):(?:\s*(.*))?$/.exec(line);
-    if (!m?.[1]) return undefined;
-    if (m[1] !== "name" && m[1] !== "description") {
-      ignored = true;
-      ignoringField = true;
-      continue;
-    }
-    ignoringField = false;
-    if (!m[2] || fields.has(m[1])) return undefined;
-    let value = m[2].trim();
-    if (value.startsWith('"')) {
-      try {
-        const parsed: unknown = JSON.parse(value);
-        if (typeof parsed !== "string") return undefined;
-        value = parsed;
-      } catch {
-        return undefined;
+  if (!match?.[1]?.trim() || /^\.\.\.(?:\s*(?:#.*)?)?$/m.test(match[1])) return undefined;
+  try {
+    const docs = parseAllDocuments(match[1], { version: "1.2", uniqueKeys: true });
+    const doc = docs[0];
+    if (
+      docs.length !== 1 ||
+      !doc ||
+      doc.errors.length ||
+      doc.warnings.length ||
+      !isMap(doc.contents)
+    )
+      return undefined;
+    let unsafe = false;
+    visit(doc, (_key, node, path) => {
+      if (
+        path.length > 64 ||
+        isAlias(node) ||
+        (isNode(node) && "anchor" in node && !!node.anchor) ||
+        (isNode(node) && "tag" in node && !!node.tag && !node.tag.startsWith("tag:yaml.org,2002:"))
+      ) {
+        unsafe = true;
+        return visit.BREAK;
       }
-    } else if (value.startsWith("'")) {
-      if (!/^'(?:[^']|'')*'$/.test(value)) return undefined;
-      value = value.slice(1, -1).replaceAll("''", "'");
-    } else if (/^[[{|>&*!%@`]/.test(value) || /\s#/.test(value)) return undefined;
-    fields.set(m[1], value);
-  }
-  const name = fields.get("name"),
-    description = fields.get("description");
-  if (
-    !name ||
-    !description ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) ||
-    name.length > 64 ||
-    description.length > 1024
-  )
+      return undefined;
+    });
+    if (unsafe) return undefined;
+    const fields = new Map<string, string>();
+    let ignored = false;
+    for (const { key, value } of doc.contents.items) {
+      if (!isScalar(key) || typeof key.value !== "string") return undefined;
+      if (["__proto__", "constructor", "prototype"].includes(key.value)) return undefined;
+      if (key.value !== "name" && key.value !== "description") {
+        ignored = true;
+        continue;
+      }
+      if (!isScalar(value) || typeof value.value !== "string") return undefined;
+      fields.set(key.value, value.value);
+    }
+    const name = fields.get("name"),
+      description = fields.get("description");
+    if (
+      !name ||
+      !description?.trim() ||
+      !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name) ||
+      name.length > 64 ||
+      description.length > 1024
+    )
+      return undefined;
+    return { name, description, ignored };
+  } catch {
+    // Malformed or excessively nested input is rejected without exposing parser internals.
     return undefined;
-  return { name, description, ignored };
+  }
 }
 
 /** Fresh immutable-by-convention snapshot. Up to 128 nearest ancestors, 32 configured
@@ -215,7 +223,7 @@ export async function discoverResources(
       if (info.ignored)
         issues.push({
           path,
-          reason: "additional skill metadata ignored (unsupported YAML subset)",
+          reason: "additional skill metadata ignored (not used for authority)",
         });
       names.set(info.name, path);
       skills.push({ name: info.name, description: info.description, path });
