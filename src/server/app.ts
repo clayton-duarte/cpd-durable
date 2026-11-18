@@ -47,6 +47,9 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
+import { BranchIdentityError } from "./branch-identity.ts";
+import { RegenerationError } from "./regeneration.ts";
+import { RegenerationRequestSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
 import { DirectShellRequestSchema } from "../shared/direct-shell.ts";
 import { admitDirectShell } from "./direct-shell.ts";
 import { z } from "zod";
@@ -211,6 +214,34 @@ export function createApp(
     if (!id.success || !result.success) return c.json({ error: "Invalid fork." }, 400);
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
     return c.json(await chat.chats.fork(id.data, result.data.requestId, result.data.at), 201);
+  });
+  app.get("/api/chats/:chatId/regeneration-eligibility/:entryId", async (c) => {
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const entry = ChatIdSchema.safeParse(c.req.param("entryId"));
+    if (!id.success || !entry.success || !chat.chats)
+      return c.json({ error: "Chat unavailable." }, 404);
+    return c.json({ eligible: await chat.chats.canRegenerate(id.data, entry.data) });
+  });
+  app.get("/api/chats/:chatId/regenerations/:entryId", async (c) => {
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const entry = ChatIdSchema.safeParse(c.req.param("entryId"));
+    if (!id.success || !entry.success || !chat.chats)
+      return c.json({ error: "Chat unavailable." }, 404);
+    return c.json(
+      RecentRegenerationsSchema.parse(await chat.chats.recentRegenerations(id.data, entry.data)),
+    );
+  });
+  app.post("/api/chats/:chatId/regenerate", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const request = RegenerationRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!id.success || !request.success || id.data !== request.data.sourceId)
+      return c.json({ error: "Invalid regeneration request." }, 400);
+    if (!chat.chats) return c.json({ error: "Chat unavailable." }, 503);
+    return c.json(await chat.chats.regenerate(request.data), 202);
   });
   app.get("/api/chats/:chatId/edit-eligibility/:entryId", async (c) => {
     const id = ChatIdSchema.safeParse(c.req.param("chatId"));
@@ -560,9 +591,10 @@ export function createApp(
   app.onError((error, c) =>
     error instanceof ChatLifecycleError ||
     error instanceof AttachmentAccessError ||
+    error instanceof RegenerationError ||
     error instanceof BranchOperationError
       ? c.json({ error: error.message }, error.status)
-      : error instanceof AdmissionIdentityError
+      : error instanceof AdmissionIdentityError || error instanceof BranchIdentityError
         ? c.json({ error: "Request ID does not match its original action." }, 409)
         : error instanceof AttachmentNotFound
           ? c.json({ error: "Image not found." }, 404)
