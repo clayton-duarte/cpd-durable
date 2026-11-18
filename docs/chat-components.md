@@ -15,35 +15,47 @@ This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual e
 
 ## 1. Conversation and messages
 
-| Capability             | assistant-ui composition                                                    | Status/boundary                                                                         |
-| ---------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Transcript and scroll  | Official Thread and its supplied viewport/footer/scroll controls            | Adopted; centered reading surface and registered sticky composer                        |
-| Participant content    | Message Root and Parts                                                      | Adopted; durable IDs and order retained, no automatic adjacent-assistant merging        |
-| Assistant text         | Thread's supplied MarkdownText element                                      | Adopted: Markdown/GFM headings, lists, tables and fenced code with code-copy controls   |
-| User text              | MessagePart Text                                                            | Adopted: literal text, line breaks and indentation preserved                            |
-| Message actions        | Thread's supplied action bar and More menu                                  | Adopted Copy/Export; unsupported Refresh is omitted by runtime capability               |
-| Streaming              | In-place running assistant part                                             | Adopted; no simulated word replay. Live-to-committed identity still needs host work     |
-| Loading/empty          | Runtime state, skeleton and welcome composition                             | Adopted; initial loading is not an empty transcript                                     |
-| Earlier history/gaps   | Native LoadEarlier adapter is the preferred paging surface                  | Host paging, gap recovery and merge logic remain pending; recent-window notice retained |
-| Acknowledgement/retry  | Admission-aware composer submission and transport notices                   | Preserves original payload/ID after uncertain delivery, not answer-completion claims    |
-| Interrupted answer     | Incomplete status plus typed interruption data part rendered by AgentStatus | Adopted without misclassifying interruption as an error; Continue remains separate      |
-| Custom events/activity | Typed message data parts or explicit event projection                       | Pending; no raw SDK document dump                                                       |
-| Images/files/sources   | Image/File/Attachment/Source elements and part renderers                    | Require actual host/provider data; not enabled by this text-only migration              |
+| Capability             | assistant-ui composition                                         | Status/boundary                                                                                 |
+| ---------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Transcript and scroll  | Official Thread and its supplied viewport/footer/scroll controls | Adopted; centered reading surface and registered sticky composer                                |
+| Participant content    | Message Root and Parts                                           | Adopted; durable IDs and order retained, no automatic adjacent-assistant merging                |
+| Assistant text         | Thread's supplied MarkdownText element                           | Adopted: Markdown/GFM headings, lists, tables and fenced code with code-copy controls           |
+| User text              | MessagePart Text                                                 | Adopted: literal text, line breaks and indentation preserved                                    |
+| Message actions        | Thread's supplied action bar and More menu                       | Adopted Copy/Export; unsupported Refresh is omitted by runtime capability                       |
+| Streaming              | Source-backed transient render identity                          | Adopted for unambiguous task-to-entry handovers; ambiguous/missed boundaries use canonical rows |
+| Loading/empty          | Runtime state, skeleton and welcome composition                  | Adopted; initial loading is not an empty transcript                                             |
+| Earlier history/gaps   | Native LoadEarlier adapter is the preferred paging surface       | Host paging, gap recovery and merge logic remain pending; recent-window notice retained         |
+| Acknowledgement/retry  | Admission-aware composer submission and transport notices        | Preserves original payload/ID after uncertain delivery, not answer-completion claims            |
+| Interrupted answer     | Incomplete status and typed interruption receipt                 | Cancellation, error and output limit remain distinct; Continue stays separate                   |
+| Custom events/activity | Allowlisted text, omission and interruption parts                | Positioned omission receipts only; unknown custom entry data stays hidden                       |
+| Images/files/sources   | Image/File/Attachment/Source elements and part renderers         | Require actual host/provider data; not enabled by this text-only migration                      |
 
 Markdown does not enable raw HTML or code execution. Markdown image elements are disallowed rather than fetching remote URLs. Links are not verified citations. Neither Shiki nor Prism, math, Mermaid, maps nor arbitrary generative UI execution is installed just because the catalogue offers it.
 
+### Transcript identity and projection (Batch 2)
+
+The wire schema adds optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. Ordered text parts remain separated by coarse omission receipts (`reasoning`, `tool`, `image`, `other`); private reasoning, arguments, media, arbitrary type names, custom entry data and provider diagnostics are not forwarded. These receipts enable no new runtime capability.
+
+SDK `aborted` is an interruption, `error` an error and `length` an incomplete output limit. Unknown/missing assistant stop reasons remain incomplete. A busy run is not necessarily a streaming assistant message: explicit `live: null` suppresses stale partial replay and false streaming on settled answers. Generic busy feedback says Working.
+
+Render aliases are transient and separate from canonical durable IDs. A pure projector transfers the previous live row key only to exactly one new, known single-message SDK assistant entry attributed to the same task after the observed append boundary, while that boundary remains in the window or is its immediate predecessor. Task/attempt and append boundaries distinguish retries and reused attempts; no text-prefix or timestamp matching occurs. React layout effects commit the per-Chat cache. Canonical entry/part IDs remain separate metadata; future durable actions must not target render aliases.
+
+Ambiguous multi-entry updates, another conversation/task, dropped boundaries and unattributed scheduler salvage fall back to canonical rows, not guesses. Tested success, Stop and model-error handovers retain the mounted row and Markdown part. Reconnect within the retained view keeps aliases; a full page load uses canonical history without browser persistence. Dropped rows lose their aliases. History paging and gap recovery remain deferred.
+
+Strict wire validation rejects duplicate message/part identities and unknown wire part types. Rejected frames retain history/drafts, disable new actions and show a sanitized error. A later valid frame clears only that frame error, preserving uncertain-operation retries.
+
 ## 2. Composer and run controls
 
-| Capability               | Composition                                                   | Semantics                                                                                                                                        |
-| ------------------------ | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Multiline draft          | Official Thread composer                                      | Draft belongs to assistant-ui; Enter submits, Shift+Enter inserts newline, IME is preserved                                                      |
-| Send now/follow-up/steer | Native Send; runtime ComposerSlashCommands and TriggerPopover | `/queue` and `/steer` dispatch the current draft using explicit durable modes; idle steering never becomes an ordinary send                      |
-| Durable queue            | Supplied controlled MessageQueue below the composer           | SDK inbox only; mode labels distinguish boundary steering from next-run follow-up, and held input is not claimed delivered                       |
-| Withdraw                 | MessageQueue per-item removal callback                        | Placement race reports already-placed/settled/not-found honestly                                                                                 |
-| Stop                     | Native Stop bound to host abort                               | Also withdraws queued inputs; queued reset writes survive                                                                                        |
-| Continue                 | `/continue` selection                                         | Starts a run without adding user text or consuming the draft; not checkpoint Resume or Regenerate                                                |
-| Reset/handoff            | `/reset` → supplied ElicitationForm below the input shell     | Explicit confirmation and optional handoff; Enter in the handoff field cannot submit the parent composer; Escape/Decline restores composer focus |
-| Attachments              | Thread capability gating                                      | Omitted while unsupported; no upload adapter or file picker                                                                                      |
+| Capability               | Composition                                                   | Semantics                                                                                                                                                            |
+| ------------------------ | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Multiline draft          | Official Thread composer                                      | Draft belongs to assistant-ui; Enter submits, Shift+Enter inserts newline, IME is preserved                                                                          |
+| Send now/follow-up/steer | Native Send; runtime ComposerSlashCommands and TriggerPopover | `/queue` and `/steer` dispatch the current draft using explicit durable modes; idle steering never becomes an ordinary send                                          |
+| Durable queue            | Supplied controlled MessageQueue below the composer           | SDK inbox only; mode labels distinguish boundary steering from next-run follow-up, and held input is not claimed delivered                                           |
+| Withdraw                 | MessageQueue per-item removal callback                        | Placement race reports already-placed/settled/not-found honestly                                                                                                     |
+| Stop                     | Native Stop bound to host abort                               | Also withdraws queued inputs; queued reset writes survive                                                                                                            |
+| Continue                 | `/continue` selection                                         | Starts a run without adding user text or consuming the draft; not checkpoint Resume or Regenerate                                                                    |
+| Reset/handoff            | `/reset` → supplied shadcn AlertDialog and Textarea           | One explicit Reset context action, optional multiline handoff; initial focus is Cancel, modal focus is contained and Escape/Cancel restores the originating composer |
+| Attachments              | Thread capability gating                                      | Omitted while unsupported; no upload adapter or file picker                                                                                                          |
 
 Steering is requested at an eligible boundary, not an immediate interruption. Continue eligibility comes from idle active model context ending in user content/tool results, with no queued reset, not the recent transcript window. Continue/reset admissions use request IDs for safe retry; reset uses the SDK's public reset-entry shape.
 
@@ -73,7 +85,7 @@ Diagnostics, detailed task recovery, compaction failure detail and custom docume
 
 ## 6. Adjacent integrations
 
-ApprovalCard, PermissionGrant, OptionList/QuestionFlow and ReviewableDiff require durable host protocols, actual evidence and authorization. ElicitationForm currently confirms the existing reset operation only; it does not enable general model elicitation or approval protocols.
+ApprovalCard, PermissionGrant, ElicitationForm, OptionList/QuestionFlow and ReviewableDiff require durable host protocols, actual evidence and authorization. ElicitationForm is no longer used for reset: a human context-reset confirmation is not model/MCP elicitation. General elicitation and approval protocols remain unavailable.
 
 ThreadList, sidebar/modal shells, forks, sharing and new-thread controls require application-owned navigation and APIs. Keep the contained thread reusable now rather than adding fake multi-conversation machinery.
 
@@ -91,8 +103,10 @@ The transport serializes mutations and keeps retry identity only until refresh. 
 
 ## Remaining work
 
-The UI migration does not silently complete previously deferred history paging, gap recovery, stable live-to-committed identity, ordered rich SDK projection or custom events. Richer assistant Markdown is now adopted as part of the assistant-ui pivot; attachments/tools/sources and the wider host capabilities remain deferred. The [catalogue review](assistant-ui-elements.md) distinguishes ready-to-use primitives, data-dependent renderers, alternative shells and entirely new host capabilities.
+Batch 2 adds source-backed live/committed identity and ordered text/omission projection with the fallback limits above. History paging/gap recovery, actual rich tool/reasoning/media payloads and application custom-event schemas remain deferred. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
 
 ## shadcn gap decisions
 
-There are **no direct application-level shadcn fallbacks** in the current chat. Thread and selected assistant-ui elements bring accepted internal shadcn dependencies, not permission to compose a competing chat UI. Batch 1 uses runtime ComposerSlashCommands/TriggerPopover, controlled MessageQueue, ElicitationForm, AgentStatus and ErrorState. It removes the nested standalone Composer/ComposerMenu/CommandPalette integration without replacing it with custom visuals. Future gaps must name the missing capability and justify a specific supplied shadcn element or defer.
+**Reset confirmation is the one direct application-level shadcn gap.** assistant-ui supplies no dedicated context-reset confirmation dialog. ElicitationForm adds server/plug identity, “needs input,” an extra confirmation field and Send/Decline semantics; it is not an appropriate reset modal. Use the existing supplied shadcn **AlertDialog** for accessible modal confirmation and **Textarea** for optional multiline handoff. These provide Cancel / Reset context without another card, checkbox or custom visual component. Focus starts on Cancel, stays in the modal, and returns to the correct composer. Cancel/Escape changes no server state and retains handoff text; Reset context alone admits the existing operation. Failure retains the handoff and the original request-ID-safe retry; admission does not mean the reset has been placed.
+
+The rest of Batch 1 remains assistant-ui-first: runtime ComposerSlashCommands/TriggerPopover, controlled MessageQueue, AgentStatus and ErrorState. Internal shadcn dependencies are accepted separately from this explicit fallback. No general dialog framework or new host capability is introduced. Future gaps must name the missing behavior and justify a specific supplied shadcn element or defer.

@@ -8,6 +8,7 @@ import { openChat } from "../src/server/chat.ts";
 import { present } from "../src/server/presentation.ts";
 import { ChatStateSchema, SubmissionSchema, type SendMode } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+import { projectAssistantMessages } from "../src/client/assistant-messages.ts";
 
 describe("single durable chat", () => {
   let dataDir: string;
@@ -71,11 +72,18 @@ describe("single durable chat", () => {
     if (!call) throw new Error("No model call");
     call.partial("Hello");
     await vi.waitFor(async () => expect((await state()).partial).toBe("Hello"));
+    const streaming = projectAssistantMessages(await state());
+    expect(streaming.liveKey).not.toBeNull();
     expect((await app.request(input("another"))).status).toBe(409);
     const duplicate = SubmissionSchema.parse(await (await app.request(input("hello", id))).json());
     expect(duplicate).toEqual(admitted);
     call.finish("Hello there");
     await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    const committed = projectAssistantMessages(await state(), streaming);
+    expect(committed.messages.at(-1)?.id).toBe(streaming.liveKey);
+    expect(committed.messages.at(-1)?.metadata?.custom?.["durableId"]).toBe(
+      (await state()).messages.at(-1)?.id,
+    );
     expect(await state()).toMatchObject({
       busy: false,
       partial: "",
@@ -112,6 +120,7 @@ describe("single durable chat", () => {
     await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
     provider.calls[0]?.partial("Partial answer");
     await vi.waitFor(async () => expect((await state()).partial).toBe("Partial answer"));
+    const streaming = projectAssistantMessages(await state());
     expect((await app.request("http://localhost:3000/api/stop", { method: "POST" })).status).toBe(
       204,
     );
@@ -119,7 +128,11 @@ describe("single durable chat", () => {
     expect((await state()).messages.at(-1)).toMatchObject({
       text: "Partial answer",
       interrupted: true,
+      outcome: "interrupted",
     });
+    expect(projectAssistantMessages(await state(), streaming).messages.at(-1)?.id).toBe(
+      streaming.liveKey,
+    );
   });
 
   it("sends initial state and updates over SSE; disconnecting does not stop work", async () => {
