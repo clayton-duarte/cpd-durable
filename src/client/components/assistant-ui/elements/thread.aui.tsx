@@ -124,6 +124,8 @@ export type ThreadComponents = {
   ReasoningGroup?: ComponentType<PropsWithChildren<{ group: ThreadGroupPart }>> | undefined;
   TaskGroup?: ComponentType<{ group: ThreadGroupPart }> | undefined;
   ComposerExtra?: ComponentType | undefined;
+  /** Host-bound commands, queue and exceptional states below the input surface. */
+  ComposerFooter?: ComponentType | undefined;
 };
 
 const messageGroupBy = groupPartByType({
@@ -488,28 +490,32 @@ const ThreadSuggestionItem: FC = () => {
 };
 
 const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
+  const { ComposerFooter } = useContext(ThreadComponentsContext);
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
-      <ComposerPrimitive.AttachmentDropzone
-        render={
-          <div
-            data-slot="aui_composer-shell"
-            className="border-foreground/10 focus-within:border-foreground/25 data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
+    <ComposerPrimitive.TriggerPopoverRoot>
+      <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-2">
+        <ComposerPrimitive.AttachmentDropzone
+          render={
+            <div
+              data-slot="aui_composer-shell"
+              className="border-foreground/10 focus-within:border-foreground/25 data-[dragging=true]:border-ring flex w-full cursor-text flex-col gap-2 rounded-(--composer-radius) border bg-(--composer-bg) p-(--composer-padding) transition-[border-color] data-[dragging=true]:border-dashed data-[dragging=true]:bg-[color-mix(in_oklab,var(--color-accent)_50%,var(--color-background))]"
+            />
+          }
+        >
+          <ComposerAttachments />
+          <ComposerPrimitive.Input
+            placeholder="Send a message… Type / for commands"
+            className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
+            rows={1}
+            autoFocus={autoFocus}
+            enterKeyHint="send"
+            aria-label="Message input"
           />
-        }
-      >
-        <ComposerAttachments />
-        <ComposerPrimitive.Input
-          placeholder="Send a message..."
-          className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
-          rows={1}
-          autoFocus={autoFocus}
-          enterKeyHint="send"
-          aria-label="Message input"
-        />
-        <ComposerAction />
-      </ComposerPrimitive.AttachmentDropzone>
-    </ComposerPrimitive.Root>
+          <ComposerAction />
+        </ComposerPrimitive.AttachmentDropzone>
+        {ComposerFooter && <ComposerFooter />}
+      </ComposerPrimitive.Root>
+    </ComposerPrimitive.TriggerPopoverRoot>
   );
 };
 
@@ -523,14 +529,12 @@ const ComposerAction: FC = () => {
 
   return (
     <div className="aui-composer-action-wrapper relative flex items-center justify-between">
-      {ComposerExtra ? (
-        <div className="aui-composer-action-start flex items-center gap-1.5">
+      <div className="aui-composer-action-start flex items-center gap-1.5">
+        <AuiIf condition={(s) => s.thread.capabilities.attachments}>
           <ComposerAddAttachment />
-          <ComposerExtra />
-        </div>
-      ) : (
-        <ComposerAddAttachment />
-      )}
+        </AuiIf>
+        {ComposerExtra && <ComposerExtra />}
+      </div>
       <div className="flex items-center gap-1.5">
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
@@ -801,9 +805,11 @@ const AssistantActionBar: FC = () => {
           <ThumbsDownIcon />
         </ActionBarPrimitive.FeedbackNegative>
       </AuiIf>
-      <ActionBarPrimitive.Reload render={<TooltipIconButton tooltip="Refresh" />}>
-        <RefreshCwIcon />
-      </ActionBarPrimitive.Reload>
+      <AuiIf condition={(s) => s.thread.capabilities.reload}>
+        <ActionBarPrimitive.Reload render={<TooltipIconButton tooltip="Refresh" />}>
+          <RefreshCwIcon />
+        </ActionBarPrimitive.Reload>
+      </AuiIf>
       <ActionBarMorePrimitive.Root>
         <ActionBarMorePrimitive.Trigger
           render={<TooltipIconButton tooltip="More" className="data-[state=open]:bg-accent" />}

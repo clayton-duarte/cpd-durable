@@ -1,32 +1,24 @@
 import { useEffect, useRef, useState } from "react";
-import { useAui } from "@assistant-ui/react";
-import { EllipsisIcon, XIcon } from "lucide-react";
+import {
+  useAui,
+  unstable_useSlashCommandAdapter,
+  type Unstable_SlashCommand,
+} from "@assistant-ui/react";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
-import {
-  CommandPalette,
-  type PaletteCommand,
-} from "@/components/assistant-ui/elements/command-palette";
-import {
-  Composer,
-  ComposerMenu,
-  ComposerToolbar,
-} from "@/components/assistant-ui/elements/composer";
+import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 import { ElicitationForm } from "@/components/assistant-ui/elements/elicitation-form";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
-import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
-import { useChatHost } from "./chat.tsx";
+import { MessageQueue } from "@/components/assistant-ui/elements/message-queue";
+import { useChatHost } from "./chat-host.ts";
 
-// Only official assistant-ui elements. No local markup, style tokens or UI primitives.
+// Host bindings only: the supplied elements own all visual presentation.
 export function DurableControls() {
   const host = useChatHost();
   const aui = useAui();
-  const [panel, setPanel] = useState<"actions" | "reset" | null>(null);
-  const [query, setQuery] = useState("");
-  const [active, setActive] = useState("");
+  const [resetOpen, setResetOpen] = useState(false);
   const [handoff, setHandoff] = useState("");
   const [confirm, setConfirm] = useState("");
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef<HTMLDivElement>(null);
   const busy = host.state?.busy ?? false;
   const queue = host.state?.controls?.queue ?? [];
   const locked = !host.available;
@@ -40,111 +32,100 @@ export function DurableControls() {
       : host.pending
         ? "Awaiting acknowledgement…"
         : busy
-          ? `Responding…${queue.length ? ` · ${queue.length} queued` : ""}`
-          : host.state?.hasEarlier
-            ? "Ready · Recent history"
-            : "Ready";
+          ? "Responding…"
+          : null;
 
   useEffect(() => {
-    if (panel) panelRef.current?.querySelector<HTMLInputElement>("input")?.focus();
-  }, [panel]);
-  function close() {
-    setPanel(null);
-    triggerRef.current?.focus();
+    if (resetOpen) formRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+  }, [resetOpen]);
+
+  function closeReset() {
+    const input = formRef.current
+      ?.closest(".aui-thread-root")
+      ?.querySelector<HTMLTextAreaElement>("textarea");
+    setResetOpen(false);
+    input?.focus();
   }
-  const commands: PaletteCommand[] = [];
-  function command(id: string, label: string, group: string) {
-    commands.push({ id, label, group, keys: [] });
-  }
-  if (!locked) {
+
+  const commands: Unstable_SlashCommand[] = [];
+  if (!locked && !resetOpen) {
     if (busy) {
-      command("followUp", "Queue current draft after this response", "Draft");
-      command("steer", "Steer current work with this draft at a boundary", "Draft");
+      commands.push(
+        {
+          id: "queue",
+          description: "Send this draft after the current response",
+          execute: () => {
+            void host.submitDraft("followUp");
+          },
+        },
+        {
+          id: "steer",
+          description: "Apply this draft at the next eligible boundary",
+          execute: () => {
+            void host.submitDraft("steer");
+          },
+        },
+      );
     }
     if (host.onContinue && host.state?.controls?.canContinue && !busy)
-      command("continue", "Continue response without adding a message", "Conversation");
+      commands.push({
+        id: "continue",
+        description: "Request an answer from current context without sending the draft",
+        execute: () => {
+          void host.onContinue?.();
+        },
+      });
     if (host.onReset && host.state?.controls && !host.state.controls.resetPending)
-      command("reset", "Reset model context…", "Conversation");
-    for (const item of queue)
-      if (host.onWithdraw)
-        command(
-          `withdraw:${item.id}`,
-          `Withdraw ${item.mode === "steer" ? "steering request" : "follow-up"}: ${item.text}`,
-          "Queued inputs",
-        );
+      commands.push({
+        id: "reset",
+        description: "Confirm a fresh model context; stored history is retained",
+        execute: () => {
+          host.clearLocalError();
+          setConfirm("");
+          setResetOpen(true);
+        },
+      });
   }
-  command("close", "Close conversation actions", "Navigation");
-
-  async function run(id: string) {
-    if (id === "close") {
-      close();
-      return;
-    }
-    if (locked) return;
-    host.clearLocalError();
-    if (id === "reset") {
-      setConfirm("");
-      setPanel("reset");
-      return;
-    }
-    if (id === "followUp" || id === "steer") await host.submitDraft(id);
-    else if (id === "continue") await host.onContinue?.();
-    else if (id.startsWith("withdraw:")) {
-      const item = queue.find((item) => `withdraw:${item.id}` === id);
-      if (item) await host.onWithdraw?.(item.id);
-    }
-    close();
-  }
+  const slash = unstable_useSlashCommandAdapter({ commands, removeOnExecute: true });
 
   async function retry() {
     if (!host.connected || host.pending || !host.onRetry) return;
     const draft = aui.composer.getState().text;
-    if (await host.onRetry()) {
-      if (
-        host.retryText != null &&
-        aui.composer.getState().text === draft &&
-        draft.trim() === host.retryText
-      )
-        aui.composer.setText("");
-    }
+    if (
+      (await host.onRetry()) &&
+      host.retryText != null &&
+      aui.composer.getState().text === draft &&
+      draft.trim() === host.retryText
+    )
+      aui.composer.setText("");
   }
 
   return (
-    <Composer>
-      <ComposerToolbar>
+    <>
+      {host.onSend && (
+        <ComposerTriggerPopover
+          char="/"
+          {...slash}
+          aria-label="Conversation commands"
+          emptyItemsLabel="No commands available for this state"
+        />
+      )}
+      {status && (
         <AgentStatus
-          state={
-            !host.connected || !host.onSend
-              ? "waiting"
-              : busy || host.pending
-                ? "working"
-                : "waiting"
-          }
+          state={busy || host.pending ? "working" : "waiting"}
           label={status}
           role="status"
-          title={[
-            host.title,
-            host.description,
-            host.state?.hasEarlier ? "Earlier history remains in session storage." : "",
-          ]
-            .filter(Boolean)
-            .join(" · ")}
+          title={host.title}
         />
-        {host.onSend && (
-          <TooltipIconButton
-            ref={triggerRef}
-            tooltip={`Conversation actions${queue.length ? ` · ${queue.length} queued` : ""}`}
-            onClick={() => {
-              setQuery("");
-              setActive(commands[0]?.id ?? "close");
-              setPanel((current) => (current ? null : "actions"));
-            }}
-            aria-expanded={panel !== null}
-          >
-            <EllipsisIcon />
-          </TooltipIconButton>
-        )}
-      </ComposerToolbar>
+      )}
+      {host.state?.hasEarlier && (
+        <AgentStatus
+          state="waiting"
+          label="Recent history only"
+          title="Earlier history remains in session storage."
+          role="note"
+        />
+      )}
       {host.state?.controls?.resetPending && (
         <AgentStatus
           state="waiting"
@@ -167,80 +148,82 @@ export function DurableControls() {
       {host.notice && (
         <AgentStatus state="waiting" label={host.notice} title={host.notice} role="note" />
       )}
-      {panel && (
-        <ComposerMenu
-          open
+      {queue.length > 0 && (
+        <MessageQueue
+          queued={queue.map((item) => ({
+            id: item.id,
+            text: `${item.mode === "steer" ? "Steer at boundary" : "Follow-up"}: ${item.text}`,
+          }))}
+          queueDescription={
+            busy
+              ? "Steering: next boundary · Follow-up: next run"
+              : "Pending placement; not yet delivered"
+          }
+          {...(!locked && host.onWithdraw
+            ? {
+                onCancel: (id: string) => {
+                  void host.onWithdraw?.(id);
+                },
+              }
+            : {})}
+        />
+      )}
+      {resetOpen && (
+        <ElicitationForm
+          ref={formRef}
           role="dialog"
-          aria-label={panel === "reset" ? "Reset model context" : "Conversation actions"}
+          aria-label="Reset model context"
+          server="Reset model context"
+          message="Stored history is retained. If busy, reset waits for a boundary; Stop does not withdraw it. Queued inputs may run in the new context. Optional handoff becomes a user message; reset alone does not request an answer."
+          fields={[
+            {
+              name: "handoff",
+              label: "Handoff instructions (optional)",
+              kind: "text",
+              value: handoff,
+            },
+            {
+              name: "confirm",
+              label: "Confirm context reset",
+              kind: "choice",
+              required: true,
+              value: confirm,
+              options: ["Reset model context"],
+            },
+          ]}
+          state="request"
+          inert={locked}
+          aria-busy={host.pending ?? false}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
-              close();
+              closeReset();
             }
+            // The supplied text field must not implicitly submit the parent composer.
+            if (event.key === "Enter" && event.target instanceof HTMLInputElement)
+              event.preventDefault();
           }}
-        >
-          {panel === "actions" ? (
-            <CommandPalette
-              ref={panelRef}
-              commands={commands}
-              query={query}
-              activeId={active}
-              onQueryChange={(value) => {
-                setQuery(value);
-                setActive(
-                  commands.find((entry) => entry.label.toLowerCase().includes(value.toLowerCase()))
-                    ?.id ?? "",
-                );
-              }}
-              onActiveChange={setActive}
-              onRun={(id) => {
-                void run(id);
-              }}
-            />
-          ) : (
-            <ElicitationForm
-              ref={panelRef}
-              server="Reset model context"
-              message="Stored history is retained. If busy, reset waits for a boundary; Stop does not withdraw it. Queued inputs may run in the new context. Optional handoff becomes a user message; reset alone does not request an answer."
-              fields={[
-                {
-                  name: "handoff",
-                  label: "Handoff instructions (optional)",
-                  kind: "text",
-                  value: handoff,
-                },
-                {
-                  name: "confirm",
-                  label: "Confirm context reset",
-                  kind: "choice",
-                  required: true,
-                  value: confirm,
-                  options: ["Reset model context"],
-                },
-              ]}
-              state="request"
-              inert={locked}
-              aria-busy={host.pending ?? false}
-              onFieldChange={(name, value) => {
-                if (name === "handoff") setHandoff(value.slice(0, 32_000));
-                else if (name === "confirm") setConfirm(value);
-              }}
-              onDecline={close}
-              onAccept={() => {
-                if (locked || confirm !== "Reset model context" || !host.onReset) return;
-                host.clearLocalError();
-                void host.onReset(handoff.trim()).then((admitted) => {
-                  if (admitted) setHandoff("");
-                  close();
-                });
-              }}
-            />
-          )}
-          <TooltipIconButton tooltip="Close conversation actions" onClick={close}>
-            <XIcon />
-          </TooltipIconButton>
-        </ComposerMenu>
+          onFieldChange={(name, value) => {
+            if (name === "handoff") setHandoff(value.slice(0, 32_000));
+            else if (name === "confirm") setConfirm(value);
+          }}
+          onDecline={closeReset}
+          onAccept={() => {
+            if (
+              locked ||
+              host.state?.controls?.resetPending ||
+              confirm !== "Reset model context" ||
+              !host.onReset
+            )
+              return;
+            host.clearLocalError();
+            void host.onReset(handoff.trim()).then((admitted) => {
+              if (admitted) setHandoff("");
+              closeReset();
+            });
+          }}
+        />
       )}
-    </Composer>
+    </>
   );
 }
