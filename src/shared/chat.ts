@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AttachmentIdSchema } from "./attachments.ts";
+import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
 
 export const PROVIDER_ID = "opencode-go";
 export const MODEL_ID = "deepseek-v4.1-flash";
@@ -63,9 +63,15 @@ export const ToolStateSchema = z.enum([
   "cancelled",
   "unavailable",
 ]);
+export const ToolResultPartSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("text"), text: z.string() }),
+  z.strictObject({ type: z.literal("image"), source: SavedImageReferenceSchema }),
+  z.strictObject({ type: z.literal("omitted") }),
+]);
 export const ChatPartSchema = z.discriminatedUnion("type", [
   z.strictObject({ id: z.string(), type: z.literal("text"), text: z.string() }),
   z.strictObject({ id: z.string(), type: z.literal("reasoning"), text: z.string() }),
+  z.strictObject({ id: z.string(), type: z.literal("image"), source: SavedImageReferenceSchema }),
   z.strictObject({
     id: z.string(),
     type: z.literal("tool-call"),
@@ -75,6 +81,7 @@ export const ChatPartSchema = z.discriminatedUnion("type", [
     argumentsUnavailable: z.boolean().optional(),
     state: ToolStateSchema,
     output: z.string().optional(),
+    resultParts: z.array(ToolResultPartSchema).optional(),
     resultEntryId: RecordIdSchema.optional(),
   }),
   z.strictObject({

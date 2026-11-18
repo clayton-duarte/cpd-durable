@@ -9,12 +9,17 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { createCodingTools } from "@earendil-works/pi-durable/tools";
-import { createAttachmentBackend, type ImageAdmission } from "../src/server/attachment-routes.ts";
+import { createCodingTools, type ImageProcessor } from "@earendil-works/pi-durable/tools";
+import {
+  AttachmentAccessError,
+  createAttachmentBackend,
+  type ImageAdmission,
+} from "../src/server/attachment-routes.ts";
 import {
   checkAdmissionRequest,
   checkImageRequest,
   createPendingImageCatalog,
+  PendingImagesDoc,
 } from "../src/server/attachment-catalog.ts";
 import { createAttachmentService } from "../src/server/attachments.ts";
 import { CatalogDoc } from "../src/server/chats.ts";
@@ -28,7 +33,7 @@ const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
-async function setup() {
+async function setup(uploadProcessor: ImageProcessor = processor) {
   const root = await mkdtemp(join(tmpdir(), "cpd-route-test-"));
   roots.push(root);
   const provider = testModels();
@@ -65,12 +70,13 @@ async function setup() {
   const calls: ImageAdmission[] = [];
   const writable = (id: ConversationId) => async (tx: Tx) => {
     const item = (await tx.doc(CatalogDoc)).items.find((item) => item.id === id);
-    if (!item || item.status) throw new Error("Not writable");
+    if (!item || item.status === "deleted") throw new AttachmentAccessError(404);
+    if (item.status === "archived") throw new AttachmentAccessError(409);
   };
   const backend = createAttachmentBackend({
     harness,
     root,
-    processor,
+    processor: uploadProcessor,
     resolve: async (id) => {
       const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
       const item = catalog?.items.find(
@@ -149,6 +155,37 @@ async function setup() {
 }
 
 describe("attachment HTTP and durable catalog", () => {
+  it("rejects an upload archived after decoding but before its binding commit", async () => {
+    let markStarted!: () => void;
+    let releaseUpload!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const gate: ImageProcessor = {
+      async prepare(bytes, mime, limits) {
+        const prepared = await processor.prepare(bytes, mime, limits);
+        markStarted();
+        await release;
+        return prepared;
+      },
+    };
+    const t = await setup(gate);
+    try {
+      const pending = t.upload();
+      await started;
+      await t.mark(t.conversation.id, "archived");
+      releaseUpload();
+      expect((await pending).status).toBe(409);
+      const doc = await t.harness.snapshot(PendingImagesDoc, t.conversation.id, BACKGROUND_CONTEXT);
+      expect(doc?.items ?? []).toEqual([]);
+    } finally {
+      releaseUpload();
+      await t.close();
+    }
+  });
   it("detects cross-kind request-ID collisions before SDK admission and rejects unverifiable legacy IDs", async () => {
     const t = await setup();
     try {
