@@ -1,4 +1,12 @@
 import { z } from "zod";
+import { SelectionSchema } from "./configuration.ts";
+
+export const ResolvedTangentModelSchema = z.strictObject({
+  selection: SelectionSchema,
+  revision: z.number().int().nonnegative().safe(),
+  assignment: z.enum(["main", "tangent", "worker"]),
+});
+export type ResolvedTangentModel = z.infer<typeof ResolvedTangentModelSchema>;
 
 const text = z.string().trim().max(8000);
 const lines = z.array(z.string().trim().min(1).max(1000)).max(20);
@@ -18,7 +26,7 @@ export const CreateTangentSchema = z.strictObject({
   requestId: z.string().min(1).max(120),
   parentId: z.number().int().positive().safe(),
   sourceId: z.number().int().positive().safe(),
-  sourceEntryId: z.number().int().positive().safe(),
+  sourceEntryId: z.number().int().positive().safe().nullable(),
   title: z.string().trim().min(1).max(80),
   start: z.boolean(),
   handoff: HandoffSchema,

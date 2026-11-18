@@ -17,11 +17,14 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
+import { admissionDigest, checkAdmissionRequest } from "../attachment-catalog.ts";
 import {
   CreateTangentSchema,
+  ResolvedTangentModelSchema,
   ReturnHandoffSchema,
   type CreateTangent,
   type Handoff,
+  type ResolvedTangentModel,
 } from "../../shared/tangents.ts";
 
 type HandoffVersion = {
@@ -37,12 +40,13 @@ type Tangent = {
   id: number;
   parentId: number;
   sourceId: number;
-  sourceEntryId: number;
+  sourceEntryId: number | null;
   title: string;
   requestId: string;
   fingerprint: string;
   cwd: string;
-  model: { provider: string; modelId: string };
+  model: ResolvedTangentModel;
+  initialAgent: string;
   lifecycle: "open" | "concluded" | "archived";
   attention: "unread" | "needs-answer" | "report-ready" | "none";
   start: boolean;
@@ -63,11 +67,20 @@ export const TangentsDoc = defineDoc<JsonRepresentation<State>>({
  * parent lifecycle operations must call inspectParentTangents in their own transaction. */
 export type TangentHooks = {
   assertMain(tx: Tx, mainId: ConversationId): Promise<void>;
+  assertMainReadable(tx: Tx, mainId: ConversationId): Promise<void>;
   register(
     tx: Tx,
     tangent: { id: ConversationId; parentId: ConversationId; title: string },
   ): Promise<void>;
-  model(): { provider: string; modelId: string };
+  resolveModel(): Promise<ResolvedTangentModel>;
+  assertResolvedModel(tx: Tx, resolved: ResolvedTangentModel): Promise<void>;
+  assertCaller(
+    tx: Tx,
+    caller: ConversationId,
+    parent: ConversationId,
+    tangent: ConversationId,
+    action: "return" | "deliver" | "accept" | "lifecycle" | "read",
+  ): Promise<void>;
   cwd(sourceCwd: string | undefined): string;
 };
 type Driver =
@@ -104,6 +117,19 @@ export async function prepareTangent(
 ) {
   const request = CreateTangentSchema.parse(input);
   const fingerprint = JSON.stringify(request);
+  const previous = await driver.commit(async (tx) => {
+    await hooks.assertMain(tx, request.parentId as ConversationId);
+    const state = await tx.doc(TangentsDoc);
+    const existing = state.tangents.find((item) => item.requestId === request.requestId);
+    if (!existing) return undefined;
+    if (existing.fingerprint !== fingerprint)
+      throw new Error("Request identity conflicts with prior tangent");
+    if (existing.lifecycle !== "open") throw new Error("Tangent is not open");
+    return copy(existing);
+  }, context);
+  if (previous) return previous;
+  const resolved = ResolvedTangentModelSchema.parse(await hooks.resolveModel());
+  if (resolved.assignment !== "tangent") throw new Error("Tangent model assignment required");
   return driver.commit(async (tx) => {
     const parentId = request.parentId as ConversationId;
     await hooks.assertMain(tx, parentId);
@@ -119,20 +145,30 @@ export async function prepareTangent(
       if (existing.lifecycle !== "open") throw new Error("Tangent is not open");
       return copy(existing);
     }
-    const at = request.sourceEntryId as EntryId;
-    const visible = await tx.scanEntries(
-      { conversationId: parentId, minEntryId: at, maxEntryId: at },
-      1,
-    );
-    if (!visible.items.some((entry) => entry.id === at))
-      throw new Error("Source boundary is not visible");
+    const at = request.sourceEntryId as EntryId | null;
+    if (at === null) {
+      if (await tx.latestEntryId(parentId)) throw new Error("Source is no longer empty");
+    } else {
+      const visible = await tx.scanEntries(
+        { conversationId: parentId, minEntryId: at, maxEntryId: at },
+        1,
+      );
+      if (!visible.items.some((entry) => entry.id === at))
+        throw new Error("Source boundary is not visible");
+    }
     const sourceAgent = await tx.doc(AgentDoc, parentId);
-    const model = hooks.model();
+    await hooks.assertResolvedModel(tx, resolved);
+    const model = resolved.selection;
     const cwd = hooks.cwd(sourceAgent.cwd);
     if (!model.provider || !model.modelId || !isAbsolute(cwd))
       throw new Error("Tangent model and absolute cwd policy are required");
     const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
-    await configure(tx, created.id, { model, cwd });
+    await configure(tx, created.id, {
+      model: { provider: model.provider, modelId: model.modelId },
+      thinkingLevel: model.thinkingLevel,
+      cwd,
+    });
+    const initialAgent = JSON.stringify(await tx.doc(AgentDoc, created.id));
     const item: Tangent = {
       id: created.id,
       parentId,
@@ -142,7 +178,8 @@ export async function prepareTangent(
       requestId: request.requestId,
       fingerprint,
       cwd,
-      model,
+      model: resolved,
+      initialAgent,
       lifecycle: "open",
       attention: "unread",
       start: request.start,
@@ -182,12 +219,32 @@ export async function admitTangentStart(
     if (!item || item.fingerprint !== JSON.stringify(parsed) || item.lifecycle !== "open")
       throw new Error("Prepared tangent changed");
     if (item.startSubmissionId !== undefined) return copy(item);
-    const submission = await child.submit(tx, {
+    const childId = item.id as ConversationId;
+    const agent = await tx.doc(AgentDoc, childId);
+    const inbox = await tx.doc(InboxDoc, childId);
+    const live = await tx.doc(LiveDoc, childId);
+    if (
+      JSON.stringify(agent) !== item.initialAgent ||
+      (await tx.latestEntryId(childId)) ||
+      inbox.items.length ||
+      live.run ||
+      live.compactions?.length
+    )
+      throw new Error("Prepared tangent was changed before initial admission");
+    const draft = {
       type: "input",
       requestId: `tangent-start:${item.id}`,
       content: handoffText("delegate", item.versions[0]!.handoff),
       whenBusy: "reject",
-    });
+    } as const;
+    const record = await checkAdmissionRequest(
+      tx,
+      childId,
+      draft.requestId,
+      admissionDigest(["tangent-start", draft]),
+    );
+    const submission = await child.submit(tx, draft);
+    record();
     item.startSubmissionId = submission;
     item.versions[0]!.delivery = "admitted";
     item.versions[0]!.submissionId = submission;
@@ -202,7 +259,7 @@ export async function listTangents(
   context: Context = BACKGROUND_CONTEXT,
 ) {
   return driver.commit(async (tx) => {
-    await hooks.assertMain(tx, parentId);
+    await hooks.assertMainReadable(tx, parentId);
     const state = await tx.doc(TangentsDoc);
     const result: {
       tangent: Tangent;
@@ -229,6 +286,7 @@ export async function listTangents(
 /** A return is notification-only: app metadata, no parent context or model run. */
 export async function recordReturn(
   driver: Pick<Driver, "commit">,
+  caller: ConversationId,
   input: unknown,
   hooks: TangentHooks,
   context: Context = BACKGROUND_CONTEXT,
@@ -238,6 +296,14 @@ export async function recordReturn(
     const state = await tx.doc(TangentsDoc);
     const item = state.tangents.find((t) => t.id === request.tangentId);
     if (!item) throw new Error("Tangent not found");
+    if (caller !== item.id) throw new Error("Caller is not the tangent");
+    await hooks.assertCaller(
+      tx,
+      caller,
+      item.parentId as ConversationId,
+      item.id as ConversationId,
+      "return",
+    );
     await hooks.assertMain(tx, item.parentId as ConversationId);
     if (item.lifecycle !== "open") throw new Error("Tangent is not open");
     const prior = item.versions.find((version) => version.requestId === request.requestId);
@@ -269,27 +335,38 @@ export async function recordReturn(
 /** Selected return admission is explicit; admitted does not mean processed or accepted. */
 export async function deliverReturn(
   driver: Driver,
+  caller: ConversationId,
   parentId: ConversationId,
   tangentId: ConversationId,
   revision: number,
   hooks: TangentHooks,
   context: Context = BACKGROUND_CONTEXT,
 ) {
+  if (caller !== parentId) throw new Error("Caller is not the parent");
   const parent = await driver.conversation(parentId, context);
   if (!parent) throw new Error("Parent unavailable");
   return driver.commit(async (tx) => {
     await hooks.assertMain(tx, parentId);
     const state = await tx.doc(TangentsDoc);
     const item = state.tangents.find((t) => t.id === tangentId && t.parentId === parentId);
+    if (item) await hooks.assertCaller(tx, caller, parentId, tangentId, "deliver");
     const version = item?.versions.find((v) => v.revision === revision && v.kind === "return");
     if (!item || !version || item.lifecycle !== "open") throw new Error("Return unavailable");
     if (version.submissionId !== undefined) return copy(version);
-    const submission = await parent.submit(tx, {
+    const draft = {
       type: "input",
       requestId: `tangent-return:${tangentId}:${revision}`,
       content: handoffText("return", version.handoff),
       whenBusy: "followUp",
-    });
+    } as const;
+    const record = await checkAdmissionRequest(
+      tx,
+      parentId,
+      draft.requestId,
+      admissionDigest(["tangent-return", draft]),
+    );
+    const submission = await parent.submit(tx, draft);
+    record();
     version.delivery = "admitted";
     version.submissionId = submission;
     return copy(version);
@@ -299,16 +376,19 @@ export async function deliverReturn(
 /** Explicit parent review decision; admission alone never implies acceptance. */
 export async function acceptReturn(
   driver: Pick<Driver, "commit">,
+  caller: ConversationId,
   parentId: ConversationId,
   tangentId: ConversationId,
   revision: number,
   hooks: TangentHooks,
   context: Context = BACKGROUND_CONTEXT,
 ) {
+  if (caller !== parentId) throw new Error("Caller is not the parent");
   return driver.commit(async (tx) => {
     await hooks.assertMain(tx, parentId);
     const state = await tx.doc(TangentsDoc);
     const item = state.tangents.find((t) => t.id === tangentId && t.parentId === parentId);
+    if (item) await hooks.assertCaller(tx, caller, parentId, tangentId, "accept");
     const version = item?.versions.find((v) => v.revision === revision && v.kind === "return");
     if (!item || !version || version.delivery !== "admitted")
       throw new Error("Return has not been admitted");
@@ -324,16 +404,19 @@ export async function acceptReturn(
 
 export async function returnDeliveryStatus(
   driver: Pick<Driver, "commit">,
+  caller: ConversationId,
   parentId: ConversationId,
   tangentId: ConversationId,
   revision: number,
   hooks: TangentHooks,
   context: Context = BACKGROUND_CONTEXT,
 ) {
+  if (caller !== parentId) throw new Error("Caller is not the parent");
   return driver.commit(async (tx) => {
-    await hooks.assertMain(tx, parentId);
+    await hooks.assertMainReadable(tx, parentId);
     const state = await tx.doc(TangentsDoc);
     const item = state.tangents.find((t) => t.id === tangentId && t.parentId === parentId);
+    if (item) await hooks.assertCaller(tx, caller, parentId, tangentId, "read");
     const version = item?.versions.find((v) => v.revision === revision && v.kind === "return");
     if (!version) throw new Error("Return unavailable");
     const submission =
@@ -353,6 +436,7 @@ export async function returnDeliveryStatus(
 /** Lifecycle is explicit and independent of the outcome of a turn. */
 export async function setTangentLifecycle(
   driver: Pick<Driver, "commit">,
+  caller: ConversationId,
   parentId: ConversationId,
   tangentId: ConversationId,
   expected: "open" | "concluded" | "archived",
@@ -365,6 +449,9 @@ export async function setTangentLifecycle(
     const state = await tx.doc(TangentsDoc);
     const item = state.tangents.find((t) => t.id === tangentId && t.parentId === parentId);
     if (!item) throw new Error("Tangent not found");
+    if (caller !== parentId && caller !== tangentId)
+      throw new Error("Caller is not in this tangent");
+    await hooks.assertCaller(tx, caller, parentId, tangentId, "lifecycle");
     if (item.lifecycle === next) return copy(item);
     if (item.lifecycle !== expected) throw new Error("Stale tangent lifecycle");
     if (next !== "open") {

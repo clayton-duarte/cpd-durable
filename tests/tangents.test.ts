@@ -59,10 +59,20 @@ async function fixture() {
       const item = (await tx.doc(Catalog)).items.find((item) => item.id === id);
       if (!item || item.status !== "active") throw new Error("Main unavailable");
     },
+    async assertMainReadable(tx, id) {
+      const item = (await tx.doc(Catalog)).items.find((item) => item.id === id);
+      if (!item || item.status === "deleted") throw new Error("Main unavailable");
+    },
     async register(tx, tangent) {
       (await tx.doc(Catalog)).items.push({ id: tangent.id, status: "tangent" });
     },
-    model: () => ({ provider: PROVIDER_ID, modelId: MODEL_ID }),
+    resolveModel: async () => ({
+      selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "low" },
+      revision: 1,
+      assignment: "tangent",
+    }),
+    assertResolvedModel: async () => {},
+    assertCaller: async () => {},
     cwd: (source) => source ?? root,
   };
   const registry = createRegistry();
@@ -70,7 +80,9 @@ async function fixture() {
   const open = async () =>
     Harness.open(await openNodeSqliteStorage(db), { models: provider.models, registry }, context);
   const harness = await open();
-  const main = await harness.root(context, { agent: { model: hooks.model(), cwd: root } });
+  const main = await harness.root(context, {
+    agent: { model: { provider: PROVIDER_ID, modelId: MODEL_ID }, cwd: root },
+  });
   await harness.commit(async (tx) => {
     (await tx.doc(Catalog)).items.push({ id: main.id, status: "active" });
   }, context);
@@ -93,6 +105,108 @@ async function fixture() {
 }
 
 describe("interactive tangents", () => {
+  it("pins policy selection and rejects a stale policy without re-resolving retries", async () => {
+    const f = await fixture();
+    try {
+      const stale: TangentHooks = {
+        ...f.hooks,
+        assertResolvedModel: async () => {
+          throw new Error("policy changed");
+        },
+      };
+      await expect(prepareTangent(f.harness, f.request, stale)).rejects.toThrow("policy changed");
+      const high: TangentHooks = {
+        ...f.hooks,
+        resolveModel: async () => ({
+          selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "high" },
+          revision: 2,
+          assignment: "tangent",
+        }),
+      };
+      const created = await prepareTangent(f.harness, f.request, high);
+      const retry = await prepareTangent(f.harness, f.request, {
+        ...f.hooks,
+        resolveModel: async () => {
+          throw new Error("must not resolve");
+        },
+      });
+      expect(retry.model).toEqual(created.model);
+      expect(
+        (
+          await (await f.harness.conversation(created.id as ConversationId, context))!.agent(
+            context,
+          )
+        ).thinkingLevel,
+      ).toBe("high");
+    } finally {
+      await f.harness.close(context);
+    }
+  });
+  it("rejects changed prepared conversations before the first handoff admission", async () => {
+    const f = await fixture();
+    try {
+      const request = { ...f.request, start: true };
+      const prepared = await prepareTangent(f.harness, request, f.hooks);
+      const child = (await f.harness.conversation(prepared.id as ConversationId, context))!;
+      await child.configure({ thinkingLevel: "high" }, context);
+      await expect(admitTangentStart(f.harness, request, f.hooks)).rejects.toThrow("changed");
+      expect(f.provider.calls).toHaveLength(1);
+      const secondRequest = { ...request, requestId: "changed-context" };
+      const second = await prepareTangent(f.harness, secondRequest, f.hooks);
+      const secondChild = (await f.harness.conversation(second.id as ConversationId, context))!;
+      await secondChild.submit({ type: "write", entry: { kind: "test.changed" } }, context);
+      await expect(admitTangentStart(f.harness, secondRequest, f.hooks)).rejects.toThrow("changed");
+    } finally {
+      await f.harness.close(context);
+    }
+  });
+  it("handles explicit empty and inherited fork source boundaries", async () => {
+    const f = await fixture();
+    try {
+      const empty = await f.harness.createConversation(
+        { ownership: { kind: "ownerless" } },
+        context,
+      );
+      await f.harness.commit(async (tx) => {
+        (await tx.doc(Catalog)).items.push({ id: empty.id, status: "active" });
+      }, context);
+      const created = await prepareTangent(
+        f.harness,
+        {
+          ...f.request,
+          requestId: "empty",
+          parentId: empty.id,
+          sourceId: empty.id,
+          sourceEntryId: null,
+        },
+        f.hooks,
+      );
+      expect(created.sourceEntryId).toBeNull();
+      await expect(
+        prepareTangent(
+          f.harness,
+          { ...f.request, requestId: "not-empty", sourceEntryId: null },
+          f.hooks,
+        ),
+      ).rejects.toThrow("no longer empty");
+      const fork = await f.main.fork(
+        f.request.sourceEntryId,
+        { ownership: { kind: "ownerless" } },
+        context,
+      );
+      await f.harness.commit(async (tx) => {
+        (await tx.doc(Catalog)).items.push({ id: fork.id, status: "active" });
+      }, context);
+      const inherited = await prepareTangent(
+        f.harness,
+        { ...f.request, requestId: "inherited", parentId: fork.id, sourceId: fork.id },
+        f.hooks,
+      );
+      expect(inherited.sourceEntryId).toBe(f.request.sourceEntryId);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
   it("registers and executes the public SDK model tool without waiting for the child", async () => {
     const f = await fixture();
     try {
@@ -132,7 +246,8 @@ describe("interactive tangents", () => {
       expect((await child.context(context)).messages).toEqual([]);
       const agent = await child.agent(context);
       expect(agent.cwd).toBe(f.root);
-      expect(agent.model).toEqual(f.hooks.model());
+      expect(agent.model).toEqual({ provider: PROVIDER_ID, modelId: MODEL_ID });
+      expect(agent.thinkingLevel).toBe("low");
       const list = await listTangents(f.harness, f.main.id, f.hooks);
       expect(list[0]?.activity).toBe("idle");
       expect(list[0]?.tangent.lifecycle).toBe("open");
@@ -187,18 +302,42 @@ describe("interactive tangents", () => {
         expectedRevision: 1,
         handoff: { ...handoff, goal: "Result" },
       };
-      const result = await recordReturn(f.harness, draft, f.hooks);
+      await expect(recordReturn(f.harness, f.main.id, draft, f.hooks)).rejects.toThrow("Caller");
+      await expect(
+        deliverReturn(
+          f.harness,
+          child.id as ConversationId,
+          f.main.id,
+          child.id as ConversationId,
+          2,
+          f.hooks,
+        ),
+      ).rejects.toThrow("Caller");
+      await expect(
+        acceptReturn(
+          f.harness,
+          child.id as ConversationId,
+          f.main.id,
+          child.id as ConversationId,
+          2,
+          f.hooks,
+        ),
+      ).rejects.toThrow("Caller");
+      const result = await recordReturn(f.harness, child.id as ConversationId, draft, f.hooks);
       expect(result.delivery).toBe("available");
-      expect((await recordReturn(f.harness, draft, f.hooks)).revision).toBe(2);
-      await expect(recordReturn(f.harness, { ...draft, handoff }, f.hooks)).rejects.toThrow(
-        "conflicts",
-      );
+      expect(
+        (await recordReturn(f.harness, child.id as ConversationId, draft, f.hooks)).revision,
+      ).toBe(2);
+      await expect(
+        recordReturn(f.harness, child.id as ConversationId, { ...draft, handoff }, f.hooks),
+      ).rejects.toThrow("conflicts");
       expect(f.provider.calls).toHaveLength(1);
       await expect(
-        acceptReturn(f.harness, f.main.id, child.id as ConversationId, 2, f.hooks),
+        acceptReturn(f.harness, f.main.id, f.main.id, child.id as ConversationId, 2, f.hooks),
       ).rejects.toThrow();
       const admitted = await deliverReturn(
         f.harness,
+        f.main.id,
         f.main.id,
         child.id as ConversationId,
         2,
@@ -207,16 +346,41 @@ describe("interactive tangents", () => {
       expect(admitted.delivery).toBe("admitted");
       expect(admitted.accepted).toBe(false);
       expect(
-        (await deliverReturn(f.harness, f.main.id, child.id as ConversationId, 2, f.hooks))
-          .submissionId,
+        (
+          await deliverReturn(
+            f.harness,
+            f.main.id,
+            f.main.id,
+            child.id as ConversationId,
+            2,
+            f.hooks,
+          )
+        ).submissionId,
       ).toBe(admitted.submissionId);
       await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
       expect(
-        (await returnDeliveryStatus(f.harness, f.main.id, child.id as ConversationId, 2, f.hooks))
-          .placed,
+        (
+          await returnDeliveryStatus(
+            f.harness,
+            f.main.id,
+            f.main.id,
+            child.id as ConversationId,
+            2,
+            f.hooks,
+          )
+        ).placed,
       ).toBe(true);
       expect(
-        (await acceptReturn(f.harness, f.main.id, child.id as ConversationId, 2, f.hooks)).accepted,
+        (
+          await acceptReturn(
+            f.harness,
+            f.main.id,
+            f.main.id,
+            child.id as ConversationId,
+            2,
+            f.hooks,
+          )
+        ).accepted,
       ).toBe(true);
       f.provider.calls[1]!.finish("reviewed");
       await f.main.waitForIdle(context);
