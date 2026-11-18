@@ -245,8 +245,9 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(page.getByText("Tangent not found", { exact: true })).toBeVisible();
   const starts: unknown[] = [];
   let unstarted = { ...tangent(3, "Idle child", "idle"), startState: "create-only" };
+  const extraTangents: ReturnType<typeof tangent>[] = [];
   await page.route("**/api/chats/1/tangents", (route) =>
-    route.fulfill({ json: { tangents: [unstarted] } }),
+    route.fulfill({ json: { tangents: [unstarted, ...extraTangents] } }),
   );
   await page.route("**/api/chats/1/tangents/3/start", (route) => {
     starts.push(route.request().postDataJSON());
@@ -294,6 +295,87 @@ test("production route keeps native chats and drafts through tangent navigation"
   await unstartedPane.getByRole("button", { name: "Archive tangent" }).click();
   await expect(page.getByRole("alert")).toContainText("work is still active");
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
+  let placed = false;
+  let accepted = false;
+  let acceptCount = 0;
+  let wrongRevision = true;
+  let delayStatus = false;
+  let lateStarted = false;
+  let releaseLate!: () => void;
+  const lateGate = new Promise<void>((resolve) => {
+    releaseLate = resolve;
+  });
+  const unsafe = '<img src=x onerror="window.__unsafe=true">';
+  unstarted = {
+    ...unstarted,
+    attention: "report-ready",
+    latestHandoff: {
+      ...unstarted.latestHandoff,
+      revision: 2,
+      kind: "return",
+      delivery: "admitted",
+      handoff: {
+        ...handoff,
+        goal: unsafe,
+        evidence: "Synthetic evidence",
+        limits: "Synthetic limits",
+      },
+    },
+  };
+  await page.route("**/api/chats/1/tangents/3/returns/2", async (route) => {
+    if (delayStatus) {
+      lateStarted = true;
+      await lateGate;
+    }
+    await route
+      .fulfill({
+        json: {
+          revision: wrongRevision ? 1 : 2,
+          admitted: true,
+          placed,
+          submissionStatus: "queued",
+          accepted,
+        },
+      })
+      .catch(() => {});
+  });
+  await page.route("**/api/chats/1/tangents/3/accept", (route) => {
+    acceptCount++;
+    if (acceptCount === 1) return route.fulfill({ status: 409, json: { error: "Changed" } });
+    accepted = true;
+    return route.fulfill({ json: { revision: 2, accepted: true } });
+  });
+  const report = unstartedPane.getByRole("region", { name: "Return report revision 2" });
+  const preview = report.getByRole("textbox", { name: "Return handoff for review" });
+  await expect(preview).toBeVisible();
+  expect(JSON.parse(await preview.inputValue())).toMatchObject({
+    goal: unsafe,
+    evidence: "Synthetic evidence",
+    limits: "Synthetic limits",
+  });
+  expect(await page.evaluate(() => Reflect.has(window, "__unsafe"))).toBe(false);
+  await expect(report.getByRole("alert")).toContainText("Return status unavailable");
+  await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
+  wrongRevision = false;
+  await expect(report.getByText("Admitted; not yet placed")).toBeVisible();
+  await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
+  await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();
+  placed = true;
+  await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeEnabled();
+  await report.getByRole("button", { name: "Accept reviewed return" }).click();
+  await expect(report.getByText("Not accepted by parent review.", { exact: false })).toBeVisible();
+  await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeEnabled();
+  await report.getByRole("button", { name: "Accept reviewed return" }).click();
+  await expect(report.getByText("Accepted by parent review.", { exact: false })).toBeVisible();
+  expect(acceptCount).toBe(2);
+  await expect(input(unstartedPane)).toHaveValue("keep this draft");
+  delayStatus = true;
+  extraTangents.push(tangent(2, "Other child", "idle"));
+  await expect.poll(() => lateStarted).toBe(true);
+  await page.getByRole("button", { name: "Open tangent: Other child" }).click();
+  releaseLate();
+  await expect(report).toBeHidden();
+  await expect(page.getByRole("region", { name: "Return report revision 2" })).toHaveCount(0);
 });
 
 test("busy and archived main chats do not expose tangent commands or send their literal text", async ({
@@ -373,4 +455,133 @@ test("busy and archived main chats do not expose tangent commands or send their 
   await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
   await expect(page.getByRole("option", { name: /\/tangent|\/side/ })).toHaveCount(0);
   expect(inputs).toEqual([]);
+});
+
+test("loading earlier child history keeps main history and both native drafts independent", async ({
+  page,
+}) => {
+  const historyCalls: string[] = [];
+  await page.addInitScript(() => {
+    class Synthetic extends EventTarget {
+      onerror: (() => void) | null = null;
+      closed = false;
+      constructor(url: string) {
+        super();
+        const parsed = new URL(url, location.href);
+        const id = Number(parsed.pathname.split("/")[3]);
+        const view = parsed.searchParams.get("view");
+        const messages = Array.from({ length: 30 }, (_, index) => {
+          const entry = index + 31;
+          return {
+            id: `${entry}:0`,
+            role: "user",
+            text: `Chat ${id} turn ${entry}`,
+            interrupted: false,
+            source: { entryId: entry },
+          };
+        });
+        queueMicrotask(() => {
+          if (!this.closed)
+            this.dispatchEvent(
+              new MessageEvent("state", {
+                data: JSON.stringify({
+                  conversationId: id,
+                  messages,
+                  partial: "",
+                  busy: false,
+                  hasEarlier: true,
+                  failure: null,
+                  live: null,
+                  controls: { canContinue: false, resetPending: false, queue: [] },
+                  window: { entryIds: messages.map((message) => message.source.entryId) },
+                  history: {
+                    view,
+                    epoch: "11111111-1111-4111-8111-111111111111",
+                    revision: 1,
+                    oldest: 31,
+                    gaps: [],
+                  },
+                }),
+              }),
+            );
+        });
+      }
+      close() {
+        this.closed = true;
+      }
+    }
+    Object.defineProperty(window, "EventSource", { value: Synthetic });
+  });
+  await page.route("**/api/**", (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+      });
+    if (path === "/api/chats/1/tangents")
+      return route.fulfill({ json: { tangents: [tangent(2, "Running child", "running")] } });
+    if (path.endsWith("/workers"))
+      return route.fulfill({ json: { helpers: [], hasUnsettled: false } });
+    if (path.endsWith("/questions"))
+      return route.fulfill({ json: { conversationId: path.split("/")[3], questions: [] } });
+    if (path === "/api/chats/2/history" && req.method() === "POST") {
+      historyCalls.push(path);
+      const data = req.postDataJSON() as { view: string };
+      const messages = Array.from({ length: 60 }, (_, index) => {
+        const entry = index + 1;
+        return {
+          id: `${entry}:0`,
+          role: "user",
+          text: `Chat 2 turn ${entry}`,
+          interrupted: false,
+          source: { entryId: entry },
+        };
+      });
+      return route.fulfill({
+        json: {
+          conversationId: 2,
+          messages,
+          partial: "",
+          busy: false,
+          hasEarlier: false,
+          failure: null,
+          live: null,
+          controls: { canContinue: false, resetPending: false, queue: [] },
+          window: { entryIds: messages.slice(-30).map((message) => message.source.entryId) },
+          history: {
+            view: data.view,
+            epoch: "11111111-1111-4111-8111-111111111111",
+            revision: 2,
+            oldest: 1,
+            gaps: [],
+          },
+        },
+      });
+    }
+    return route.abort();
+  });
+  await page.goto("/chats/1?tangent=2");
+  const main = page.getByRole("region", { name: "Main chat: Main" });
+  const child = page.getByRole("region", { name: "Tangent chat: Running child" });
+  await main.getByRole("textbox", { name: "Message input" }).fill("main history draft");
+  await child.getByRole("textbox", { name: "Message input" }).fill("child history draft");
+  const load = child.getByRole("button", { name: "Load earlier messages" });
+  await load.scrollIntoViewIfNeeded();
+  const anchor = child.locator('[data-durable-id="31:0"]');
+  await anchor.evaluate((node) => node.setAttribute("data-history-probe", "original"));
+  const before = (await anchor.boundingBox())!.y;
+  await load.click();
+  await expect(child.getByText("Chat 2 turn 1", { exact: true })).toBeVisible();
+  await expect(anchor).toHaveAttribute("data-history-probe", "original");
+  await expect.poll(async () => Math.abs((await anchor.boundingBox())!.y - before)).toBeLessThan(6);
+  await expect(main.locator("[data-durable-id]")).toHaveCount(30);
+  await expect(child.locator("[data-durable-id]")).toHaveCount(60);
+  await expect(main.getByRole("textbox", { name: "Message input" })).toHaveValue(
+    "main history draft",
+  );
+  await expect(child.getByRole("textbox", { name: "Message input" })).toHaveValue(
+    "child history draft",
+  );
+  expect(historyCalls).toEqual(["/api/chats/2/history"]);
 });

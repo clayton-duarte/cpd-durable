@@ -9,6 +9,7 @@ import { WorkerPanel } from "../workers/panel.tsx";
 import { ModelPolicyViewSchema } from "../../shared/model-policy.ts";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { ReturnReview } from "./return-review.tsx";
 import {
   CollapsibleRoot,
   CollapsibleTrigger,
@@ -269,6 +270,19 @@ export function MainThreadView({
         )}
         renderTangent={(tangent, visible) => (
           <div className="flex min-h-0 flex-1 flex-col">
+            {items
+              .filter((item) => String(item.id) === tangent.id)
+              .map((item) =>
+                item.latestHandoff.kind === "return" ? (
+                  <ReturnReview
+                    key={`return-${item.id}-${item.latestHandoff.revision}`}
+                    parentId={mainId}
+                    item={item}
+                    active={active && visible}
+                    readOnly={readOnly || item.lifecycle === "archived" || error}
+                  />
+                ) : null,
+              )}
             {items
               .filter((item) => String(item.id) === tangent.id)
               .map((item) => (
