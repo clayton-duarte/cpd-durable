@@ -46,9 +46,21 @@ async function validateTarget(
   target: { entryId: number; modelIndex: number },
   write: boolean,
 ) {
-  const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === conversationId);
+  const catalog = await tx.doc(CatalogDoc);
+  const item = catalog.items.find((entry) => entry.id === conversationId);
   if (!item || item.status === "deleted") throw new FeedbackError(404);
-  if (write && item.status === "archived") throw new FeedbackError(409);
+  const parent =
+    item.kind === "tangent"
+      ? catalog.items.find(
+          (entry) => entry.id === item.tangentParentId && entry.status !== "deleted",
+        )
+      : undefined;
+  if (item.kind === "tangent" && !parent) throw new FeedbackError(404);
+  const readOnly =
+    item.status === "archived" ||
+    parent?.status === "archived" ||
+    (item.kind === "tangent" && item.tangentLifecycle !== "open");
+  if (write && readOnly) throw new FeedbackError(409);
   const id = target.entryId as EntryId;
   const entries = await tx.scanEntries({ conversationId, minEntryId: id, maxEntryId: id }, 1);
   const entry = entries.items.find((candidate) => candidate.id === id);
@@ -59,7 +71,7 @@ async function validateTarget(
     !message.content.some((part) => part.type === "text" && part.text.length > 0)
   )
     throw new FeedbackError(404);
-  return item.status === "archived";
+  return readOnly;
 }
 function project(conversationId: ConversationId, item: Item, readOnly: boolean): FeedbackView {
   return FeedbackViewSchema.parse({

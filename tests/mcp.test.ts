@@ -235,6 +235,33 @@ describe("stdio MCP adapter", () => {
       expect(name).toBeDefined();
       expect(agent.tools.map((tool) => tool.name)).not.toContain(name);
       expect(agent.tools.map((tool) => tool.name)).toContain("codemode");
+      expect(agent.tools.map((tool) => tool.name)).toEqual([
+        "read",
+        "write",
+        "edit",
+        "bash",
+        "codemode",
+        "grep",
+        "find",
+        "ls",
+        "powershell",
+        "load_skill",
+        "ask_user",
+        "create_tangent",
+        "launch_worker",
+        "stop_worker",
+        "inspect_workers",
+        "collect_worker",
+        "delegate_handoff",
+        "update_handoff",
+        "escalate_handoff",
+        "report_handoff",
+        "deliver_handoff",
+        "inspect_handoffs",
+        "collect_handoff",
+        "review_handoff",
+        "display_table",
+      ]);
       await chat.conversation.submit(
         { type: "input", content: "Synthetic request" },
         BACKGROUND_CONTEXT,

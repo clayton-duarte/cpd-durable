@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { NestedToolDisplaySchema } from "./nested-tools.ts";
 import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
+import { TableDetailsSchema } from "./structured-table.ts";
 import { EditDiffSchema } from "./edit-diff.ts";
 import { DraftAdmissionSchema } from "./drafts.ts";
 import { modelInputText } from "./direct-shell.ts";
@@ -23,7 +24,7 @@ export const InputSchema = z
       (!!input.text || !!input.images?.length) &&
       new Set(input.images).size === (input.images?.length ?? 0) &&
       (!input.draft ||
-        (modelInputText(input.draft.text) === input.text &&
+        ((input.draft.attempt === true || modelInputText(input.draft.text) === input.text) &&
           JSON.stringify(input.draft.images) === JSON.stringify(input.images ?? []))),
   );
 export type ChatInput = z.infer<typeof InputSchema>;
@@ -92,6 +93,7 @@ export const ChatPartSchema = z.discriminatedUnion("type", [
     resultParts: z.array(ToolResultPartSchema).optional(),
     resultEntryId: RecordIdSchema.optional(),
     nested: NestedToolDisplaySchema.optional(),
+    table: TableDetailsSchema.optional(),
     editDiff: EditDiffSchema.optional(),
   }),
   z.strictObject({

@@ -29,9 +29,13 @@ import {
 } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
 import { assertMainModelDecisionTx, type createModelPolicy } from "./model-policy.ts";
+import { inspectParentTangents, TangentsDoc, type TangentHooks } from "./tangents/index.ts";
+import type { ResolvedTangentModel } from "../shared/tangents.ts";
+import { helperHasUnsettled } from "./helpers.ts";
 import { DraftDoc } from "./drafts.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
 import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
+import { draftInputText } from "../shared/draft-intent.ts";
 import { assertBranchIdentityAvailable, reserveBranchIdentity } from "./branch-identity.ts";
 import { createRegeneration, regenerableAnswer, RegenerationError } from "./regeneration.ts";
 import {
@@ -44,7 +48,6 @@ import {
   DirectShellRequestSchema,
   DirectShellResultSchema,
   DirectShellStatusSchema,
-  modelInputText,
 } from "../shared/direct-shell.ts";
 import {
   createBranchOperations,
@@ -65,6 +68,9 @@ type CatalogItem = {
   parentId?: number;
   forkEntryId?: number;
   branchRootId?: number;
+  kind?: "tangent";
+  tangentParentId?: number;
+  tangentLifecycle?: "open" | "concluded" | "archived";
 };
 export const CatalogDoc = defineDoc<{
   items: CatalogItem[];
@@ -85,6 +91,109 @@ export class ChatLifecycleError extends Error {
     this.status = status;
   }
 }
+
+export async function assertInteractiveChat(tx: Tx, id: ConversationId, writable: boolean) {
+  const catalog = await tx.doc(CatalogDoc);
+  const item = catalog.items.find((entry) => entry.id === id && entry.status !== "deleted");
+  if (!item) throw new ChatLifecycleError("Chat not found.", 404);
+  const parent =
+    item.kind === "tangent"
+      ? catalog.items.find(
+          (entry) =>
+            entry.id === item.tangentParentId &&
+            entry.kind !== "tangent" &&
+            entry.status !== "deleted",
+        )
+      : undefined;
+  if (item.kind === "tangent" && !parent) throw new ChatLifecycleError("Chat not found.", 404);
+  if (
+    writable &&
+    (item.status === "archived" ||
+      parent?.status === "archived" ||
+      (item.kind === "tangent" && item.tangentLifecycle !== "open"))
+  )
+    throw new ChatLifecycleError("Chat is read-only.", 409);
+}
+
+/** A prepared tangent must receive its original delegation before other mutations. */
+export async function assertTangentStarted(tx: Tx, id: ConversationId) {
+  const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
+  if (item?.kind !== "tangent") return;
+  const tangent = (await tx.doc(TangentsDoc)).tangents.find(
+    (entry) => entry.id === id && entry.parentId === item.tangentParentId,
+  );
+  if (!tangent || tangent.startSubmissionId === undefined)
+    throw new ChatLifecycleError("Start tangent with its handoff first.", 409);
+}
+
+/** Hooks are called inside the tangent operation's SDK transaction. */
+export function createTangentCatalogHooks(options: {
+  resolveModel(): Promise<ResolvedTangentModel>;
+  assertResolvedModel(tx: Tx, resolved: ResolvedTangentModel): Promise<void>;
+  cwd(source: string | undefined): string;
+  assertNoUnsettled?(tx: Tx, tangent: ConversationId): Promise<void>;
+}): TangentHooks {
+  async function main(tx: Tx, id: ConversationId, writable: boolean) {
+    const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
+    if (!item || item.status === "deleted" || item.kind === "tangent")
+      throw new ChatLifecycleError("Main chat not found.", 404);
+    if (writable && item.status === "archived")
+      throw new ChatLifecycleError("Main chat is archived.", 409);
+  }
+  return {
+    assertMain: (tx, id) => main(tx, id, true),
+    assertMainReadable: (tx, id) => main(tx, id, false),
+    async isMainReadOnly(tx, id) {
+      return (
+        (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id)?.status === "archived"
+      );
+    },
+    resolveModel: () => options.resolveModel(),
+    assertResolvedModel: (tx, resolved) => options.assertResolvedModel(tx, resolved),
+    cwd: (source) => options.cwd(source),
+    async register(tx, tangent) {
+      (await tx.doc(CatalogDoc)).items.push({
+        id: tangent.id,
+        title: tangent.title,
+        named: true,
+        requestId: null,
+        kind: "tangent",
+        tangentParentId: tangent.parentId,
+        tangentLifecycle: "open",
+      });
+    },
+    async assertCaller(tx, caller, parent, tangent, action) {
+      await main(tx, parent, action !== "read");
+      const child = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === tangent);
+      if (
+        !child ||
+        child.kind !== "tangent" ||
+        child.tangentParentId !== parent ||
+        child.status === "deleted"
+      )
+        throw new ChatLifecycleError("Tangent not found.", 404);
+      if (caller !== parent && caller !== tangent)
+        throw new ChatLifecycleError("Caller is not in this tangent.", 409);
+      if (action !== "read" && child.status === "archived" && action !== "lifecycle")
+        throw new ChatLifecycleError("Tangent is archived.", 409);
+    },
+    ...(options.assertNoUnsettled
+      ? {
+          assertNoUnsettled: (tx: Tx, tangent: ConversationId) =>
+            options.assertNoUnsettled!(tx, tangent),
+        }
+      : {}),
+    async onLifecycle(tx, id, next) {
+      const child = (await tx.doc(CatalogDoc)).items.find(
+        (entry) => entry.id === id && entry.kind === "tangent",
+      );
+      if (!child) throw new ChatLifecycleError("Tangent not found.", 404);
+      child.tangentLifecycle = next;
+      if (next === "archived") child.status = "archived";
+      else delete child.status;
+    },
+  };
+}
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
@@ -92,6 +201,7 @@ async function idle(tx: Tx, id: number) {
     live.run === undefined &&
     !live.compactions?.length &&
     inbox.items.length === 0 &&
+    !(await helperHasUnsettled(tx, id as ConversationId)) &&
     !(await directShellHasUnsettled(tx, id as ConversationId)) &&
     !(await compactIntentUnsettled(tx, id as ConversationId))
   );
@@ -118,6 +228,7 @@ export async function openChats(
     let retainedEmpty = false;
     for (const item of catalog.items) {
       if (item.status === "deleted") continue;
+      if (item.kind === "tangent") continue;
       const agent = await tx.doc(AgentDoc, item.id as ConversationId);
       await configure(tx, item.id as ConversationId, {
         ...defaults,
@@ -159,6 +270,8 @@ export async function openChats(
       const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
       if (!item || item.status)
         throw new BranchOperationError("Chat is archived or unavailable.", item ? 409 : 404);
+      if (item.kind === "tangent")
+        throw new BranchOperationError("Editing a tangent into a new chat is not supported.", 409);
     },
     async reserveBranchRequest(tx, request) {
       return reserveBranchIdentity(tx, request.requestId, "edit");
@@ -187,6 +300,16 @@ export async function openChats(
     const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
     const item = catalog?.items.find((item) => String(item.id) === id && item.status !== "deleted");
     if (!item) return undefined;
+    const parent =
+      item.kind === "tangent"
+        ? catalog?.items.find(
+            (entry) =>
+              entry.id === item.tangentParentId &&
+              entry.status !== "deleted" &&
+              entry.kind !== "tangent",
+          )
+        : undefined;
+    if (item.kind === "tangent" && !parent) return undefined;
     const conversation =
       Number(id) === root.id
         ? root
@@ -196,11 +319,28 @@ export async function openChats(
       const metadata = await tx.doc(CatalogDoc);
       const current = metadata.items.find((entry) => entry.id === conversation.id);
       if (!current || current.status === "deleted") throw new AttachmentAccessError(404);
-      if (current.status === "archived") throw new AttachmentAccessError(409);
+      const currentParent =
+        current.kind === "tangent"
+          ? metadata.items.find(
+              (entry) => entry.id === current.tangentParentId && entry.status !== "deleted",
+            )
+          : undefined;
+      if (current.kind === "tangent" && !currentParent) throw new AttachmentAccessError(404);
+      if (
+        current.status === "archived" ||
+        currentParent?.status === "archived" ||
+        (current.kind === "tangent" && current.tangentLifecycle !== "open")
+      )
+        throw new AttachmentAccessError(409);
+    };
+    const assertCanAdmit = async (tx: Tx) => {
+      await assertWritable(tx);
+      await assertTangentStarted(tx, conversation.id);
     };
     return {
       conversation,
       assertWritable,
+      assertCanAdmit,
       accounting: () => accounting(harness, conversation.id),
       context: () => inspectContext(harness, conversation, models),
       configuration: async () => ({
@@ -216,10 +356,7 @@ export async function openChats(
         if (!choice || !choice.thinkingLevels.includes(next.thinkingLevel))
           throw new ChatLifecycleError("Model or thinking level is unavailable.", 409);
         await harness.commit(async (tx) => {
-          const catalog = await tx.doc(CatalogDoc);
-          const item = catalog.items.find((item) => item.id === conversation.id);
-          if (!item || item.status)
-            throw new ChatLifecycleError("Restore this chat before changing configuration.", 409);
+          await assertCanAdmit(tx);
           if (await directShellHasUnsettled(tx, conversation.id))
             throw new ChatLifecycleError("A direct shell command is running.", 409);
           const agent = await tx.doc(AgentDoc, conversation.id);
@@ -236,7 +373,10 @@ export async function openChats(
           });
         }, BACKGROUND_CONTEXT);
       },
-      archived: item.status === "archived",
+      archived:
+        item.status === "archived" ||
+        parent?.status === "archived" ||
+        (item.kind === "tangent" && item.tangentLifecycle !== "open"),
       shellStatus: async (requestId?: string) => {
         if (!(await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT)))
           return undefined;
@@ -298,7 +438,7 @@ export async function openChats(
       compact: async (instructions?: string) => {
         const reservation = randomUUID();
         await conversation.commit(async (tx) => {
-          await assertWritable(tx);
+          await assertCanAdmit(tx);
           if (
             (await directShellHasUnsettled(tx, conversation.id)) ||
             (await compactIntentUnsettled(tx, conversation.id))
@@ -387,7 +527,7 @@ export async function openChats(
         harness.commit(async (tx) => {
           const metadata = await tx.doc(CatalogDoc);
           const item = metadata.items.find((entry) => entry.id === conversation.id);
-          await assertWritable(tx);
+          await assertCanAdmit(tx);
           if (
             draft.requestId &&
             (await directShellRequestExists(tx, conversation.id, draft.requestId))
@@ -402,6 +542,7 @@ export async function openChats(
           if (options?.draft?.attempt && !attempt) throw new DraftAttemptConflict();
           if (attempt) {
             const original = attempt.record;
+            const expectedText = draftInputText(original.text, original.intent);
             const submittedText =
               draft.type !== "input"
                 ? undefined
@@ -412,7 +553,9 @@ export async function openChats(
                       .join("");
             if (
               draft.type !== "input" ||
-              submittedText !== modelInputText(original.text) ||
+              expectedText === undefined ||
+              (original.intent !== undefined && item?.kind === "tangent") ||
+              submittedText !== expectedText ||
               (draft.whenBusy ?? "reject") !== original.mode ||
               (original.mode === "steer" && draft.whenIdle !== "reject") ||
               !options?.draft ||
@@ -421,7 +564,7 @@ export async function openChats(
               JSON.stringify(options.draft.images) !== JSON.stringify(original.images) ||
               options.digest !==
                 imageRequestDigest({
-                  text: modelInputText(original.text),
+                  text: expectedText,
                   images: original.images,
                   mode: original.mode,
                 })
@@ -487,6 +630,9 @@ export async function openChats(
     async canEdit(id: string, at: string) {
       const scoped = await resolve(id);
       if (!scoped || scoped.archived) return false;
+      const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
+      if (catalog?.items.some((item) => String(item.id) === id && item.kind === "tangent"))
+        return false;
       const entryId = Number(at) as EntryId;
       const page = await scoped.conversation.entries(
         { minEntryId: entryId, maxEntryId: entryId },
@@ -523,7 +669,7 @@ export async function openChats(
       const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
       const chats = await Promise.all(
         (catalog?.items ?? [])
-          .filter((item) => item.status !== "deleted")
+          .filter((item) => item.status !== "deleted" && item.kind !== "tangent")
           .map(async (item): Promise<ChatSummary> => {
             const live = await harness.snapshot(
               LiveDoc,
@@ -554,6 +700,8 @@ export async function openChats(
           (item) => String(item.id) === id && item.status !== "deleted",
         );
         if (!item) throw new ChatLifecycleError("Chat not found.", 404);
+        if (item.kind === "tangent")
+          throw new ChatLifecycleError("Tangent rename is not supported.", 409);
         if (item.status) throw new ChatLifecycleError("Restore this chat before renaming.", 409);
         if (item.title === title) return;
         if (item.title !== expected)
@@ -570,6 +718,8 @@ export async function openChats(
           (item) => String(item.id) === id && item.status !== "deleted",
         );
         if (!parent) throw new ChatLifecycleError("Source chat not found.", 404);
+        if (parent.kind === "tangent")
+          throw new ChatLifecycleError("Forking a tangent is unsupported.", 409);
         if (parent.status)
           throw new ChatLifecycleError("Restore the source chat before forking.", 409);
         const previous = catalog.forks?.find((request) => request.requestId === requestId);
@@ -626,6 +776,13 @@ export async function openChats(
         if (!item || (item.status === "deleted" && action !== "delete"))
           throw new ChatLifecycleError("Chat not found.", 404);
         if (item.status === "deleted") return;
+        if (item.kind === "tangent")
+          throw new ChatLifecycleError("Use tangent lifecycle controls.", 409);
+        if (
+          action !== "unarchive" &&
+          (await inspectParentTangents(tx, item.id as ConversationId)).length
+        )
+          throw new ChatLifecycleError("Conclude or archive open tangents first.", 409);
         if (!(await idle(tx, item.id)))
           throw new ChatLifecycleError(
             "Stop this chat and resolve queued work before archiving or deleting it.",
@@ -634,7 +791,12 @@ export async function openChats(
         if (action === "unarchive") {
           if (await empty(tx, item)) {
             for (const other of catalog.items)
-              if (other.id !== item.id && !other.status && (await empty(tx, other)))
+              if (
+                other.id !== item.id &&
+                other.kind !== "tangent" &&
+                !other.status &&
+                (await empty(tx, other))
+              )
                 throw new ChatLifecycleError(
                   "An empty chat is already open. Use that chat instead.",
                   409,
@@ -667,7 +829,7 @@ export async function openChats(
           return { id: existing.id, title: existing.title };
         }
         for (const item of catalog.items) {
-          if (!item.status && (await empty(tx, item))) {
+          if (item.kind !== "tangent" && !item.status && (await empty(tx, item))) {
             catalog.requests ??= [];
             catalog.requests.push({ requestId, id: item.id });
             return { id: item.id, title: item.title };

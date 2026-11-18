@@ -49,6 +49,7 @@ export function FeedbackAction() {
         !host.readOnly &&
         String(host.state?.conversationId) === host.chatId
       }
+      mutationAllowed={host.mutationAllowed}
     />
   );
 }
@@ -59,12 +60,14 @@ function FeedbackControl({
   modelIndex,
   active: isActive,
   writable,
+  mutationAllowed,
 }: {
   chatId: string;
   entryId: number;
   modelIndex: number;
   active: boolean;
   writable: boolean;
+  mutationAllowed?: (() => boolean) | undefined;
 }) {
   const [view, setView] = useState<FeedbackView>();
   const [open, setOpen] = useState(false);
@@ -77,10 +80,11 @@ function FeedbackControl({
   const [draftTouched, setDraftTouched] = useState(false);
   const generation = useRef(0);
   const canWrite = useRef(writable);
-  canWrite.current = writable;
+  canWrite.current = writable && mutationAllowed?.() !== false;
   const url = `/api/chats/${chatId}/feedback/${entryId}/${modelIndex}`;
 
   async function refresh() {
+    if (!isActive || mutationAllowed?.() === false) return;
     const current = ++generation.current;
     try {
       const response = await fetch(url);
@@ -92,13 +96,14 @@ function FeedbackControl({
         next.target.modelIndex !== modelIndex
       )
         throw new Error("Mismatched feedback target");
-      if (generation.current === current) {
+      if (generation.current === current && mutationAllowed?.() !== false) {
         setView(next);
         setError(undefined);
         setConflict(false);
       }
     } catch {
-      if (generation.current === current) setError("Feedback unavailable. Refresh before saving.");
+      if (generation.current === current && mutationAllowed?.() !== false)
+        setError("Feedback unavailable. Refresh before saving.");
     }
   }
   useEffect(() => {
@@ -112,7 +117,7 @@ function FeedbackControl({
   }, [url, isActive]);
 
   async function send(payload: Attempt) {
-    if (busy || !canWrite.current || view?.readOnly) return;
+    if (busy || !canWrite.current || mutationAllowed?.() === false || view?.readOnly) return;
     const current = ++generation.current;
     setAttempt(payload);
     setBusy(true);
@@ -123,7 +128,7 @@ function FeedbackControl({
         body: JSON.stringify(payload),
       });
       if (response.status === 409) {
-        if (generation.current === current && canWrite.current) {
+        if (generation.current === current && canWrite.current && mutationAllowed?.() !== false) {
           setAttempt(undefined);
           setConflict(true);
           setError("Feedback changed or is read-only. Refresh before trying again.");
@@ -138,7 +143,7 @@ function FeedbackControl({
         next.target.modelIndex !== modelIndex
       )
         throw new Error("Mismatched feedback target");
-      if (generation.current === current && canWrite.current) {
+      if (generation.current === current && canWrite.current && mutationAllowed?.() !== false) {
         // A retry receipt describes the original operation, not necessarily the
         // current value if another writer has since changed or cleared it.
         const latestResponse = await fetch(url);
@@ -150,7 +155,8 @@ function FeedbackControl({
           latest.target.modelIndex !== modelIndex
         )
           throw new Error("Mismatched feedback target");
-        if (generation.current !== current || !canWrite.current) return;
+        if (generation.current !== current || !canWrite.current || mutationAllowed?.() === false)
+          return;
         setView(latest);
         setAttempt(undefined);
         setError(undefined);
@@ -168,14 +174,23 @@ function FeedbackControl({
     setOpen(true);
   };
   const submit = (value: Attempt["value"]) => {
-    if (!view || conflict || attempt || busy || !canWrite.current || view.readOnly) return;
+    if (
+      !view ||
+      conflict ||
+      attempt ||
+      busy ||
+      !canWrite.current ||
+      mutationAllowed?.() === false ||
+      view.readOnly
+    )
+      return;
     void send({ requestId: crypto.randomUUID(), expectedRevision: view.revision, value });
   };
   return (
     <>
       <TooltipIconButton
         tooltip="Helpful"
-        disabled={!writable || !!view?.readOnly}
+        disabled={!writable || mutationAllowed?.() === false || !!view?.readOnly}
         aria-pressed={view?.value?.vote === "helpful"}
         onClick={() => choose("helpful")}
       >
@@ -183,7 +198,7 @@ function FeedbackControl({
       </TooltipIconButton>
       <TooltipIconButton
         tooltip="Not helpful"
-        disabled={!writable || !!view?.readOnly}
+        disabled={!writable || mutationAllowed?.() === false || !!view?.readOnly}
         aria-pressed={view?.value?.vote === "unhelpful"}
         onClick={() => choose("unhelpful")}
       >
@@ -219,6 +234,7 @@ function FeedbackControl({
             {(conflict || !view) && (
               <Button
                 variant="outline"
+                disabled={!isActive || mutationAllowed?.() === false}
                 onClick={() => {
                   void refresh();
                 }}
@@ -229,7 +245,7 @@ function FeedbackControl({
             {attempt && (
               <Button
                 variant="outline"
-                disabled={busy || !writable || !!view?.readOnly}
+                disabled={busy || !writable || mutationAllowed?.() === false || !!view?.readOnly}
                 onClick={() => {
                   void send(attempt);
                 }}
@@ -240,14 +256,29 @@ function FeedbackControl({
             {view?.value && (
               <Button
                 variant="outline"
-                disabled={busy || !!attempt || conflict || !writable || view.readOnly}
+                disabled={
+                  busy ||
+                  !!attempt ||
+                  conflict ||
+                  !writable ||
+                  mutationAllowed?.() === false ||
+                  view.readOnly
+                }
                 onClick={() => submit(null)}
               >
                 Clear feedback
               </Button>
             )}
             <Button
-              disabled={!view || busy || !!attempt || conflict || !writable || !!view?.readOnly}
+              disabled={
+                !view ||
+                busy ||
+                !!attempt ||
+                conflict ||
+                !writable ||
+                mutationAllowed?.() === false ||
+                !!view?.readOnly
+              }
               onClick={() => submit({ vote, comment: comment || null })}
             >
               Save feedback

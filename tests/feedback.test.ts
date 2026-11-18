@@ -5,6 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createApp } from "../src/server/app.ts";
 import { openChat } from "../src/server/chat.ts";
+import { CatalogDoc } from "../src/server/chats.ts";
 import { FeedbackViewSchema } from "../src/shared/feedback.ts";
 import { testModels } from "./models.ts";
 
@@ -142,6 +143,39 @@ describe("private response feedback", () => {
     ).toBe(409);
     await chat.chats.change(id, "delete");
     expect((await app.request(url())).status).toBe(404);
+  });
+  it("checks tangent and parent lifecycle within the feedback transaction", async () => {
+    const app = createApp(chat);
+    const parent = String(chat.conversation.id);
+    const fork = await chat.chats.fork(parent, crypto.randomUUID(), String(entryId));
+    await chat.conversation.commit(async (tx) => {
+      const item = (await tx.doc(CatalogDoc)).items.find((value) => String(value.id) === fork.id)!;
+      item.kind = "tangent";
+      item.tangentParentId = Number(parent);
+      item.tangentLifecycle = "open";
+    }, BACKGROUND_CONTEXT);
+    expect((await app.request(url(fork.id), post(change))).status).toBe(200);
+    await chat.conversation.commit(async (tx) => {
+      (await tx.doc(CatalogDoc)).items.find((value) => String(value.id) === parent)!.status =
+        "archived";
+    }, BACKGROUND_CONTEXT);
+    expect(FeedbackViewSchema.parse(await (await app.request(url(fork.id))).json()).readOnly).toBe(
+      true,
+    );
+    expect(
+      (
+        await app.request(
+          url(fork.id),
+          post({ requestId: "blocked", expectedRevision: 1, value: null }),
+        )
+      ).status,
+    ).toBe(409);
+    await chat.conversation.commit(async (tx) => {
+      (await tx.doc(CatalogDoc)).items.find((value) => String(value.id) === parent)!.status =
+        "deleted";
+    }, BACKGROUND_CONTEXT);
+    expect((await app.request(url(fork.id))).status).toBe(404);
+    expect(provider.calls).toHaveLength(1);
   });
   it("uses original model-message indexes independently within an SDK entry", async () => {
     const entries = await chat.conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);

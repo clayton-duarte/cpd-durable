@@ -51,6 +51,7 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
+import { listTemplates, readTemplate } from "./template-routes.ts";
 import { ModelPolicyChangeSchema } from "../shared/model-policy.ts";
 import { ModelPolicyError } from "./model-policy.ts";
 import { BranchIdentityError } from "./branch-identity.ts";
@@ -64,10 +65,28 @@ import {
   EditBranchRequestSchema,
   RecentEditOperationsSchema,
 } from "../shared/branch-operations.ts";
+import { SavedPromptError } from "./saved-prompts.ts";
+import {
+  CreateSavedPromptSchema,
+  UpdateSavedPromptSchema,
+  RemoveSavedPromptSchema,
+  ListSavedPromptsSchema,
+} from "../shared/saved-prompts.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
-    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments" | "modelPolicy">>,
+    Partial<
+      Pick<
+        Awaited<ReturnType<typeof openChat>>,
+        | "chats"
+        | "attachments"
+        | "savedPrompts"
+        | "modelPolicy"
+        | "tangents"
+        | "workers"
+        | "handoffs"
+      >
+    >,
 ) {
   const app = new Hono();
   const histories = new Map<string, ReturnType<typeof createHistory>>();
@@ -115,6 +134,46 @@ export function createApp(
       "/",
       createFeedbackRoutes(async (id) => (await chat.chats?.resolve(id))?.conversation),
     );
+  if (chat.tangents) app.route("/", chat.tangents.routes);
+  if (chat.workers) app.route("/", chat.workers);
+  if (chat.handoffs) app.route("/", chat.handoffs);
+
+  app.get("/api/saved-prompts", async (c) => {
+    const query = c.req.query();
+    const parsed = ListSavedPromptsSchema.safeParse({
+      ...query,
+      ...(query["limit"] === undefined ? {} : { limit: Number(query["limit"]) }),
+    });
+    if (!parsed.success) return c.json({ error: "Invalid saved prompt page." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.list(parsed.data.cursor, parsed.data.limit));
+  });
+  app.post("/api/saved-prompts", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = CreateSavedPromptSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success) return c.json({ error: "Invalid saved prompt." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.create(parsed.data), 201);
+  });
+  app.put("/api/saved-prompts/:id", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = UpdateSavedPromptSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success || parsed.data.id !== c.req.param("id"))
+      return c.json({ error: "Invalid saved prompt." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.update(parsed.data));
+  });
+  app.delete("/api/saved-prompts/:id", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = RemoveSavedPromptSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success || parsed.data.id !== c.req.param("id"))
+      return c.json({ error: "Invalid saved prompt." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.remove(parsed.data));
+  });
 
   app.get("/api/model-policy", async (c) => {
     if (!chat.modelPolicy) return c.json({ error: "Model settings unavailable." }, 503);
@@ -145,8 +204,9 @@ export function createApp(
   async function authorizedResolver(ids: string[]): Promise<ResolveTranscript | undefined> {
     const chats = chat.chats;
     if (!chats) return undefined;
-    const catalog = await chats.list();
-    if (ids.some((id) => !catalog.chats.some((item) => item.id === id))) return undefined;
+    // An explicit, validated scope may name a tangent even though the main sidebar omits it.
+    const scopes = await Promise.all(ids.map((id) => chats.resolve(id)));
+    if (scopes.some((scope) => !scope)) return undefined;
     return async (id) => {
       if (!ids.includes(id)) return undefined;
       const resolved = await chats.resolve(id);
@@ -157,13 +217,15 @@ export function createApp(
   // publish its result if a selected chat was deleted or changed archive state.
   async function stillAuthorized(report: TranscriptReport): Promise<boolean> {
     if (!chat.chats) return false;
-    const catalog = await chat.chats.list();
-    return report.conversations.every((item) => {
-      const current = catalog.chats.find((entry) => entry.id === item.conversationId);
+    const currentScopes = await Promise.all(
+      report.conversations.map((item) => chat.chats!.resolve(item.conversationId)),
+    );
+    return report.conversations.every((item, index) => {
+      const current = currentScopes[index];
       return (
         current !== undefined &&
-        (current.status === "archived") === item.archived &&
-        (report.scope.includeArchived || current.status !== "archived")
+        current.archived === item.archived &&
+        (report.scope.includeArchived || !current.archived)
       );
     });
   }
@@ -302,6 +364,7 @@ export function createApp(
             conversation: chat.conversation,
             archived: false,
             assertWritable: async () => {},
+            assertCanAdmit: async () => {},
             accounting: async () => {
               throw new Error("Accounting unavailable");
             },
@@ -456,7 +519,7 @@ export function createApp(
     try {
       return c.json(
         {
-          id: String(await admitDirectShell(scope.conversation, parsed.data, scope.assertWritable)),
+          id: String(await admitDirectShell(scope.conversation, parsed.data, scope.assertCanAdmit)),
         },
         202,
       );
@@ -509,6 +572,31 @@ export function createApp(
     return c.json({ status: await answerQuestion(c.get("scope"), result.data) });
   });
   routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
+  routes.get("/templates", async (c) => {
+    if (!c.req.param("chatId") || !chat.chats) return c.json({ error: "Chat not found." }, 404);
+    const scope = c.get("scope");
+    const result = await listTemplates(scope);
+    // Catalog membership is rechecked after filesystem reads. A later change
+    // can still race the response; filesystem and SDK state are not atomic.
+    if (!(await chat.chats.resolve(String(scope.conversation.id))))
+      return c.json({ error: "Chat not found." }, 404);
+    return c.json(result);
+  });
+  routes.get("/templates/:id", async (c) => {
+    if (!c.req.param("chatId") || !chat.chats) return c.json({ error: "Chat not found." }, 404);
+    const id = c.req.param("id");
+    const fingerprint = c.req.query("fingerprint") ?? "";
+    if (!/^[a-f0-9]{64}$/.test(id) || !/^[a-f0-9]{64}$/.test(fingerprint))
+      return c.json({ error: "Invalid template request." }, 400);
+    const scope = c.get("scope");
+    const result = await readTemplate(scope, id, fingerprint);
+    // Archived chats remain readable; deleted chats do not.
+    if (!(await chat.chats.resolve(String(scope.conversation.id))))
+      return c.json({ error: "Chat not found." }, 404);
+    if (!result)
+      return c.json({ error: "Template changed or unavailable. Refresh the list." }, 409);
+    return c.json(result);
+  });
   routes.get("/context", async (c) => c.json(await c.get("scope").context()));
   routes.get("/configuration", async (c) => c.json(await c.get("scope").configuration()));
   routes.post("/configuration", async (c) => {
@@ -663,6 +751,7 @@ export function createApp(
   app.onError((error, c) =>
     error instanceof ChatLifecycleError ||
     error instanceof AttachmentAccessError ||
+    error instanceof SavedPromptError ||
     error instanceof ModelPolicyError ||
     error instanceof DraftAttemptConflict ||
     error instanceof RegenerationError ||

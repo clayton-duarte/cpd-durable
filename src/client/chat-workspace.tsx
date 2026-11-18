@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -9,7 +9,7 @@ import { ThreadListSidebar } from "@/components/assistant-ui/elements/threadlist
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { ChatCatalogSchema, ChatSummarySchema, type ChatCatalog } from "../shared/chats.ts";
-import { ChatPage } from "./chat-page.tsx";
+import { MainThreadView } from "./tangents/main-thread-view.tsx";
 import { ApiErrorSchema } from "../shared/chat.ts";
 import { MessageBranches } from "@/components/assistant-ui/elements/message-branches";
 import { Button } from "@/components/ui/button";
@@ -50,6 +50,7 @@ export function ChatWorkspace() {
 
 function Workspace() {
   const { chatId } = useParams({ from: "/chats/{-$chatId}" });
+  const search = useSearch({ from: "/chats/{-$chatId}" });
   const navigate = useNavigate({ from: "/chats/{-$chatId}" });
   const sidebar = useSidebar();
   const [catalog, setCatalog] = useState<ChatCatalog>();
@@ -216,7 +217,7 @@ function Workspace() {
 
   function switchChat(id: string) {
     sidebar.setOpenMobile(false);
-    void navigate({ params: { chatId: id } });
+    void navigate({ params: { chatId: id }, search: {} });
   }
   async function create() {
     if (inFlight.current || managementInFlight.current) return;
@@ -632,12 +633,26 @@ function Workspace() {
               className="absolute inset-0 flex min-h-0 flex-col"
               style={{ visibility: id === selected?.id ? "visible" : "hidden" }}
             >
-              <ChatPage
-                chatId={id}
+              <MainThreadView
+                mainId={id}
+                title={catalog?.chats.find((item) => item.id === id)?.title ?? "Main chat"}
                 draftGuards={draftGuards}
                 onUnsavedDraft={onUnsavedDraft}
                 active={id === selected?.id}
                 readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
+                selectedTangent={
+                  id === selected?.id && search.tangent !== undefined
+                    ? String(search.tangent)
+                    : undefined
+                }
+                onSelectTangent={(tangent) => {
+                  if (id === activeChatId.current)
+                    void navigate({ params: { chatId: id }, search: { tangent: Number(tangent) } });
+                }}
+                onCloseTangent={() => {
+                  if (id === activeChatId.current)
+                    void navigate({ params: { chatId: id }, search: {} });
+                }}
                 onFork={(entryId) => {
                   if (managementInFlight.current || inFlight.current || id !== activeChatId.current)
                     return;
