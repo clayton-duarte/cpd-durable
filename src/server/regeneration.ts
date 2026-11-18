@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   defineDoc,
+  AgentDoc,
   InboxDoc,
   LiveDoc,
   type ConversationId,
@@ -22,6 +23,9 @@ type Operation = {
   entryId: number;
   branchId: number;
   forkEntryId: number;
+  agentDigest: string;
+  headMarkerId: number | null;
+  headId: number | null;
   submissionId?: number;
 };
 
@@ -72,6 +76,10 @@ function receipt(operation: Operation): RegenerationReceipt {
   };
 }
 
+// First slice supports one completed, nonempty, text-only assistant message.
+// Reasoning, tool calls, multimessage entries and other formats are unsupported.
+// A later confirmation must warn that continued generation may repeat external
+// tool effects; prior effects are not undone and exactly-once is not promised.
 export function regenerableAnswer(entry: EntryRecord | undefined): boolean {
   const message = entry?.model?.[0];
   return (
@@ -100,7 +108,7 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
     );
     if (page.items[0]?.id !== entryId) throw new RegenerationError("Answer is not visible.", 404);
     if (!regenerableAnswer(page.items[0]))
-      throw new RegenerationError("Answer cannot be regenerated safely.", 409);
+      throw new RegenerationError("This answer format is not supported for regeneration.", 409);
     const at = page.items[1]?.id;
     if (at === undefined) throw new RegenerationError("Unanswered context unavailable.", 409);
     // Public SDK as-of view is exactly the context inherited by fork(at).
@@ -136,6 +144,7 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
       );
       const recordBranchRequest = await catalog.reserveBranchRequest(tx, request);
       const branch = await tx.forkConversation(sourceId, at, { ownership: { kind: "ownerless" } });
+      const agentDigest = admissionDigest(await tx.doc(AgentDoc, branch.id));
       await catalog.register(tx, { sourceId, entryId, branchId: branch.id, forkEntryId: at });
       recordSource();
       recordBranchRequest();
@@ -145,6 +154,9 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
         entryId,
         branchId: branch.id,
         forkEntryId: at,
+        agentDigest,
+        headMarkerId: view.head?.id ?? null,
+        headId: view.head?.head ?? null,
       };
       operations.operations.push(operation);
       return receipt(operation);
@@ -166,8 +178,6 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
       BACKGROUND_CONTEXT,
     );
     if (!branch) throw new RegenerationError("Branch unavailable.", 404);
-    const view = await branch.context(BACKGROUND_CONTEXT);
-    const tail = view.messages.at(-1);
     return harness.commit(async (tx) => {
       await catalog.requireActive(tx, initial.sourceId as ConversationId);
       const operation = (await tx.doc(RegenerationsDoc)).operations.find(
@@ -185,12 +195,16 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
       const latest = await tx.latestEntryId(branch.id);
       const live = await tx.doc(LiveDoc, branch.id);
       const inbox = await tx.doc(InboxDoc, branch.id);
+      const head = await tx.latestHeadMarker(branch.id);
+      const agentDigest = admissionDigest(await tx.doc(AgentDoc, branch.id));
       if (
         latest !== operation.forkEntryId ||
         live.run ||
         live.compactions?.length ||
         inbox.items.length ||
-        (tail?.role !== "user" && tail?.role !== "toolResult")
+        (head?.id ?? null) !== operation.headMarkerId ||
+        (head?.head ?? null) !== operation.headId ||
+        agentDigest !== operation.agentDigest
       )
         throw new RegenerationError("Prepared branch changed before admission.", 409);
       const record = await checkAdmissionRequest(
