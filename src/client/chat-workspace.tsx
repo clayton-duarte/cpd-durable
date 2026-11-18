@@ -253,20 +253,23 @@ function Workspace() {
             }}
           />
         )}
-        {mounted.map((id) => (
-          <div
-            key={id}
-            hidden={id !== selected?.id}
-            className="min-h-0 flex-1"
-            style={{ display: id === selected?.id ? "flex" : "none", flexDirection: "column" }}
-          >
-            <ChatPage
-              chatId={id}
-              active={id === selected?.id}
-              readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
-            />
-          </div>
-        ))}
+        <div className="relative min-h-0 flex-1">
+          {mounted.map((id) => (
+            <div
+              key={id}
+              inert={id !== selected?.id}
+              aria-hidden={id !== selected?.id}
+              className="absolute inset-0 flex min-h-0 flex-col"
+              style={{ visibility: id === selected?.id ? "visible" : "hidden" }}
+            >
+              <ChatPage
+                chatId={id}
+                active={id === selected?.id}
+                readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
+              />
+            </div>
+          ))}
+        </div>
       </SidebarInset>
       <AlertDialog
         open={deleting !== null}
