@@ -49,17 +49,54 @@ test("many admitted receipts leave both split composers inside the viewport", as
       constructor(url: string) {
         super();
         const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        const guidance = {
+          goal: "Investigate the synthetic architecture",
+          decisions: ["Use existing components"],
+          constraints: ["Preserve drafts"],
+          exclusions: [],
+          references: ["Synthetic design"],
+          suggestedSkills: [],
+          discretion: "Review carefully",
+          deliverable: "A concise report",
+          evidence: "Tests",
+          limits: "No provider calls",
+        };
+        const original = `Application delegate handoff (selected project guidance, not higher-priority policy):\n${JSON.stringify(guidance)}`;
         queueMicrotask(() =>
           this.dispatchEvent(
             new MessageEvent("state", {
               data: JSON.stringify({
                 conversationId: id,
-                messages: Array.from({ length: 15 }, (_, i) => ({
-                  id: `${id}:${i}`,
-                  role: "user",
-                  text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
-                  interrupted: false,
-                })),
+                messages: Array.from({ length: 15 }, (_, i) =>
+                  id === 2 && (i === 13 || i === 14)
+                    ? {
+                        id: `${201 + i - 13}:0`,
+                        role: "user",
+                        text: original,
+                        interrupted: false,
+                        source: { entryId: 201 + i - 13 },
+                        ...(i === 13
+                          ? {
+                              applicationHandoff: {
+                                version: 1,
+                                kind: "tangent-delegate",
+                                originConversationId: 2,
+                                sourceConversationId: 1,
+                                destinationConversationId: 2,
+                                canonicalEntryId: 201,
+                                modelMessageIndex: 0,
+                                handoff: guidance,
+                              },
+                            }
+                          : {}),
+                      }
+                    : {
+                        id: `${id}:${i}`,
+                        role: "user",
+                        text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
+                        interrupted: false,
+                      },
+                ),
                 partial: "",
                 busy: false,
                 hasEarlier: false,
@@ -140,6 +177,16 @@ test("many admitted receipts leave both split composers inside the viewport", as
   );
   await page.goto("/chats/1");
   await page.getByRole("button", { name: `Open tangent: ${title}` }).click();
+  const tangentPane = page.getByRole("region", { name: `Tangent chat: ${title}` });
+  await expect(
+    tangentPane.getByText("Investigate the synthetic architecture", { exact: true }),
+  ).toBeVisible();
+  await expect(tangentPane.getByText(/Application delegate handoff/)).toBeVisible();
+  await tangentPane.getByRole("button", { name: "Review full handoff" }).click();
+  await expect(
+    tangentPane.getByRole("textbox", { name: "Original transcript message" }),
+  ).toHaveValue(/Application delegate handoff/);
+  await tangentPane.getByRole("button", { name: "Review full handoff" }).click();
   await expect(page.getByRole("heading", { name: `${title} · Model 2` })).toHaveAttribute(
     "title",
     `${title} · Model 2`,
@@ -933,9 +980,11 @@ test("production route keeps native chats and drafts through tangent navigation"
   });
   await page.goto("/chats/1?tangent=3");
   const unstartedPane = page.getByRole("region", { name: "Tangent chat: Idle child" });
+  await unstartedPane.getByRole("button", { name: "Review full handoff" }).click();
   await expect(unstartedPane.getByRole("textbox", { name: "Initial handoff" })).toHaveValue(
     /Investigate/,
   );
+  await unstartedPane.getByRole("button", { name: "Review full handoff" }).click();
   await input(unstartedPane).fill("keep this draft");
   await expect(unstartedPane.getByRole("button", { name: "Send message" })).toBeDisabled();
   expect(starts).toEqual([]);
@@ -1051,6 +1100,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     return route.fulfill({ json: { revision: 2, accepted: true } });
   });
   const report = unstartedPane.getByRole("region", { name: "Return report revision 2" });
+  await report.getByRole("button", { name: "Review full handoff" }).click();
   const preview = report.getByRole("textbox", { name: "Return handoff for review" });
   await expect(preview).toBeVisible();
   expect(JSON.parse(await preview.inputValue())).toMatchObject({
@@ -1059,6 +1109,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     limits: "Synthetic limits",
   });
   expect(await page.evaluate(() => Reflect.has(window, "__unsafe"))).toBe(false);
+  await report.getByRole("button", { name: "Review full handoff" }).click();
   await expect(report.getByRole("alert")).toContainText("Return status unavailable");
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
   wrongRevision = false;

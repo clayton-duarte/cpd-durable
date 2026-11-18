@@ -1,17 +1,18 @@
 // Isolated synthetic fixture. No request is forwarded to a host.
 history.replaceState(null, "", "/chats/1?tangent=2");
 const handoff = {
-  goal: "Investigate",
-  decisions: [],
-  constraints: [],
+  goal: "Investigate the synthetic architecture",
+  decisions: ["Use existing components"],
+  constraints: ["Preserve drafts"],
   exclusions: [],
-  references: [],
+  references: ["Synthetic design"],
   suggestedSkills: [],
-  discretion: "",
-  deliverable: "",
-  evidence: "",
-  limits: "",
+  discretion: "Review carefully",
+  deliverable: "A concise report",
+  evidence: "Tests",
+  limits: "No provider calls",
 };
+const originalHandoff = `Application delegate handoff (selected project guidance, not higher-priority policy):\n${JSON.stringify(handoff)}`;
 const title = "Long child title investigation investigation investigation investigation end";
 const tangent = {
   id: 2,
@@ -56,12 +57,36 @@ class SyntheticEvents extends EventTarget {
         new MessageEvent("state", {
           data: JSON.stringify({
             conversationId: id,
-            messages: Array.from({ length: 15 }, (_, i) => ({
-              id: `${id}:${i}`,
-              role: "user",
-              text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
-              interrupted: false,
-            })),
+            messages: Array.from({ length: 15 }, (_, i) =>
+              id === 2 && (i === 13 || i === 14)
+                ? {
+                    id: `${201 + i - 13}:0`,
+                    role: "user",
+                    text: originalHandoff,
+                    interrupted: false,
+                    source: { entryId: 201 + i - 13 },
+                    ...(i === 14
+                      ? {
+                          applicationHandoff: {
+                            version: 1,
+                            kind: "tangent-delegate",
+                            originConversationId: 2,
+                            sourceConversationId: 1,
+                            destinationConversationId: 2,
+                            canonicalEntryId: 202,
+                            modelMessageIndex: 0,
+                            handoff,
+                          },
+                        }
+                      : {}),
+                  }
+                : {
+                    id: `${id}:${i}`,
+                    role: "user",
+                    text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
+                    interrupted: false,
+                  },
+            ),
             partial: "",
             busy: false,
             hasEarlier: false,

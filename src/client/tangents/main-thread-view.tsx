@@ -8,7 +8,7 @@ import { TangentWorkspace } from "./workspace.tsx";
 import { WorkerPanel } from "../workers/panel.tsx";
 import { ModelPolicyViewSchema } from "../../shared/model-policy.ts";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { HandoffPreview } from "./handoff-preview";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -84,10 +84,12 @@ function StartPanel({
         here.
       </p>
       {item.latestHandoff.kind === "delegate" && (
-        <Textarea
-          readOnly
-          aria-label="Initial handoff"
-          value={JSON.stringify(item.latestHandoff.handoff, null, 2)}
+        <HandoffPreview
+          handoff={item.latestHandoff.handoff}
+          kind="delegate"
+          placed={false}
+          original={JSON.stringify(item.latestHandoff.handoff, null, 2)}
+          originalLabel="Initial handoff"
         />
       )}
       {error && <p role="alert">{error}</p>}

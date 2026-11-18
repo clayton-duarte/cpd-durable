@@ -34,6 +34,8 @@ import { ForkMessageAction } from "@/fork-message-action";
 import { RegenerateMessageAction } from "@/regenerate-message-action";
 import { EditMessageAction } from "@/edit-message-action";
 import { FeedbackAction } from "@/feedback-action";
+import { ApplicationHandoffSchema } from "../../../../shared/application-handoff.ts";
+import { HandoffPreview } from "@/tangents/handoff-preview";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -873,6 +875,17 @@ const UserImagePart: ImageMessagePartComponent = (part) => (
 );
 
 const UserMessage: FC = () => {
+  const custom = useAuiState((s) => s.message.metadata.custom);
+  const content = useAuiState((s) => s.message.content);
+  const annotation = ApplicationHandoffSchema.safeParse(custom["applicationHandoff"]);
+  const handoff =
+    annotation.success &&
+    custom["sourceEntryId"] === annotation.data.canonicalEntryId &&
+    custom["durableId"] === `${annotation.data.canonicalEntryId}:0` &&
+    content.length === 1 &&
+    content[0]?.type === "text"
+      ? annotation.data
+      : undefined;
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
@@ -884,18 +897,33 @@ const UserMessage: FC = () => {
       <UserMessageAttachments />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-        <div className="aui-user-message-content peer bg-muted text-foreground rounded-(--composer-radius) px-4 py-2 wrap-break-word empty:hidden">
-          <MessagePrimitive.Parts>
-            {({ part }) =>
-              part.type === "text" ? (
-                <MessagePartPrimitive.Text className="whitespace-pre-wrap" />
-              ) : part.type === "file" ? (
-                <UserFilePart {...part} />
-              ) : part.type === "image" ? (
-                <UserImagePart {...part} />
-              ) : null
-            }
-          </MessagePrimitive.Parts>
+        <div
+          className={cn(
+            "aui-user-message-content peer text-foreground rounded-(--composer-radius) px-4 py-2 wrap-break-word empty:hidden",
+            !handoff && "bg-muted",
+          )}
+        >
+          {handoff && content[0]?.type === "text" ? (
+            <HandoffPreview
+              handoff={handoff.handoff}
+              kind={handoff.kind === "tangent-delegate" ? "delegate" : "return"}
+              placed
+              original={content[0].text}
+              originalLabel="Original transcript message"
+            />
+          ) : (
+            <MessagePrimitive.Parts>
+              {({ part }) =>
+                part.type === "text" ? (
+                  <MessagePartPrimitive.Text className="whitespace-pre-wrap" />
+                ) : part.type === "file" ? (
+                  <UserFilePart {...part} />
+                ) : part.type === "image" ? (
+                  <UserImagePart {...part} />
+                ) : null
+              }
+            </MessagePrimitive.Parts>
+          )}
         </div>
         <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
           <UserActionBar />

@@ -136,6 +136,19 @@ describe("interactive tangents", () => {
         destinationConversationId: child.id,
         modelMessageIndex: 0,
       });
+      for (const changed of [
+        { ...first, kind: "pi.system" },
+        { ...first, model: [...first.model!, first.model![0]!] },
+        { ...first, model: [{ role: "assistant", content: "not a user" }] },
+      ]) {
+        const invalid = firstPage.items.map((entry) =>
+          entry.id === first.id ? (changed as EntryRecord) : entry,
+        );
+        expect(
+          (await harness.commit((tx) => resolveApplicationHandoffs(tx, child.id, invalid), context))
+            .size,
+        ).toBe(0);
+      }
       const watcher = await child.watch(context);
       const snapshot = present(watcher.value, false, [], firstAnnotations);
       const original = snapshot.messages.find((message) => message.source?.entryId === first.id)!;

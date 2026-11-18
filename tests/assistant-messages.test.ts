@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { assistantMessages, projectAssistantMessages } from "../src/client/assistant-messages.ts";
-import type { ChatState } from "../src/shared/chat.ts";
+import { ChatStateSchema, type ChatState } from "../src/shared/chat.ts";
 
 const state: ChatState = {
   messages: [
@@ -15,6 +15,65 @@ const state: ChatState = {
 };
 
 describe("assistant-ui presentation adapter", () => {
+  it("copies validated handoff evidence without replacing canonical text", () => {
+    const handoff = {
+      version: 1 as const,
+      kind: "tangent-delegate" as const,
+      originConversationId: 2,
+      sourceConversationId: 1,
+      destinationConversationId: 2,
+      canonicalEntryId: 10,
+      modelMessageIndex: 0 as const,
+      handoff: {
+        goal: "Synthetic",
+        decisions: [],
+        constraints: [],
+        exclusions: [],
+        references: [],
+        suggestedSkills: [],
+        discretion: "",
+        deliverable: "",
+        evidence: "",
+        limits: "",
+      },
+    };
+    const message = {
+      id: "10:0",
+      role: "user" as const,
+      text: "canonical literal",
+      interrupted: false,
+      source: { entryId: 10 },
+      applicationHandoff: handoff,
+    };
+    const projected = assistantMessages({
+      ...state,
+      messages: [message],
+      partial: "",
+      busy: false,
+    });
+    expect(projected[0]?.content).toEqual([{ type: "text", text: "canonical literal" }]);
+    expect(projected[0]?.metadata?.custom?.["applicationHandoff"]).toEqual(handoff);
+    const mismatched = assistantMessages({
+      ...state,
+      messages: [{ ...message, source: { entryId: 11 } }],
+      partial: "",
+      busy: false,
+    });
+    expect(mismatched[0]?.metadata?.custom?.["applicationHandoff"]).toBeUndefined();
+    expect(mismatched[0]?.content).toEqual(projected[0]?.content);
+    for (const invalid of [
+      { ...handoff, modelMessageIndex: 1 },
+      { ...handoff, kind: "other" },
+      { ...handoff, canonicalEntryId: 99 },
+    ]) {
+      const parsed = ChatStateSchema.parse({
+        ...state,
+        messages: [{ ...message, applicationHandoff: invalid }],
+      });
+      expect(parsed.messages[0]?.applicationHandoff).toBeUndefined();
+      expect(parsed.messages[0]?.text).toBe("canonical literal");
+    }
+  });
   it("retains durable order, IDs, literal text and separate assistant entries", () => {
     const messages = assistantMessages(state);
     expect(messages.map((message) => message.id)).toEqual(["1:0", "2:0", "3:0", "live:partial"]);

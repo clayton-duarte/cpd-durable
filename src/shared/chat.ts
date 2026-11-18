@@ -110,23 +110,39 @@ export const MessageOutcomeSchema = z.enum([
   "length",
   "incomplete",
 ]);
-export const ChatMessageSchema = z.strictObject({
-  id: z.string(),
-  role: z.enum(["user", "assistant"]),
-  text: z.string(),
-  interrupted: z.boolean(),
-  parts: z.array(ChatPartSchema).optional(),
-  outcome: MessageOutcomeSchema.optional(),
-  applicationHandoff: ApplicationHandoffSchema.optional(),
-  source: z
-    .strictObject({
-      entryId: RecordIdSchema,
-      feedbackModelIndex: z.number().int().nonnegative().safe().optional(),
-      // Known SDK assistant entries and direct-shell result entries carry task attribution.
-      taskId: RecordIdSchema.optional(),
-    })
-    .optional(),
-});
+export const ChatMessageSchema = z
+  .strictObject({
+    id: z.string(),
+    role: z.enum(["user", "assistant"]),
+    text: z.string(),
+    interrupted: z.boolean(),
+    parts: z.array(ChatPartSchema).optional(),
+    outcome: MessageOutcomeSchema.optional(),
+    applicationHandoff: z.preprocess((value) => {
+      const result = ApplicationHandoffSchema.safeParse(value);
+      return result.success ? result.data : undefined;
+    }, ApplicationHandoffSchema.optional()),
+    source: z
+      .strictObject({
+        entryId: RecordIdSchema,
+        feedbackModelIndex: z.number().int().nonnegative().safe().optional(),
+        // Known SDK assistant entries and direct-shell result entries carry task attribution.
+        taskId: RecordIdSchema.optional(),
+      })
+      .optional(),
+  })
+  .transform((message) => {
+    const handoff = message.applicationHandoff;
+    if (
+      handoff &&
+      (message.role !== "user" ||
+        message.source?.entryId !== handoff.canonicalEntryId ||
+        message.id !== `${handoff.canonicalEntryId}:0`)
+    ) {
+      return { ...message, applicationHandoff: undefined };
+    }
+    return message;
+  });
 
 export const ChatStateSchema = z
   .strictObject({
@@ -185,13 +201,6 @@ export const ChatStateSchema = z
     if (new Set(state.messages.map((message) => message.id)).size !== state.messages.length)
       context.addIssue({ code: "custom", message: "Duplicate message identity" });
     for (const message of state.messages) {
-      if (
-        message.applicationHandoff &&
-        (message.role !== "user" ||
-          message.source?.entryId !== message.applicationHandoff.canonicalEntryId ||
-          message.id !== `${message.applicationHandoff.canonicalEntryId}:0`)
-      )
-        context.addIssue({ code: "custom", message: "Invalid handoff message source" });
       if (
         message.parts &&
         new Set(message.parts.map((part) => part.id)).size !== message.parts.length
