@@ -14,6 +14,7 @@ import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { useChatHost } from "./chat-host.ts";
 import { AccountingSchema, type Accounting } from "../shared/accounting.ts";
 import { ChatContext } from "./chat-context.tsx";
+import { ChatConfiguration } from "./chat-configuration.tsx";
 
 const dollars = (value: number) =>
   new Intl.NumberFormat("en-US", {
@@ -74,6 +75,7 @@ export function ChatDetails() {
           </DialogDescription>
         </DialogHeader>
         {open && host.active !== false && <ChatContext />}
+        {open && host.active !== false && <ChatConfiguration />}
         {error && (
           <ErrorState
             title="Details unavailable"
