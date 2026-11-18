@@ -25,3 +25,8 @@ export const EditBranchReceiptSchema = z.strictObject({
   submissionId: ChatIdSchema.optional(),
 });
 export type EditBranchReceipt = z.infer<typeof EditBranchReceiptSchema>;
+
+export const RecentEditOperationsSchema = z.strictObject({
+  operations: z.array(EditBranchReceiptSchema.extend({ requestId: z.uuid() })).max(20),
+});
+export type RecentEditOperation = z.infer<typeof RecentEditOperationsSchema>["operations"][number];

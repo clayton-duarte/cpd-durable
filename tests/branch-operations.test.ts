@@ -210,11 +210,19 @@ describe("durable edit branch foundation", () => {
     await open();
     expect(provider.calls).toHaveLength(0);
     const operations = createBranchOperations(harness, hooks);
+    expect(await operations.recent(root.id, target)).toEqual({
+      operations: [{ ...prepared, requestId: input.requestId }],
+    });
+    expect(provider.calls).toHaveLength(0);
+    await expect(operations.edit({ ...input, text: "Wrong" })).rejects.toThrow("identity");
     const accepted = await operations.edit(input);
     expect(accepted.branchId).toBe(prepared.branchId);
     expect((await operations.edit(input)).submissionId).toBe(accepted.submissionId);
     await finish();
     expect(provider.calls).toHaveLength(1);
+    expect(await operations.recent(root.id, target)).toEqual({
+      operations: [{ ...accepted, requestId: input.requestId }],
+    });
   });
 
   it("refuses admission if another action changed a prepared branch", async () => {
@@ -253,6 +261,7 @@ describe("durable edit branch foundation", () => {
       )!.status = "deleted";
     }, BACKGROUND_CONTEXT);
     await expect(operations.edit(input)).rejects.toThrow("unavailable");
+    expect((await operations.recent(root.id, target)).operations).toEqual([]);
     const ambiguous = await harness.commit(
       async (tx) =>
         (
@@ -302,6 +311,7 @@ describe("durable edit branch foundation", () => {
       (await tx.doc(CatalogDoc)).items.find((item) => item.id === root.id)!.status = "archived";
     }, BACKGROUND_CONTEXT);
     await expect(operations.edit(request(target))).rejects.toThrow("unavailable");
+    await expect(operations.recent(root.id, target)).rejects.toThrow("unavailable");
     expect(provider.calls).toHaveLength(0);
   });
 });
@@ -324,6 +334,24 @@ it("production catalog and routes admit edits without bypassing the unified requ
       `http://localhost:3000/api/chats/${id}/edit-eligibility/${entry.id}`,
     );
     expect(await eligibility.json()).toEqual({ eligible: true });
+    const inherited = await chat.chats.fork(id, crypto.randomUUID(), String(entry.id));
+    expect(
+      await (
+        await app.request(
+          `http://localhost:3000/api/chats/${inherited.id}/edit-eligibility/${entry.id}`,
+        )
+      ).json(),
+    ).toEqual({ eligible: true });
+    expect(
+      await (
+        await app.request(`http://localhost:3000/api/chats/${inherited.id}/edit-eligibility/999999`)
+      ).json(),
+    ).toEqual({ eligible: false });
+    expect(
+      await (
+        await app.request(`http://localhost:3000/api/chats/${id}/edit-eligibility/999999`)
+      ).json(),
+    ).toEqual({ eligible: false });
     const input = {
       sourceId: id,
       entryId: String(entry.id),
@@ -340,6 +368,16 @@ it("production catalog and routes admit edits without bypassing the unified requ
     expect(response.status).toBe(202);
     const receipt = (await response.json()) as { branchId: string; submissionId: string };
     expect(await (await post()).json()).toEqual(receipt);
+    const recovered = await app.request(
+      `http://localhost:3000/api/chats/${id}/edit-operations/${entry.id}`,
+    );
+    expect(await recovered.json()).toEqual({
+      operations: [{ ...receipt, requestId: input.requestId }],
+    });
+    expect(
+      (await app.request(`http://localhost:3000/api/chats/999999/edit-operations/${entry.id}`))
+        .status,
+    ).toBe(404);
     const branch = (await chat.chats.resolve(receipt.branchId))!;
     await expect(
       branch.admit(

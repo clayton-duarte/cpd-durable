@@ -4,6 +4,7 @@ test("edit uses the native composer, safely retries the same operation and keeps
   page,
 }) => {
   let created = false;
+  let recoveredRequestId = "";
   const requests: unknown[] = [];
   await page.route("**/api/**", (route) => route.abort());
   await page.route("**/api/chats", (route) =>
@@ -20,6 +21,27 @@ test("edit uses the native composer, safely retries the same operation and keeps
   await page.route("**/api/chats/1/edit-eligibility/*", (route) =>
     route.fulfill({ json: { eligible: route.request().url().endsWith("/10") } }),
   );
+  await page.route("**/api/chats/1/edit-operations/*", (route) =>
+    route.fulfill({
+      json: {
+        operations: created
+          ? [
+              {
+                type: "edit",
+                sourceId: "1",
+                entryId: "10",
+                branchId: "2",
+                forkEntryId: null,
+                configuration: "source-current-at-creation",
+                status: "admitted",
+                submissionId: "30",
+                requestId: recoveredRequestId,
+              },
+            ]
+          : [],
+      },
+    }),
+  );
   await page.route("**/api/chats/1/edit-branch", async (route) => {
     const body = route.request().postDataJSON() as {
       sourceId: string;
@@ -28,8 +50,11 @@ test("edit uses the native composer, safely retries the same operation and keeps
       text: string;
     };
     requests.push(body);
-    if (requests.length === 1)
+    if (requests.length === 1) {
+      created = true;
+      recoveredRequestId = body.requestId;
       return route.fulfill({ status: 503, json: { error: "Unavailable" } });
+    }
     if (requests.length === 2) return route.fulfill({ status: 409, json: { error: "Conflict" } });
     created = true;
     return route.fulfill({
@@ -103,15 +128,19 @@ test("edit uses the native composer, safely retries the same operation and keeps
   await page.getByRole("button", { name: "Create edited chat" }).click();
   await expect(page.getByRole("button", { name: "Retry same edit" })).toBeVisible();
   await page.getByRole("button", { name: "Retry same edit" }).click();
-  await expect(page.getByRole("button", { name: "Close and inspect chats" })).toBeVisible();
-  await page.getByRole("button", { name: "Retry same edit" }).click();
+  await expect(page.getByRole("button", { name: "Close and recover later" })).toBeVisible();
+  await page.getByRole("button", { name: "Close and recover later" }).click();
+  await page.reload();
+  await first.hover();
+  await first.getByRole("button", { name: "Edit in new chat" }).click();
+  await editor.fill("Replacement message");
+  await page.getByRole("button", { name: "Continue to new chat" }).click();
+  await page.getByRole("button", { name: "Open created chat" }).click();
   await expect(page).toHaveURL(/\/chats\/2$/);
-  expect(requests).toHaveLength(3);
+  expect(requests).toHaveLength(2);
   expect(requests[1]).toEqual(requests[0]);
-  expect(requests[2]).toEqual(requests[0]);
   expect(requests[0]).toMatchObject({ sourceId: "1", entryId: "10", text: "Replacement message" });
   await page.getByRole("button", { name: "Original", exact: true }).click();
-  await expect(draft).toHaveValue("Keep my draft");
   await expect(
     page.locator('[data-durable-id="20:0"]').getByRole("button", { name: "Edit in new chat" }),
   ).toHaveCount(0);

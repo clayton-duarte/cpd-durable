@@ -48,7 +48,10 @@ import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
 import { BranchOperationError } from "./branch-operations.ts";
-import { EditBranchRequestSchema } from "../shared/branch-operations.ts";
+import {
+  EditBranchRequestSchema,
+  RecentEditOperationsSchema,
+} from "../shared/branch-operations.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -212,6 +215,15 @@ export function createApp(
     if (!id.success || !at.success || !chat.chats)
       return c.json({ error: "Chat unavailable." }, 404);
     return c.json({ eligible: await chat.chats.canEdit(id.data, at.data) });
+  });
+  app.get("/api/chats/:chatId/edit-operations/:entryId", async (c) => {
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const at = ChatIdSchema.safeParse(c.req.param("entryId"));
+    if (!id.success || !at.success || !chat.chats)
+      return c.json({ error: "Chat unavailable." }, 404);
+    return c.json(
+      RecentEditOperationsSchema.parse(await chat.chats.recentEditOperations(id.data, at.data)),
+    );
   });
   app.post("/api/chats/:chatId/edit-branch", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))

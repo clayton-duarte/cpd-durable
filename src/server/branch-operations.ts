@@ -100,6 +100,25 @@ export function editableUserEntry(entry: EntryRecord | undefined): boolean {
 }
 
 export function createBranchOperations(harness: Harness, catalog: BranchCatalogHooks) {
+  async function recent(sourceId: ConversationId, entryId: EntryId) {
+    return harness.commit(async (tx) => {
+      await catalog.requireActive(tx, sourceId);
+      const operations = await tx.doc(BranchOperationsDoc);
+      const results = [];
+      for (const operation of [...operations.edits].reverse()) {
+        if (operation.sourceId !== sourceId || operation.entryId !== entryId) continue;
+        try {
+          await catalog.requireActive(tx, operation.branchId as ConversationId);
+        } catch (error) {
+          if (error instanceof BranchOperationError) continue;
+          throw error;
+        }
+        results.push({ ...receipt(operation), requestId: operation.requestId });
+        if (results.length === 20) break;
+      }
+      return { operations: results };
+    }, BACKGROUND_CONTEXT);
+  }
   // This two-phase protocol is client-retry-resumable, not an autonomous SDK task.
   // No input is submitted during preparation or as a side effect of reads/reopen.
   async function prepareEdit(input: EditBranchRequest): Promise<EditBranchReceipt> {
@@ -213,5 +232,5 @@ export function createBranchOperations(harness: Harness, catalog: BranchCatalogH
     await prepareEdit(input);
     return admitEdit(input);
   }
-  return { prepareEdit, admitEdit, edit };
+  return { prepareEdit, admitEdit, edit, recent };
 }

@@ -215,6 +215,9 @@ export async function openChats(
 
   return {
     editBranch: branchOperations.edit,
+    recentEditOperations(id: string, at: string) {
+      return branchOperations.recent(Number(id) as ConversationId, Number(at) as EntryId);
+    },
     async canEdit(id: string, at: string) {
       const scoped = await resolve(id);
       if (!scoped || scoped.archived) return false;
@@ -225,7 +228,7 @@ export async function openChats(
         undefined,
         BACKGROUND_CONTEXT,
       );
-      return editableUserEntry(page.items[0]);
+      return page.items[0]?.id === entryId && editableUserEntry(page.items[0]);
     },
     resolve,
     async list(): Promise<ChatCatalog> {
