@@ -44,9 +44,10 @@ export async function loadMcpConfig(
     new Set(parsed.data.servers.map((server) => server.id)).size !== parsed.data.servers.length
   )
     throw new Error("Invalid MCP configuration.");
-  return parsed.data.servers.map((server) => ({
+  return parsed.data.servers.map(({ env, ...server }) => ({
     ...server,
     cwd: resolve(dirname(file), server.cwd),
+    ...(env === undefined ? {} : { env }),
   }));
 }
 

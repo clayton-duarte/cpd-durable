@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, it } from "vite-plus/test";
@@ -68,7 +68,7 @@ it("cleans up an already-started server when a later server fails", async () => 
   const server = join(dir, "server.mjs");
   await writeFile(
     server,
-    `import readline from "node:readline"; readline.createInterface({input:process.stdin}).on("line",s=>{const m=JSON.parse(s); if(m.method==="initialize") console.log(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}})); if(m.method==="tools/list") console.log(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{tools:[]}}));});`,
+    `import readline from "node:readline"; import {writeFileSync} from "node:fs"; writeFileSync("pid",String(process.pid)); readline.createInterface({input:process.stdin}).on("line",s=>{const m=JSON.parse(s); if(m.method==="initialize") console.log(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}})); if(m.method==="tools/list") console.log(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{tools:[]}}));});`,
   );
   const file = join(dir, "mcp.json");
   await writeFile(
@@ -83,4 +83,6 @@ it("cleans up an already-started server when a later server fails", async () => 
   await expect(openConfiguredMcp({ env: { CPD_MCP_CONFIG: file } })).rejects.toThrow(
     "MCP server startup",
   );
+  const pid = Number(await readFile(join(dir, "pid"), "utf8"));
+  expect(() => process.kill(pid, 0)).toThrow();
 });

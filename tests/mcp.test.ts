@@ -16,6 +16,8 @@ import { openMcpTools } from "../src/server/mcp/index.ts";
 import { StdioMcpClient, type StdioServer } from "../src/server/mcp/stdio.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+import { openChat } from "../src/server/chat.ts";
+import { presentCodeModeReceipt } from "../src/server/nested-tool-presentation.ts";
 
 // Synthetic process; no configured user servers, credentials or ports.
 const serverSource = `
@@ -219,6 +221,48 @@ describe("stdio MCP adapter", () => {
       await mcp.close();
       if (previous === undefined) delete process.env["CPD_MCP_INHERITED_TEST"];
       else process.env["CPD_MCP_INHERITED_TEST"] = previous;
+    }
+  });
+
+  it("runs configured MCP through the real host code mode without directly offering it", async () => {
+    const path = join(dir, "config.json");
+    await writeFile(path, JSON.stringify({ servers: [config] }));
+    const provider = testModels();
+    const chat = await openChat(join(dir, "data"), provider.models, dir, { mcpConfigPath: path });
+    try {
+      const agent = await chat.conversation.agent(BACKGROUND_CONTEXT);
+      const name = agent.callable.find((tool) => tool.description.includes("echo ☃"))?.name;
+      expect(name).toBeDefined();
+      expect(agent.tools.map((tool) => tool.name)).not.toContain(name);
+      expect(agent.tools.map((tool) => tool.name)).toContain("codemode");
+      await chat.conversation.submit(
+        { type: "input", content: "Synthetic request" },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([
+        {
+          id: "outer",
+          name: "codemode",
+          arguments: {
+            code: `text(await tools[${JSON.stringify(name)}]({text:"hello"}));`,
+          },
+        },
+      ]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      const message = provider.calls[1]!.context.messages.findLast(
+        (item) => item.role === "toolResult",
+      );
+      expect(message && message.role === "toolResult" && message.isError).toBe(false);
+      expect(JSON.stringify(message)).toContain("fixture-only");
+      expect(JSON.stringify(message)).not.toContain("PRIVATE_STDERR_MARKER");
+      expect(presentCodeModeReceipt(message)?.calls).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name, state: "complete" })]),
+      );
+      provider.calls[1]!.finish("Done");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await chat.close();
     }
   });
 
