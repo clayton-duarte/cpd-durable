@@ -24,6 +24,7 @@ import { createHandoffGuards } from "./handoffs.ts";
 import { readConfiguredExtensions } from "./extensions/config.ts";
 import { loadConfiguredExtensions } from "./extensions/loader.ts";
 import { openConfiguredMcp } from "./mcp/config.ts";
+import { createSavedPrompts } from "./saved-prompts.ts";
 
 export type TangentPolicy = {
   resolveModel(): Promise<ResolvedTangentModel>;
@@ -234,6 +235,7 @@ export async function openChat(
       chats,
       modelPolicy,
       attachments,
+      savedPrompts: createSavedPrompts(harness),
       tangents,
       workers,
       handoffs,

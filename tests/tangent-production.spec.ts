@@ -46,6 +46,192 @@ async function addFile(page: Page, scope: ReturnType<Page["locator"]>, name: str
   await expect(scope.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
 }
 
+test("saved prompts use each native composer and respect stale parent scope", async ({ page }) => {
+  let saved = {
+    id: "44444444-4444-4444-8444-444444444444",
+    title: "Shared",
+    text: "Literal prompt",
+    revision: 1,
+  };
+  let created: typeof saved | null = null;
+  let upload = 0,
+    mutations = 0,
+    inputs = 0,
+    parentUnavailable = false;
+  await page.addInitScript(() => {
+    class Synthetic extends EventTarget {
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        super();
+        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: id,
+                messages: [],
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+                controls: { canContinue: false, resetPending: false, queue: [] },
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Synthetic });
+  });
+  await page.route("**/api/**", async (route) => {
+    const req = route.request(),
+      path = new URL(req.url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+      });
+    if (path === "/api/chats/1/tangents")
+      return parentUnavailable
+        ? route.fulfill({ status: 503 })
+        : route.fulfill({ json: { tangents: [tangent(2, "Child", "idle")] } });
+    if (path === "/api/saved-prompts") {
+      if (req.method() !== "GET") {
+        mutations++;
+        const body = req.postDataJSON() as { id: string; title: string; text: string };
+        created = { id: body.id, title: body.title, text: body.text, revision: 1 };
+        return route.fulfill({ status: 201, json: { prompt: created, deleted: false } });
+      }
+      return route.fulfill({
+        json: { items: created ? [saved, created] : [saved], nextCursor: null },
+      });
+    }
+    if (path.startsWith("/api/saved-prompts/")) {
+      mutations++;
+      const body = req.postDataJSON() as {
+        id: string;
+        title: string;
+        text: string;
+        expectedRevision: number;
+      };
+      if (body.id === saved.id && body.expectedRevision !== saved.revision)
+        return route.fulfill({ status: 409, json: {} });
+      if (req.method() === "DELETE") {
+        const prior = created!;
+        created = null;
+        return route.fulfill({ json: { prompt: prior, deleted: true } });
+      }
+      saved = { id: saved.id, title: body.title, text: body.text, revision: saved.revision + 1 };
+      return route.fulfill({ json: { prompt: saved, deleted: false } });
+    }
+    if (path.endsWith("/attachments") && req.method() === "POST")
+      return route.fulfill({
+        status: 201,
+        json: {
+          id: ids[upload++],
+          mimeType: "image/png",
+          size: png.length,
+          prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+        },
+      });
+    if (path.includes("/attachments/"))
+      return route.fulfill({ contentType: "image/png", body: png });
+    if (path.endsWith("/input")) inputs++;
+    return route.abort();
+  });
+  await syntheticDrafts(page);
+  await page.goto("/chats/1");
+  const main = page.getByRole("region", { name: "Main chat: Main" });
+  const draft = (scope: ReturnType<Page["locator"]>) =>
+    scope.getByRole("textbox", { name: "Message input" });
+  await expect(draft(main)).toBeEnabled();
+  await addFile(page, main, "main.png");
+  await page.getByRole("button", { name: "Open tangent: Child" }).click();
+  const side = page.getByRole("region", { name: "Tangent chat: Child" });
+  await expect(draft(side)).toBeEnabled();
+  await addFile(page, side, "side.png");
+  async function choose(scope: ReturnType<Page["locator"]>, text: string) {
+    const input = draft(scope);
+    await input.fill(`/ ${text}`);
+    await input.evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(1, 1));
+    await input.press("ArrowLeft");
+    await input.press("ArrowRight");
+    await scope.getByRole("option", { name: /\/prompts/ }).click();
+    await page.getByRole("option", { name: "Shared", exact: true }).click();
+  }
+  await choose(main, "main draft");
+  await page.getByRole("button", { name: "Append to draft" }).click();
+  await expect(draft(main)).toHaveValue("main draft\nLiteral prompt");
+  await choose(side, "side draft");
+  await page.getByRole("textbox", { name: "Prompt title", exact: true }).fill("From child");
+  await page.getByRole("button", { name: "Save prompt", exact: true }).click();
+  await expect.poll(() => created?.text).toBe("side draft");
+  await page.getByRole("option", { name: "From child" }).click();
+  await page.getByRole("button", { name: "Delete prompt" }).click();
+  await page.getByRole("button", { name: "Confirm delete" }).click();
+  await expect.poll(() => created).toBeNull();
+  await page.getByRole("option", { name: "Shared", exact: true }).click();
+  await page.getByRole("textbox", { name: "Edit prompt text" }).fill("Revised literal");
+  saved = { ...saved, revision: 2 };
+  await page.getByRole("button", { name: "Save edit" }).click();
+  await expect(page.getByRole("button", { name: "Reload latest revision" })).toBeVisible();
+  await page.getByRole("button", { name: "Reload latest revision" }).click();
+  await expect(page.getByRole("textbox", { name: "Edit prompt text" })).toHaveValue(
+    "Revised literal",
+  );
+  await page.getByRole("button", { name: "Save edit" }).click();
+  await expect.poll(() => saved.revision).toBe(3);
+  await page.getByRole("option", { name: "Shared", exact: true }).click();
+  await page.getByRole("button", { name: "Replace draft" }).click();
+  await expect(draft(side)).toHaveValue("Revised literal");
+  await expect(draft(main)).toHaveValue("main draft\nLiteral prompt");
+  await expect(main.getByRole("button", { name: "Remove main.png" })).toBeVisible();
+  await expect(side.getByRole("button", { name: "Remove side.png" })).toBeVisible();
+  let releaseRead!: () => void;
+  const readGate = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  let readStarted = false;
+  const heldRead = async (route: import("@playwright/test").Route) => {
+    readStarted = true;
+    await readGate;
+    await route.fulfill({ json: { items: [saved], nextCursor: null } });
+  };
+  await page.route("**/api/saved-prompts", heldRead);
+  await draft(side).fill("/ side before navigation");
+  await draft(side).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(1, 1));
+  await draft(side).press("ArrowLeft");
+  await draft(side).press("ArrowRight");
+  await side.getByRole("option", { name: /\/prompts/ }).click();
+  await expect.poll(() => readStarted).toBe(true);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Close tangent" }).click();
+  releaseRead();
+  await page.unroute("**/api/saved-prompts", heldRead);
+  await expect(draft(main)).toHaveValue("main draft\nLiteral prompt");
+  await page.getByRole("button", { name: "Open tangent: Child" }).click();
+  await expect(draft(side)).toHaveValue("side before navigation");
+  const beforeStale = mutations;
+  await choose(side, "retained side");
+  parentUnavailable = true;
+  await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  for (const name of [
+    "Append to draft",
+    "Replace draft",
+    "Save edit",
+    "Delete prompt",
+    "Save prompt",
+  ])
+    await page.getByRole("button", { name, exact: true }).dispatchEvent("click");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft(side)).toHaveValue("retained side");
+  expect(upload).toBe(2);
+  expect(inputs).toBe(0);
+  expect(mutations).toBe(beforeStale);
+});
+
 test("production route keeps native chats and drafts through tangent navigation", async ({
   page,
 }) => {

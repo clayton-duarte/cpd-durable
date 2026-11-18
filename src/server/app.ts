@@ -64,13 +64,26 @@ import {
   EditBranchRequestSchema,
   RecentEditOperationsSchema,
 } from "../shared/branch-operations.ts";
+import { SavedPromptError } from "./saved-prompts.ts";
+import {
+  CreateSavedPromptSchema,
+  UpdateSavedPromptSchema,
+  RemoveSavedPromptSchema,
+  ListSavedPromptsSchema,
+} from "../shared/saved-prompts.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
     Partial<
       Pick<
         Awaited<ReturnType<typeof openChat>>,
-        "chats" | "attachments" | "modelPolicy" | "tangents" | "workers" | "handoffs"
+        | "chats"
+        | "attachments"
+        | "savedPrompts"
+        | "modelPolicy"
+        | "tangents"
+        | "workers"
+        | "handoffs"
       >
     >,
 ) {
@@ -118,6 +131,43 @@ export function createApp(
   if (chat.tangents) app.route("/", chat.tangents.routes);
   if (chat.workers) app.route("/", chat.workers);
   if (chat.handoffs) app.route("/", chat.handoffs);
+
+  app.get("/api/saved-prompts", async (c) => {
+    const query = c.req.query();
+    const parsed = ListSavedPromptsSchema.safeParse({
+      ...query,
+      ...(query["limit"] === undefined ? {} : { limit: Number(query["limit"]) }),
+    });
+    if (!parsed.success) return c.json({ error: "Invalid saved prompt page." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.list(parsed.data.cursor, parsed.data.limit));
+  });
+  app.post("/api/saved-prompts", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = CreateSavedPromptSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success) return c.json({ error: "Invalid saved prompt." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.create(parsed.data), 201);
+  });
+  app.put("/api/saved-prompts/:id", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = UpdateSavedPromptSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success || parsed.data.id !== c.req.param("id"))
+      return c.json({ error: "Invalid saved prompt." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.update(parsed.data));
+  });
+  app.delete("/api/saved-prompts/:id", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = RemoveSavedPromptSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success || parsed.data.id !== c.req.param("id"))
+      return c.json({ error: "Invalid saved prompt." }, 400);
+    if (!chat.savedPrompts) return c.json({ error: "Saved prompts unavailable." }, 503);
+    return c.json(await chat.savedPrompts.remove(parsed.data));
+  });
 
   app.get("/api/model-policy", async (c) => {
     if (!chat.modelPolicy) return c.json({ error: "Model settings unavailable." }, 503);
@@ -695,6 +745,7 @@ export function createApp(
   app.onError((error, c) =>
     error instanceof ChatLifecycleError ||
     error instanceof AttachmentAccessError ||
+    error instanceof SavedPromptError ||
     error instanceof ModelPolicyError ||
     error instanceof DraftAttemptConflict ||
     error instanceof RegenerationError ||

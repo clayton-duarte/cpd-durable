@@ -59,6 +59,9 @@ type ChatHost = ChatProps & {
   localError: string | null;
   clearLocalError: () => void;
   submitDraft: (mode: SendMode) => Promise<boolean>;
+  readDraft: () => string;
+  draftVersion: () => number;
+  applyPrompt: (version: number, text: string, mode: "append" | "replace") => boolean;
   requestTangent: (command: "tangent" | "side") => Promise<boolean>;
 };
 
