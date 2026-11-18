@@ -196,6 +196,7 @@ describe("single durable chat", () => {
       "write",
       "edit",
       "bash",
+      "codemode",
       "grep",
       "find",
       "ls",
