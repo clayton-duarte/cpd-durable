@@ -2,6 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import {
@@ -182,50 +190,60 @@ export function HistoryOperations() {
             Reasoning, tool payloads and images are excluded. Export is a logical transcript, not a
             database backup. Fork history may repeat, with its origin shown.
           </p>
-          <label>
-            Scope{" "}
-            <select
-              aria-label="History scope"
+          <div>
+            <span id={`history-scope-${current ?? "chat"}`}>Scope</span>{" "}
+            <Select
               value={scopeMode}
-              onChange={(event) => {
+              onValueChange={(value) => {
+                if (value !== "selected" && value !== "multiple" && value !== "catalog") return;
                 invalidate();
-                setScopeMode(event.target.value as typeof scopeMode);
+                setScopeMode(value);
               }}
             >
-              <option value="selected">This chat</option>
-              <option value="multiple">Choose chats</option>
-              <option value="catalog">All catalog chats</option>
-            </select>
-          </label>
-          <label>
-            <input
-              type="checkbox"
+              <SelectTrigger aria-labelledby={`history-scope-${current ?? "chat"}`}>
+                <SelectValue>
+                  {scopeMode === "selected"
+                    ? "This chat"
+                    : scopeMode === "multiple"
+                      ? "Choose chats"
+                      : "All catalog chats"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="selected">This chat</SelectItem>
+                <SelectItem value="multiple">Choose chats</SelectItem>
+                <SelectItem value="catalog">All catalog chats</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <label className="flex items-center gap-2">
+            <Checkbox
               checked={includeArchived}
-              onChange={(event) => {
+              onCheckedChange={(checked) => {
                 invalidate();
-                setIncludeArchived(event.target.checked);
+                setIncludeArchived(checked);
               }}
-            />{" "}
+            />
             Include archived chats
           </label>
           {scopeMode === "multiple" && (
             <fieldset>
               <legend>Choose chats</legend>
               {available.map((item) => (
-                <label key={item.id} className="block">
-                  <input
-                    type="checkbox"
+                <label key={item.id} className="flex items-center gap-2">
+                  <Checkbox
                     checked={selected.includes(item.id)}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
+                    onCheckedChange={(checked) => {
                       invalidate();
                       setSelected((previous) =>
                         checked ? [...previous, item.id] : previous.filter((id) => id !== item.id),
                       );
                     }}
-                  />{" "}
-                  {item.title} · chat {item.id}
-                  {item.status === "archived" ? " (archived)" : ""}
+                  />
+                  <span>
+                    {item.title} · chat {item.id}
+                    {item.status === "archived" ? " (archived)" : ""}
+                  </span>
                 </label>
               ))}
             </fieldset>
@@ -252,20 +270,25 @@ export function HistoryOperations() {
           >
             Search saved history
           </Button>
-          <label>
-            Export format{" "}
-            <select
-              aria-label="Export format"
+          <div>
+            <span id={`history-format-${current ?? "chat"}`}>Export format</span>{" "}
+            <Select
               value={format}
-              onChange={(event) => {
+              onValueChange={(value) => {
+                if (value !== "markdown" && value !== "json") return;
                 invalidate();
-                setFormat(event.target.value as typeof format);
+                setFormat(value);
               }}
             >
-              <option value="markdown">Markdown</option>
-              <option value="json">JSON</option>
-            </select>
-          </label>
+              <SelectTrigger aria-labelledby={`history-format-${current ?? "chat"}`}>
+                <SelectValue>{format === "markdown" ? "Markdown" : "JSON"}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="markdown">Markdown</SelectItem>
+                <SelectItem value="json">JSON</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
           <Button
             size="sm"
             disabled={pending || ids.length === 0}

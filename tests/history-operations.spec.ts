@@ -117,7 +117,8 @@ test("search and logical export use explicit selected scope and preserve the com
     scope: { conversationIds: ["1"], includeArchived: false },
     search: { query: "needle" },
   });
-  await page.getByLabel("Export format").selectOption("json");
+  await page.getByRole("combobox", { name: "Export format" }).click();
+  await page.getByRole("option", { name: "JSON" }).click();
   await page.getByRole("button", { name: "Prepare logical export" }).click();
   await expect(page.getByText(/Status: complete/)).toBeVisible();
   const wait = page.waitForEvent("download");
@@ -160,10 +161,11 @@ test("multiple and catalog scopes explicitly include archived and label navigati
   await page.goto("/chats/1");
   await page.getByRole("button", { name: "Chat details" }).click();
   await page.getByRole("button", { name: "Search or export saved history" }).click();
-  await page.getByLabel("History scope").selectOption("multiple");
-  await page.getByLabel(/Second · chat 2/).check();
-  await page.getByLabel("Include archived chats").check();
-  await page.getByLabel(/Old · chat 3/).check();
+  await page.getByRole("combobox", { name: "Scope" }).click();
+  await page.getByRole("option", { name: "Choose chats" }).click();
+  await page.getByRole("checkbox", { name: /Second · chat 2/ }).check();
+  await page.getByRole("checkbox", { name: "Include archived chats" }).check();
+  await page.getByRole("checkbox", { name: /Old · chat 3/ }).check();
   await page.getByLabel("Search saved text").fill("needle");
   await page.getByRole("button", { name: "Search saved history" }).click();
   await expect(page.getByText(/Chat 3 \(archived\): upper entry 42/)).toBeVisible();
@@ -172,7 +174,8 @@ test("multiple and catalog scopes explicitly include archived and label navigati
     "href",
     "/chats/2",
   );
-  await page.getByLabel("History scope").selectOption("catalog");
+  await page.getByRole("combobox", { name: "Scope" }).click();
+  await page.getByRole("option", { name: "All catalog chats" }).click();
   await expect(page.getByText(/origin chat 1/)).not.toBeVisible();
 });
 

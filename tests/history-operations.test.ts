@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CompactionEntry, ResetEntry, UserEntry } from "@earendil-works/pi-durable";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { openChat } from "../src/server/chat.ts";
 import { createApp } from "../src/server/app.ts";
 import {
@@ -316,4 +316,32 @@ describe("logical transcript operations", () => {
       ).status,
     ).toBe(404);
   });
+
+  it.each(["search", "export"] as const)(
+    "does not publish %s if the catalog deletes a chat during the scan",
+    async (kind) => {
+      await seed(2);
+      const original = chat.conversation.entries.bind(chat.conversation);
+      let reads = 0;
+      vi.spyOn(chat.conversation, "entries").mockImplementation(async (...args) => {
+        const page = await original(...args);
+        if (++reads === 2) await chat.chats.change(root, "delete");
+        return page;
+      });
+      const response = await createApp(chat).request(
+        `http://localhost:3000/api/history-operations/${kind}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(
+            kind === "search"
+              ? { scope, search: { query: "needle", caseSensitive: false } }
+              : { scope, format: "json" },
+          ),
+        },
+      );
+      expect(response.status).toBe(409);
+      expect(await response.text()).not.toContain("needle");
+    },
+  );
 });

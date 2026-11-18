@@ -32,6 +32,7 @@ import { ConfigurationChangeSchema } from "../shared/configuration.ts";
 import {
   HistorySearchRequestSchema,
   HistoryExportRequestSchema,
+  type TranscriptReport,
 } from "../shared/history-operations.ts";
 import { searchTranscripts } from "./search.ts";
 import { exportTranscripts, transcriptExportJson, transcriptExportMarkdown } from "./export.ts";
@@ -104,6 +105,20 @@ export function createApp(
       return resolved && { conversation: resolved.conversation, archived: resolved.archived };
     };
   }
+  // Catalog membership can change while a bounded scan is running. Refuse to
+  // publish its result if a selected chat was deleted or changed archive state.
+  async function stillAuthorized(report: TranscriptReport): Promise<boolean> {
+    if (!chat.chats) return false;
+    const catalog = await chat.chats.list();
+    return report.conversations.every((item) => {
+      const current = catalog.chats.find((entry) => entry.id === item.conversationId);
+      return (
+        current !== undefined &&
+        (current.status === "archived") === item.archived &&
+        (report.scope.includeArchived || current.status !== "archived")
+      );
+    });
+  }
   app.post("/api/history-operations/search", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))
       return c.json({ error: "Expected application/json." }, 415);
@@ -116,6 +131,8 @@ export function createApp(
     const result = await searchTranscripts(request.data.scope, resolver, request.data.search, {
       signal: c.req.raw.signal,
     });
+    if (!(await stillAuthorized(result.report)))
+      return c.json({ error: "History scope changed. Refresh and try again." }, 409);
     return c.json(result);
   });
   app.post("/api/history-operations/export", async (c) => {
@@ -130,6 +147,8 @@ export function createApp(
     const result = await exportTranscripts(request.data.scope, resolver, {
       signal: c.req.raw.signal,
     });
+    if (!(await stillAuthorized(result.report)))
+      return c.json({ error: "History scope changed. Refresh and try again." }, 409);
     return c.json({
       format: request.data.format,
       content:
