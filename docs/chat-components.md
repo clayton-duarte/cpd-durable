@@ -101,7 +101,7 @@ Native `read`, `write`, `edit`, `bash` and `powershell`, plus registered `grep`,
 
 Search results stream in traversal order, not globally sorted. Result/line/record and SDK output bounds are reported as truncation, not exhaustive output or a complete spill archive. A result limit does not impose a command deadline: ripgrep can continue scanning, and explicit Stop cancels through the SDK. No forced timeout or filesystem permission gate is added. These read-only tools are replay-safe, but replay may observe files changed since the earlier attempt; it is not a filesystem snapshot.
 
-The host also installs `load_skill`; its actual calls and results use the same tool presentation. Per-request project guidance and skill metadata are host-only prompt resources, not fabricated transcript messages or a resource browser. See [discovery, limits and trust](../README.md#project-guidance-and-skills). User-selected templates and configured extension loading remain unimplemented.
+The host also installs `load_skill`; its actual calls and results use the same tool presentation. Per-request project guidance and skill metadata are host-only prompt resources, not fabricated transcript messages or a resource browser. See [discovery, limits and trust](../README.md#project-guidance-and-skills). User-selected templates remain unimplemented; [explicit host extensions](../README.md#explicit-host-extensions) are configured separately.
 
 ### Structured agent questions
 
