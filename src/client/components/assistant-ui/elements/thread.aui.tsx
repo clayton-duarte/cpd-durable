@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { ConversationMapAui } from "./conversation-map.aui";
 import { ThreadNavigation } from "@/thread-navigation";
 import { ChatDetails } from "@/chat-details";
+import { AgentQuestions } from "@/agent-questions";
 import { ForkMessageAction } from "@/fork-message-action";
 import {
   ActionBarMorePrimitive,
@@ -259,6 +260,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
             <ThreadFollowupSuggestions />
             <ThreadNavigation />
             <ChatDetails />
+            <AgentQuestions />
             <Composer autoFocus={autoFocus} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
