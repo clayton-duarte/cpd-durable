@@ -58,7 +58,11 @@ The read-only `/api/history` operation accepts a validated view ID and optional 
 
 Disconnect stops the observer, not work. The cached SDK transcript resumes on reconnect and explicitly marks missing ranges. A detached view expires after 30 minutes. After host restart/cache loss, the browser's oldest-entry bound reconstructs one oldest page plus the latest window, with SDK gap markers for anything still missing. A full page refresh creates a new recent view; stored history remains pageable. A view UUID selects transient read state, not an authentication credential. History managers are scoped by SDK conversation.
 
-An empty terminal SDK page ends paging without dropping retained rows. Failed reads retain visible history and expose a read retry; no provider request or delivery retry is implied. Loaded-history navigation/search and whole-session search remain later work.
+An empty terminal SDK page ends paging without dropping retained rows. Failed reads retain visible history and expose a read retry; no provider request or delivery retry is implied.
+
+### Finding loaded turns
+
+The supplied ConversationMap rail groups loaded user turns with their following assistant entries, previews them and navigates within the containing viewport. Gap markers are excluded; no project/fork tree is implied. The rail is hidden on narrow screens. Find in loaded history opens supplied ConversationSearch, scanning only visible transcript text parts (not reasoning, tool arguments/output or unloaded entries). Enter/Shift+Enter and next/previous step with wraparound; zero hits are safe. Queries are bounded to 256 characters and 1,000 matches. Hit IDs carry real native message IDs and offsets, not inferred durable identities. Search/map state stays with each mounted chat. Paging and streaming recompute matches without submitting work. Whole-storage search remains unimplemented.
 
 ## 2. Composer and run controls
 
@@ -133,7 +137,7 @@ The transport serializes mutations and keeps retry identity only until refresh. 
 
 ## Remaining work
 
-Source-backed live/committed identity, paged history/gap recovery and ordered text/reasoning/tool/omission projection retain the limits above. Loaded-turn navigation/search, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
+Source-backed live/committed identity, paged history/gap recovery, loaded-turn navigation/search and ordered text/reasoning/tool/omission projection retain the limits above. Whole-storage search, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
 
 ## shadcn gap decisions
 

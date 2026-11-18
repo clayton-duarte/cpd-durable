@@ -26,6 +26,8 @@ import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-ic
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { ConversationMapAui } from "./conversation-map.aui";
+import { ThreadNavigation } from "@/thread-navigation";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -222,6 +224,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
         data-slot="aui_thread-viewport"
         className="relative flex min-h-0 flex-1 flex-col overflow-x-auto overflow-y-scroll"
       >
+        <ConversationMapAui side="right" className="hidden md:block" />
         <div
           className={cn(
             "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",
@@ -252,6 +255,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
           >
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
+            <ThreadNavigation />
             <Composer autoFocus={autoFocus} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />
