@@ -15,6 +15,7 @@ export default defineConfig({
     "history-operations.spec.ts",
     "edit-branch.spec.ts",
     "questions.spec.ts",
+    "structured-table.spec.ts",
   ],
   workers: 1,
   use: { baseURL },

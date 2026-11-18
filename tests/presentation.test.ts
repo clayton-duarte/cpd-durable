@@ -18,6 +18,31 @@ const entry = (id: number, content: unknown, stopReason = "stop", kind = "pi.ass
 });
 
 describe("validated ordered SDK presentation", () => {
+  it("does not project malformed or foreign table details", () => {
+    const call = entry(
+      1,
+      [{ type: "toolCall", id: "table", name: "display_table", arguments: {} }],
+      "toolUse",
+    );
+    const result = {
+      id: 2,
+      kind: "pi.tool-result",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "table",
+          toolName: "display_table",
+          content: [{ type: "text", text: "Ordinary output" }],
+          isError: false,
+          details: { version: 1, table: { columns: [], rows: [], secret: "PRIVATE_EXTRA" } },
+        },
+      ],
+    };
+    const state = ChatStateSchema.parse(present(view([call, result])));
+    expect(JSON.stringify(state)).toContain("Ordinary output");
+    expect(JSON.stringify(state)).not.toContain("PRIVATE_EXTRA");
+    expect(state.messages[0]?.parts?.[0]).not.toHaveProperty("table");
+  });
   it("does not pair a tool result across an unresolved gap with a sparse upper bound", () => {
     const state = present(
       view([

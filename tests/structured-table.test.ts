@@ -9,6 +9,9 @@ import { createTableExtension } from "../src/server/structured-table.ts";
 import { TableDetailsSchema, TableInputSchema } from "../src/shared/structured-table.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+import { openChat } from "../src/server/chat.ts";
+import { present } from "../src/server/presentation.ts";
+import { ChatStateSchema } from "../src/shared/chat.ts";
 
 const table = {
   columns: [
@@ -108,6 +111,89 @@ describe("typed table formatter", () => {
       expect(provider.calls).toHaveLength(2);
     } finally {
       await harness.close(BACKGROUND_CONTEXT);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes the registered formatter through the application and projects its canonical receipt", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cpd-app-table-"));
+    const provider = testModels();
+    let chat = await openChat(join(dir, "data"), provider.models, dir);
+    try {
+      await chat.conversation.submit(
+        { type: "input", content: "Synthetic data." },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([{ id: "table-id", name: "display_table", arguments: table }]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      provider.calls[1]!.finish("Done.");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+      const watch = await chat.conversation.watch(BACKGROUND_CONTEXT);
+      const state = ChatStateSchema.parse(present(watch.value));
+      await watch.stop();
+      const part = state.messages
+        .flatMap((m) => m.parts ?? [])
+        .find((item) => item.type === "tool-call" && item.callId === "table-id");
+      expect(part).toMatchObject({
+        name: "display_table",
+        state: "complete",
+        table: { version: 1, table },
+      });
+      if (part?.type !== "tool-call" || !part.resultEntryId)
+        throw new Error("Missing table receipt");
+      const fork = await chat.chats.fork(
+        String(chat.conversation.id),
+        crypto.randomUUID(),
+        String(part.resultEntryId),
+      );
+      await chat.close();
+      chat = await openChat(join(dir, "data"), provider.models, dir);
+      const branch = await chat.chats.resolve(fork.id);
+      if (!branch) throw new Error("Missing fork");
+      const forkWatch = await branch.conversation.watch(BACKGROUND_CONTEXT);
+      try {
+        const inherited = ChatStateSchema.parse(present(forkWatch.value))
+          .messages.flatMap((m) => m.parts ?? [])
+          .find((item) => item.type === "tool-call" && item.callId === "table-id");
+        expect(inherited).toEqual(part);
+      } finally {
+        await forkWatch.stop();
+      }
+      expect(provider.calls).toHaveLength(2);
+    } finally {
+      await chat.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("makes the formatter callable from SDK code mode", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cpd-table-code-"));
+    const provider = testModels();
+    const chat = await openChat(join(dir, "data"), provider.models, dir);
+    try {
+      await chat.conversation.submit(
+        { type: "input", content: "Synthetic formatter call." },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([
+        {
+          id: "code",
+          name: "codemode",
+          arguments: {
+            code: `text(await tools.display_table({columns:[{id:"x",label:"X"}],rows:[{x:1}]}));`,
+          },
+        },
+      ]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      const result = provider.calls[1]!.context.messages.findLast((m) => m.role === "toolResult");
+      expect(result).toMatchObject({ toolName: "codemode", isError: false });
+      expect(JSON.stringify(result)).toContain("Caller-provided table");
+      provider.calls[1]!.finish("Done.");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await chat.close();
       await rm(dir, { recursive: true, force: true });
     }
   });

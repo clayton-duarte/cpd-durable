@@ -8,6 +8,7 @@ import {
 } from "./nested-tool-presentation.ts";
 import { SavedImageReferenceSchema, ImageMimeSchema } from "../shared/attachments.ts";
 import { DirectShellResultSchema } from "../shared/direct-shell.ts";
+import { TableDetailsSchema } from "../shared/structured-table.ts";
 
 // Allowlist presentation fields; unknown payloads and provider diagnostics never cross the wire.
 const RecordIdSchema = z.number().int().positive().safe();
@@ -292,6 +293,10 @@ export function present(
           if (imageOutput) call.resultParts = resultParts;
           call.resultEntryId = entry.id;
           if (nested) call.nested = nested;
+          if (call.name === "display_table" && state === "complete") {
+            const details = z.looseObject({ details: TableDetailsSchema }).safeParse(raw);
+            if (details.success) call.table = details.data.details;
+          }
           pending.delete(result.toolCallId);
         } else {
           // Window may start after the originating call. Keep its result visible,
