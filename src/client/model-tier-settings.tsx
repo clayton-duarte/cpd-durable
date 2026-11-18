@@ -14,8 +14,11 @@ import {
 } from "../shared/model-policy.ts";
 
 export type ModelTierSettingsApi = {
-  read(): Promise<unknown>;
-  save(change: { expected: ModelPolicy; assignments: Assignments }): Promise<unknown>;
+  read(signal?: AbortSignal): Promise<unknown>;
+  save(
+    change: { expected: ModelPolicy; assignments: Assignments },
+    signal?: AbortSignal,
+  ): Promise<unknown>;
 };
 
 const roles = [
@@ -35,41 +38,60 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
   const [data, setData] = useState<ModelPolicyView>();
   const [draft, setDraft] = useState<Assignments>();
   const [pending, setPending] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [reload, setReload] = useState(0);
   const [needsEffort, setNeedsEffort] = useState<string[]>([]);
   const generation = useRef(0);
+  const request = useRef(0);
+  const saveController = useRef<AbortController | null>(null);
   useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
+    const id = ++request.current;
+    setLoading(true);
     void api
-      .read()
+      .read(controller.signal)
       .then((value) => {
         const next = ModelPolicyViewSchema.parse(value);
-        if (active) {
+        if (request.current === id) {
           setData(next);
           setDraft((previous) => previous ?? next.assignments);
+          setError("");
+          setLoading(false);
         }
       })
       .catch(() => {
-        if (active) setError("Could not load model settings. Retry without sending a prompt.");
+        if (request.current === id) {
+          setLoading(false);
+          setError("Could not load model settings. Retry without sending a prompt.");
+        }
       });
     return () => {
-      active = false;
+      controller.abort();
+      saveController.current?.abort();
+      request.current++;
     };
   }, [api, reload]);
 
   async function save() {
-    if (!data || !draft || pending || error || needsEffort.length) return;
+    if (!data || !draft || pending || loading || error || needsEffort.length) return;
     setPending(true);
     const version = generation.current;
+    const id = ++request.current;
+    const controller = new AbortController();
+    saveController.current = controller;
     try {
       const response = ModelPolicySchema.parse(
-        await api.save({
-          expected: { revision: data.revision, assignments: data.assignments },
-          assignments: draft,
-        }),
+        await api.save(
+          {
+            expected: { revision: data.revision, assignments: data.assignments },
+            assignments: draft,
+          },
+          controller.signal,
+        ),
       );
+      if (request.current !== id) return;
       if (
         response.revision !== data.revision + 1 ||
         JSON.stringify(response.assignments) !== JSON.stringify(draft)
@@ -79,11 +101,12 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
       if (generation.current === version) setDraft(response.assignments);
       setNotice("Saved for new threads and workers. Existing conversations are unchanged.");
     } catch {
+      if (request.current !== id) return;
       setError(
         "Save unconfirmed or settings changed. Reload and review your choices before saving again.",
       );
     } finally {
-      setPending(false);
+      if (request.current === id) setPending(false);
     }
   }
   return (
@@ -99,7 +122,6 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
           <Button
             variant="outline"
             onClick={() => {
-              setError("");
               setReload((n) => n + 1);
             }}
           >
@@ -119,8 +141,15 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
               <p>
                 {selected
                   ? `${selected.provider}/${selected.modelId} · thinking ${selected.thinkingLevel}`
-                  : "Not configured — select a model."}
+                  : role === "main"
+                    ? "Host default until configured."
+                    : "Not configured — select a model."}
               </p>
+              {selected && (!choice || !choice.thinkingLevels.includes(selected.thinkingLevel)) && (
+                <p role="status">
+                  This model or thinking level is unavailable. Choose an available selection.
+                </p>
+              )}
               <ModelSelectorRoot
                 models={data.choices.map((item) => ({
                   id: key(item),
@@ -182,12 +211,35 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
         })}
       <Button
         variant="outline"
-        disabled={!data || !draft || pending || !!error || !!needsEffort.length}
+        disabled={
+          !data ||
+          !draft ||
+          pending ||
+          loading ||
+          !!error ||
+          !!needsEffort.length ||
+          Object.values(draft).some(
+            (selection) =>
+              selection &&
+              !data.choices.some(
+                (choice) =>
+                  key(choice) === key(selection) &&
+                  choice.thinkingLevels.includes(selection.thinkingLevel),
+              ),
+          )
+        }
         onClick={() => {
           void save();
         }}
       >
         Save model tiers
+      </Button>
+      <Button
+        variant="outline"
+        disabled={pending || loading}
+        onClick={() => setReload((n) => n + 1)}
+      >
+        Refresh saved settings
       </Button>
       {notice && <p role="status">{notice}</p>}
     </section>

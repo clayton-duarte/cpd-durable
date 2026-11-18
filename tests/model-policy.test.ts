@@ -8,7 +8,11 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ModelTierSettings } from "../src/client/model-tier-settings.tsx";
-import { assertModelPolicyTx, createModelPolicy } from "../src/server/model-policy.ts";
+import {
+  assertMainModelDecisionTx,
+  assertModelPolicyTx,
+  createModelPolicy,
+} from "../src/server/model-policy.ts";
 import { testModels } from "./models.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -39,6 +43,8 @@ describe("model tier policy", () => {
       const before = await chat.agent(context);
       let policy = createModelPolicy(harness, provider.models);
       const first = await policy.read();
+      const hostDefault = await policy.prepareMainCreation();
+      expect(hostDefault.selection).toBeNull();
       expect(first.assignments).toEqual({ main: null, tangent: null, worker: null });
       await expect(policy.resolveModelForRole("worker")).rejects.toThrow("Select a model");
       await expect(policy.resolveModelForRole("worker", { workerTier: "mid" })).rejects.toThrow(
@@ -52,6 +58,9 @@ describe("model tier policy", () => {
       const expected = { revision: first.revision, assignments: first.assignments };
       const saved = await policy.save({ expected, assignments });
       expect(saved.revision).toBe(1);
+      await expect(
+        harness.commit((tx) => assertMainModelDecisionTx(tx, hostDefault), context),
+      ).rejects.toThrow("changed");
       const raceExpected = { revision: saved.revision, assignments: saved.assignments };
       const outcomes = await Promise.allSettled([
         policy.save({ expected: raceExpected, assignments: { ...assignments, main: two } }),

@@ -68,11 +68,28 @@ export type ResolvedModel = {
   assignment: ModelRole;
 };
 
+export type MainModelDecision = { revision: number; selection: Selection | null };
+
+/** Null means the explicitly retained host default, not a resolved model tier. */
+export async function assertMainModelDecisionTx(tx: Tx, decision: MainModelDecision) {
+  const current = await readModelPolicyTx(tx);
+  if (
+    current.revision !== decision.revision ||
+    !sameNullable(current.assignments.main, decision.selection)
+  )
+    throw new ModelPolicyError("Model settings changed. Refresh and try again.");
+}
+
 export function createModelPolicy(harness: Harness, models: Models) {
   async function choices() {
     return ModelChoicesSchema.parse(await modelChoices(models));
   }
   return {
+    async prepareMainCreation(): Promise<MainModelDecision> {
+      const policy = await harness.commit((tx) => readModelPolicyTx(tx), BACKGROUND_CONTEXT);
+      if (policy.assignments.main) validate(policy.assignments.main, await choices());
+      return { revision: policy.revision, selection: policy.assignments.main };
+    },
     async read() {
       const available = await choices();
       const policy = await harness.commit((tx) => readModelPolicyTx(tx), BACKGROUND_CONTEXT);

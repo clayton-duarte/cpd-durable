@@ -38,6 +38,8 @@ The User subsequently requested one active empty new chat at a time and per-chat
 
 ## Native execution and pi TUI parity
 
+Global Settings now stores user-assigned main, tangent and worker model tiers; those labels do not guarantee capability. Configured main selections apply to genuinely new main chats, while an unconfigured main retains the host default and reused or existing chats are unchanged. Tangent and worker creation integration remains pending; the stored assignments alone do not implement those workflows.
+
 On 2026-11-17, after Batch 2, the User authorized making cpd fully usable with pi TUI's tools and features, without cpd-added approval prompts or sandbox restrictions, and selected `~/` as the default working directory. It is a starting context, not a filesystem boundary. Tools execute with the server account's OS permissions and inherited environment; cpd does not bypass OS access controls or supply unavailable external programs.
 
 The first implementation installs pi-durable's native `read`, `write`, `edit`, `bash` and `powershell` tools, supplies `NodeExecutionEnv`, and renders tool calls/output through assistant-ui. PowerShell requires an installed executable. No command/path denylist, approval hook, forced command timeout or tool-round cap is added. SDK argument validation, bounded output/spill handling, cancellation and non-replay-safe side-effect semantics remain correctness behavior, not an application permission gate.
