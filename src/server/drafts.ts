@@ -2,6 +2,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Tx } from "@earendil-works/pi-durable";
 import {
   DraftAttemptRequestSchema,
+  DraftAttemptRecoveryPageSchema,
   DraftUpdateSchema,
   DraftViewSchema,
   type DraftView,
@@ -11,6 +12,7 @@ import { CatalogDoc, ChatLifecycleError, type ChatScope } from "./chats.ts";
 import {
   DraftAttemptConflict,
   draftAttemptFingerprint,
+  listDraftAttempts,
   readDraftAttempt,
   recordDraftAttempt,
 } from "./draft-attempts.ts";
@@ -66,6 +68,14 @@ export async function readAttempt(scope: ChatScope, requestId: string) {
   return scope.conversation.commit(async (tx) => {
     await assertReadable(tx, scope);
     return readDraftAttempt(tx, scope.conversation.id, requestId);
+  }, BACKGROUND_CONTEXT);
+}
+
+export async function readAttempts(scope: ChatScope, cursor?: string) {
+  return scope.conversation.commit(async (tx) => {
+    await assertReadable(tx, scope);
+    const page = await listDraftAttempts(tx, scope.conversation.id, cursor);
+    return page && DraftAttemptRecoveryPageSchema.parse(page);
   }, BACKGROUND_CONTEXT);
 }
 

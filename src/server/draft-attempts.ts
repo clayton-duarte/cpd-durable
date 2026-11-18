@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { defineDoc, type ConversationId, type Tx } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import { AttachmentIdSchema, IMAGE_MAX_COUNT } from "../shared/attachments.ts";
+import { DRAFT_ATTEMPT_PAGE_SIZE } from "../shared/drafts.ts";
 
 const PayloadSchema = z
   .strictObject({
@@ -98,5 +99,33 @@ export async function readDraftAttempt(tx: Tx, conversationId: ConversationId, r
     record: RecordSchema.parse(record),
     admission: submission ? ("admitted" as const) : ("unknown" as const),
     ...(submission ? { submissionId: String(submission.id) } : {}),
+  };
+}
+
+/** Newest first; the cursor anchors the next page even if newer attempts are added. */
+export async function listDraftAttempts(tx: Tx, conversationId: ConversationId, cursor?: string) {
+  const doc = await tx.doc(DraftAttemptsDoc, conversationId);
+  const end =
+    cursor === undefined
+      ? doc.attempts.length
+      : doc.attempts.findIndex((a) => a.requestId === cursor);
+  if (end < 0) return undefined;
+  const start = Math.max(0, end - DRAFT_ATTEMPT_PAGE_SIZE);
+  const records = doc.attempts
+    .slice(start, end)
+    .reverse()
+    .map((record) => RecordSchema.parse(record));
+  const attempts = await Promise.all(
+    records.map(async (record) => {
+      const submission = await tx.submissionByRequest(conversationId, record.requestId);
+      return submission
+        ? { record, admission: "admitted" as const, submissionId: String(submission.id) }
+        : { record, admission: "unknown" as const };
+    }),
+  );
+  return {
+    attempts,
+    capped: start > 0,
+    nextCursor: start > 0 ? records[records.length - 1]!.requestId : null,
   };
 }

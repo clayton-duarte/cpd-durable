@@ -18,7 +18,7 @@ import {
   HistoryLoadSchema,
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
-import { readAttempt, readDraft, saveAttempt, saveDraft } from "./drafts.ts";
+import { readAttempt, readAttempts, readDraft, saveAttempt, saveDraft } from "./drafts.ts";
 import { DraftAttemptRequestSchema, DraftUpdateSchema } from "../shared/drafts.ts";
 import { DraftAttemptConflict } from "./draft-attempts.ts";
 import { z } from "zod";
@@ -272,6 +272,16 @@ export function createApp(
     );
     if (!input.success) return c.json({ error: "Invalid draft attempt." }, 400);
     return c.json(await saveAttempt(c.get("scope"), input.data));
+  });
+  routes.get("/draft/attempts", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    const params = c.req.queries();
+    if (Object.keys(params).some((key) => key !== "cursor") || (params["cursor"]?.length ?? 0) > 1)
+      return c.json({ error: "Invalid recovery cursor." }, 400);
+    const cursor = z.uuid().optional().safeParse(c.req.query("cursor"));
+    if (!cursor.success) return c.json({ error: "Invalid recovery cursor." }, 400);
+    const page = await readAttempts(c.get("scope"), cursor.data);
+    return page ? c.json(page) : c.json({ error: "Invalid recovery cursor." }, 400);
   });
   routes.get("/draft/attempt/:requestId", async (c) => {
     if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
