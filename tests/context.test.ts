@@ -66,6 +66,9 @@ describe("SDK context and compaction", () => {
     expect(before.entryCount).toBe(6);
     expect(before.headId).toBeNull();
     expect(before.measurements.committed.tokens).toBeGreaterThan(0);
+    expect(before.measurements.contextWindow).toBe(
+      provider.models.getModel(PROVIDER_ID, MODEL_ID)?.contextWindow,
+    );
     expect(before.measurements.headroom.status).toBe("unknown");
     const response = await compact();
     expect(response.status).toBe(202);
