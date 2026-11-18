@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
-  testMatch: "tangent-workspace.spec.ts",
+  testMatch: ["tangent-workspace.spec.ts", "tangent-split.spec.ts"],
   workers: 1,
   use: { baseURL: "http://127.0.0.1:5182" },
   webServer: {
