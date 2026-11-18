@@ -146,6 +146,8 @@ function historyState(
 test.beforeEach(async ({ page }) => {
   // Never let synthetic tests reach the user's live conversation.
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/compact/reservation", (route) => route.fulfill({ json: null }));
+  await page.route("**/api/chats/*/compact/reservation", (route) => route.fulfill({ json: null }));
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },

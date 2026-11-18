@@ -14,6 +14,16 @@ import {
   type ChatContext as ContextData,
 } from "../shared/context.ts";
 import { useChatHost } from "./chat-host.ts";
+import { z } from "zod";
+
+const ReservationSchema = z
+  .strictObject({
+    id: z.uuid(),
+    pending: z.boolean(),
+    recoveryRequiresRestart: z.boolean(),
+    taskKnown: z.boolean(),
+  })
+  .nullable();
 
 export function ChatContext() {
   const host = useChatHost();
@@ -23,6 +33,8 @@ export function ChatContext() {
   const [instructions, setInstructions] = useState("");
   const [admission, setAdmission] = useState<string>();
   const [stopping, setStopping] = useState(false);
+  const [reservation, setReservation] = useState<z.infer<typeof ReservationSchema>>(null);
+  const [reservationError, setReservationError] = useState(true);
   const base = host.chatId === undefined ? "/api" : `/api/chats/${host.chatId}`;
   useEffect(() => {
     if (host.active === false) return;
@@ -37,6 +49,17 @@ export function ChatContext() {
         if (active) {
           setData(next);
           setError(false);
+        }
+        try {
+          const reservationResponse = await fetch(`${base}/compact/reservation`);
+          if (!reservationResponse.ok) throw new Error();
+          const reservationState = ReservationSchema.parse(await reservationResponse.json());
+          if (active) {
+            setReservation(reservationState);
+            setReservationError(false);
+          }
+        } catch {
+          if (active) setReservationError(true);
         }
       } catch {
         if (active) setError(true);
@@ -71,6 +94,7 @@ export function ChatContext() {
       setAdmission(
         "Admission unconfirmed. It may already be running. Inspect context before deliberately starting another compaction; this action is never automatically retried.",
       );
+      setRefresh((value) => value + 1);
     }
   }
   return (
@@ -87,6 +111,12 @@ export function ChatContext() {
           detail="Visible context may be stale. Read refreshes do not compact or send."
           retrying={false}
           onRetry={() => setRefresh((value) => value + 1)}
+        />
+      )}
+      {reservationError && (
+        <AgentStatus
+          state="failed"
+          label="Compaction reservation status unavailable. Compaction is disabled until it can be read."
         />
       )}
       {data && (
@@ -214,7 +244,14 @@ export function ChatContext() {
           />
           <Button
             variant="outline"
-            disabled={!data || error || admission !== undefined}
+            disabled={
+              !data ||
+              error ||
+              reservationError ||
+              admission !== undefined ||
+              !!host.shell ||
+              !!reservation?.pending
+            }
             onClick={() => {
               void compact();
             }}
@@ -225,6 +262,40 @@ export function ChatContext() {
             <p role="status" className="text-xs">
               {admission}
             </p>
+          )}
+          {reservation?.pending && (
+            <>
+              <p role="status" className="text-xs">
+                Compaction admission may be unresolved.{" "}
+                {reservation.recoveryRequiresRestart
+                  ? "Restart the host before resolving this reservation."
+                  : "Its outcome may be unknown; releasing does not start another compaction."}
+              </p>
+              {!reservation.recoveryRequiresRestart && (
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    void fetch(`${base}/compact/recover`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ id: reservation.id }),
+                    })
+                      .then((response) => {
+                        if (!response.ok) throw new Error();
+                        setAdmission("Reservation released; the original outcome may be unknown.");
+                        setRefresh((value) => value + 1);
+                      })
+                      .catch(() =>
+                        setAdmission(
+                          "Reservation could not be released; inspect active compactions.",
+                        ),
+                      );
+                  }}
+                >
+                  Release unresolved reservation
+                </Button>
+              )}
+            </>
           )}
         </>
       )}
