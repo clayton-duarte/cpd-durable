@@ -18,6 +18,7 @@ import {
   HelpersViewSchema,
   type HelperLaunch,
 } from "../shared/helpers.ts";
+import type { Selection } from "../shared/configuration.ts";
 
 type Item = {
   request: HelperLaunch;
@@ -31,13 +32,19 @@ export type WorkerAgentSelection = {
   thinkingLevel: NonNullable<Awaited<ReturnType<Conversation["agent"]>>["thinkingLevel"]> | null;
   cwd: string | null;
 };
-/** Host-provided, synchronous policy: no implicit provider/model fallback. */
-export type WorkerModelResolver = (
-  role: HelperLaunch["modelRole"],
-  savedParent: Readonly<WorkerAgentSelection>,
-) => {
-  model: { provider: string; modelId: string };
-  thinkingLevel: WorkerAgentSelection["thinkingLevel"];
+export type ResolvedWorkerModel = {
+  selection: Selection;
+  revision: number;
+  assignment: "main" | "tangent" | "worker";
+};
+export type WorkerDependencies = {
+  resolveModelForRole(
+    role: "worker",
+    options: { workerTier: "economical" | "mid" },
+  ): Promise<ResolvedWorkerModel>;
+  assertModelPolicy(tx: Tx, resolved: ResolvedWorkerModel): Promise<void>;
+  assertParentWritable(tx: Tx, id: ConversationId): Promise<void>;
+  assertInteractiveParent(tx: Tx, id: ConversationId): Promise<void>;
 };
 type Input = { request: HelperLaunch; agent: WorkerAgentSelection };
 
@@ -131,33 +138,47 @@ export const HelpersExtension = defineExtension({
 export async function launchHelper(
   conversation: Conversation,
   raw: unknown,
-  resolveWorkerModel: WorkerModelResolver,
+  dependencies: WorkerDependencies,
 ) {
   const request = HelperLaunchSchema.parse(raw);
-  return conversation.commit(async (tx) => {
+  const priorTask = async (tx: Tx) => {
+    await dependencies.assertParentWritable(tx, conversation.id);
+    await dependencies.assertInteractiveParent(tx, conversation.id);
     const doc = await tx.doc(HelpersDoc, conversation.id);
     const prior = doc.items.find((item) => item.request.requestId === request.requestId);
-    if (prior) {
-      if (JSON.stringify(HelperLaunchSchema.parse(prior.request)) !== JSON.stringify(request))
-        throw new Error("Helper request identity already used with different input");
-      return String(prior.taskId);
-    }
+    if (
+      prior &&
+      JSON.stringify(HelperLaunchSchema.parse(prior.request)) !== JSON.stringify(request)
+    )
+      throw new Error("Helper request identity already used with different input");
+    return prior ? String(prior.taskId) : undefined;
+  };
+  const existing = await conversation.commit(priorTask, BACKGROUND_CONTEXT);
+  if (existing !== undefined) return existing;
+  const chosen = await dependencies.resolveModelForRole("worker", {
+    workerTier: request.modelRole,
+  });
+  if (!chosen.selection.provider.trim() || !chosen.selection.modelId.trim())
+    throw new Error("Select an available worker model in Settings before starting.");
+  return conversation.commit(async (tx) => {
+    const existing = await priorTask(tx);
+    if (existing !== undefined) return existing;
+    await dependencies.assertModelPolicy(tx, chosen);
+    const doc = await tx.doc(HelpersDoc, conversation.id);
     const agent = await tx.doc(AgentDoc, conversation.id);
     const saved: WorkerAgentSelection = {
       model: agent.model ? { provider: agent.model.provider, modelId: agent.model.modelId } : null,
       thinkingLevel: agent.thinkingLevel ?? null,
       cwd: agent.cwd ?? null,
     };
-    const chosen = resolveWorkerModel(request.modelRole, saved);
-    if (!chosen.model.provider.trim() || !chosen.model.modelId.trim())
-      throw new Error("Worker model policy did not select a model");
-    const worker = { ...saved, model: chosen.model, thinkingLevel: chosen.thinkingLevel };
+    const model = { provider: chosen.selection.provider, modelId: chosen.selection.modelId };
+    const worker = { ...saved, model, thinkingLevel: chosen.selection.thinkingLevel };
     const taskId = await tx.createTask(
       request.mode === "background" ? BackgroundHelperTask : ForegroundHelperTask,
       { request, agent: worker },
       { ownership: { kind: "conversation" }, background: request.mode === "background" },
     );
-    doc.items.push({ request, taskId, childId: null, model: chosen.model, receipt: null });
+    doc.items.push({ request, taskId, childId: null, model, receipt: null });
     return String(taskId);
   }, BACKGROUND_CONTEXT);
 }
@@ -171,7 +192,7 @@ export async function stopHelper(harness: Harness, conversation: Conversation, t
 }
 
 /** Explicitly cross background boundaries, unlike the ordinary parent Stop. */
-export async function stopHelpersIncludingBackground(conversation: Conversation) {
+export async function stopThreadIncludingBackground(conversation: Conversation) {
   await conversation.abort(BACKGROUND_CONTEXT, { background: true });
 }
 

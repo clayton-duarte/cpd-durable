@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   createRegistry,
+  defineDoc,
   Harness,
   ProviderDoc,
   type Conversation,
@@ -20,10 +21,12 @@ import {
   inspectHelpers,
   launchHelper as launchHelperWithPolicy,
   stopHelper,
-  stopHelpersIncludingBackground,
+  stopThreadIncludingBackground,
+  type WorkerDependencies,
 } from "../src/server/helpers.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+import { openChat } from "../src/server/chat.ts";
 
 const request = {
   requestId: "helper-one",
@@ -34,12 +37,30 @@ const request = {
   assignment: "Investigate the bounded question",
   context: "Only this chosen context",
 } as const;
+const GuardDoc = defineDoc<{ revision: number; writable: boolean; interactive: boolean }>({
+  kind: "test.worker-guard",
+  version: 1,
+  scope: "session",
+  initial: () => ({ revision: 1, writable: true, interactive: true }),
+  checkpointWhen: () => true,
+});
 
 function launchHelper(conversation: Conversation, raw: unknown) {
-  return launchHelperWithPolicy(conversation, raw, (_role, saved) => ({
-    model: { provider: PROVIDER_ID, modelId: MODEL_ID },
-    thinkingLevel: saved.thinkingLevel,
-  }));
+  return launchHelperWithPolicy(conversation, raw, dependencies());
+}
+function dependencies(
+  resolve: WorkerDependencies["resolveModelForRole"] = async () => ({
+    selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "low" },
+    revision: 1,
+    assignment: "worker",
+  }),
+): WorkerDependencies {
+  return {
+    resolveModelForRole: resolve,
+    assertModelPolicy: async () => {},
+    assertParentWritable: async () => {},
+    assertInteractiveParent: async () => {},
+  };
 }
 
 describe("foreground helpers", () => {
@@ -105,13 +126,14 @@ describe("foreground helpers", () => {
           constraints: ["Do not modify unrelated work"],
         },
       },
-      (role, saved) => {
-        seen.push(role);
+      dependencies(async (_role, options) => {
+        seen.push(options.workerTier);
         return {
-          model: { provider: selected!.provider, modelId: selected!.id },
-          thinkingLevel: saved.thinkingLevel,
+          selection: { provider: selected!.provider, modelId: selected!.id, thinkingLevel: "low" },
+          revision: 1,
+          assignment: "tangent",
         };
-      },
+      }),
     );
     await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
     expect(seen).toEqual(["mid"]);
@@ -127,23 +149,153 @@ describe("foreground helpers", () => {
 
   it("does not launch if the injected model policy cannot select a model", async () => {
     await expect(
-      launchHelperWithPolicy(parent, request, () => {
-        throw new Error("model unavailable");
-      }),
+      launchHelperWithPolicy(
+        parent,
+        request,
+        dependencies(async () => {
+          throw new Error("model unavailable");
+        }),
+      ),
     ).rejects.toThrow("model unavailable");
     expect((await view()).helpers).toEqual([]);
+  });
+
+  it("rechecks parent and model policy on the launch line after asynchronous resolution", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const resolving = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const deps: WorkerDependencies = {
+      resolveModelForRole: async () => {
+        started();
+        await gate;
+        return {
+          selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "low" },
+          revision: 1,
+          assignment: "worker",
+        };
+      },
+      assertModelPolicy: async (tx, resolved) => {
+        if ((await tx.doc(GuardDoc)).revision !== resolved.revision)
+          throw new Error("stale policy");
+      },
+      assertParentWritable: async (tx) => {
+        if (!(await tx.doc(GuardDoc)).writable) throw new Error("parent unavailable");
+      },
+      assertInteractiveParent: async (tx) => {
+        if (!(await tx.doc(GuardDoc)).interactive) throw new Error("not interactive");
+      },
+    };
+    const pending = launchHelperWithPolicy(parent, request, deps);
+    await resolving;
+    await harness.commit(async (tx) => {
+      (await tx.doc(GuardDoc)).revision = 2;
+    }, BACKGROUND_CONTEXT);
+    release();
+    await expect(pending).rejects.toThrow("stale policy");
+    expect((await view()).helpers).toEqual([]);
+    await harness.commit(async (tx) => {
+      (await tx.doc(GuardDoc)).interactive = false;
+    }, BACKGROUND_CONTEXT);
+    await expect(launchHelperWithPolicy(parent, request, deps)).rejects.toThrow("not interactive");
+  });
+
+  it("reuses an admitted request without resolving an unavailable model again", async () => {
+    const id = await launchHelper(parent, request);
+    const deps = dependencies(async () => {
+      throw new Error("model unavailable");
+    });
+    expect(await launchHelperWithPolicy(parent, request, deps)).toBe(id);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.finish("done");
+    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("success"));
+  });
+
+  it("refuses creation if the parent becomes unwritable while policy resolves", async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const resolving = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const deps = dependencies(async () => {
+      started();
+      await gate;
+      return {
+        selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "low" },
+        revision: 1,
+        assignment: "worker",
+      };
+    });
+    deps.assertParentWritable = async (tx) => {
+      if (!(await tx.doc(GuardDoc)).writable) throw new Error("parent unavailable");
+    };
+    const pending = launchHelperWithPolicy(parent, request, deps);
+    await resolving;
+    await harness.commit(async (tx) => {
+      (await tx.doc(GuardDoc)).writable = false;
+    }, BACKGROUND_CONTEXT);
+    release();
+    await expect(pending).rejects.toThrow("parent unavailable");
+    expect((await view()).helpers).toEqual([]);
+  });
+
+  it("uses the real catalog transaction guard to block archive while a worker remains live", async () => {
+    const chat = await openChat(join(directory, "catalog"), provider.models, directory);
+    try {
+      const scope = await chat.chats.resolve(String(chat.conversation.id));
+      expect(scope).toBeDefined();
+      const deps = dependencies();
+      deps.assertParentWritable = async (tx, id) => {
+        if (id !== scope!.conversation.id) throw new Error("wrong parent");
+        await scope!.assertWritable(tx);
+      };
+      deps.assertInteractiveParent = async (tx, id) => {
+        const parent = await tx.conversation(id);
+        if (!parent || parent.owner) throw new Error("not interactive");
+      };
+      const taskId = await launchHelperWithPolicy(
+        chat.conversation,
+        { ...request, mode: "background" },
+        deps,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      await expect(chat.chats.change(String(chat.conversation.id), "archive")).rejects.toThrow();
+      const childId = (await chat.chats.resolve(String(chat.conversation.id)))!.conversation.id;
+      expect(childId).toBe(chat.conversation.id);
+      await chat.conversation.abort(BACKGROUND_CONTEXT, { background: true });
+      await vi.waitFor(async () =>
+        expect((await chat.chats.resolve(String(chat.conversation.id)))?.archived).toBe(false),
+      );
+      expect(taskId).toMatch(/^\d+$/);
+      await chat.chats.change(String(chat.conversation.id), "archive");
+      await expect(launchHelperWithPolicy(chat.conversation, request, deps)).rejects.toThrow();
+    } finally {
+      await chat.close();
+    }
   });
 
   it("defaults the model role to economical", async () => {
     const { modelRole: _role, ...withoutRole } = request;
     const seen: string[] = [];
-    await launchHelperWithPolicy(parent, withoutRole, (role, saved) => {
-      seen.push(role);
-      return {
-        model: { provider: PROVIDER_ID, modelId: MODEL_ID },
-        thinkingLevel: saved.thinkingLevel,
-      };
-    });
+    await launchHelperWithPolicy(
+      parent,
+      withoutRole,
+      dependencies(async (_role, options) => {
+        seen.push(options.workerTier);
+        return {
+          selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "low" },
+          revision: 1,
+          assignment: "worker",
+        };
+      }),
+    );
     await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
     expect(seen).toEqual(["economical"]);
     provider.calls[0]!.finish("done");
@@ -167,7 +319,7 @@ describe("foreground helpers", () => {
   it("crosses the background boundary only when explicitly requested", async () => {
     await launchHelper(parent, { ...request, mode: "background" });
     await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
-    await stopHelpersIncludingBackground(parent);
+    await stopThreadIncludingBackground(parent);
     await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
   });
 

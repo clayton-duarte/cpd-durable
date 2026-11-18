@@ -22,6 +22,7 @@ import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
+import { helperHasUnsettled } from "./helpers.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -58,7 +59,12 @@ export class ChatLifecycleError extends Error {
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
-  return live.run === undefined && !live.compactions?.length && inbox.items.length === 0;
+  return (
+    live.run === undefined &&
+    !live.compactions?.length &&
+    inbox.items.length === 0 &&
+    !(await helperHasUnsettled(tx, id as ConversationId))
+  );
 }
 async function empty(tx: Tx, item: CatalogItem) {
   return (

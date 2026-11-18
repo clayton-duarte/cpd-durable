@@ -8,6 +8,7 @@ import { createCodeMode } from "./codemode.ts";
 import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
+import { HelpersExtension } from "./helpers.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -25,6 +26,7 @@ export function createExecution(defaultCwd = workingDirectory()) {
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
+  registry.install(HelpersExtension);
   registry.install(
     defineExtension({
       name: "cpd-context",
