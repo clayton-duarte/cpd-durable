@@ -123,6 +123,8 @@ export function SavedPrompts({
       !current.available ||
       !current.connected ||
       current.active === false ||
+      current.readOnly ||
+      current.mutationAllowed?.() === false ||
       !current.onSend ||
       busy
     )
@@ -209,6 +211,7 @@ export function SavedPrompts({
       !current.onSend ||
       current.readOnly ||
       current.active === false ||
+      current.mutationAllowed?.() === false ||
       !item ||
       !review ||
       review.id !== item.id ||
@@ -269,6 +272,7 @@ export function SavedPrompts({
       !current.onSend ||
       current.readOnly ||
       current.active === false ||
+      current.mutationAllowed?.() === false ||
       busy ||
       !edit ||
       conflict

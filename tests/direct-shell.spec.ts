@@ -3,6 +3,10 @@ import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 test("fresh double-prefix sends to shell and Stop targets its request", async ({ page }) => {
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   let normalAttempts = 0;
   let normalInputs = 0;
@@ -91,6 +95,10 @@ test("uncertain shell retries the original identity without consuming a newer dr
   page,
 }) => {
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
@@ -144,6 +152,10 @@ test("uncertain shell retries the original identity without consuming a newer dr
 test("ignores a shell status from another chat", async ({ page }) => {
   let read = false;
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
@@ -200,6 +212,10 @@ test("a delayed old poll cannot replace a newer shell or change its Stop target"
   page,
 }) => {
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
@@ -304,6 +320,10 @@ test("visible idle chat discovers remote shell tasks in succession and stops the
   page,
 }) => {
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({

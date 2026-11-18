@@ -84,7 +84,14 @@ export function AgentQuestions() {
   }, [enabled, id, refresh]);
   const resolve = useCallback(
     async (question: QuestionView, resolution: Resolution) => {
-      if (!id || !enabled || host.readOnly || !host.onSend || readError)
+      if (
+        !id ||
+        !enabled ||
+        host.readOnly ||
+        host.mutationAllowed?.() === false ||
+        !host.onSend ||
+        readError
+      )
         throw new Error("Question is read-only");
       const state = current.current;
       const epoch = state.epoch;
@@ -115,7 +122,7 @@ export function AgentQuestions() {
         state.writing = false;
       }
     },
-    [id, enabled, host.readOnly, host.onSend, refresh, readError],
+    [id, enabled, host.readOnly, host.mutationAllowed, host.onSend, refresh, readError],
   );
   const visible = (projection && projection.id === id ? projection.questions : []).filter(
     (question) => question.status === "pending" && !question.cancelled,

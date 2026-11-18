@@ -18,15 +18,18 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { useChatHost } from "./chat-host.ts";
 import { SavedPrompts } from "./saved-prompts.tsx";
+import { PromptTemplates } from "./prompt-templates.tsx";
 
 // Host bindings only: the supplied elements own all visual presentation.
 export function DurableControls() {
   const host = useChatHost();
   const [resetOpen, setResetOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   useEffect(() => {
     if (host.active === false) {
       setResetOpen(false);
+      setTemplatesOpen(false);
       setPromptsOpen(false);
     }
   }, [host.active]);
@@ -38,13 +41,15 @@ export function DurableControls() {
   const queue = host.state?.controls?.queue ?? [];
   const locked = !host.available;
   const error = host.localError ?? host.error ?? host.state?.failure;
-  const status = !host.onSend
-    ? "Read-only"
-    : !host.connected
-      ? host.state
-        ? "Reconnecting…"
-        : "Connecting…"
-      : null;
+  const status = host.inputBlockedReason
+    ? host.inputBlockedReason
+    : !host.onSend
+      ? "Read-only"
+      : !host.connected
+        ? host.state
+          ? "Reconnecting…"
+          : "Connecting…"
+        : null;
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
@@ -53,6 +58,23 @@ export function DurableControls() {
       description: "Open saved prompts for all chats",
       execute: () => setPromptsOpen(true),
     });
+    if (host.canRequestTangent && !busy) {
+      for (const id of ["tangent", "side"] as const) {
+        commands.push({
+          id,
+          description: "Request tangent: ask the main agent to prepare a handoff",
+          execute: () => {
+            void host.requestTangent(id);
+          },
+        });
+      }
+    }
+    if (host.chatId || host.state?.conversationId)
+      commands.push({
+        id: "templates",
+        description: "Browse local prompt templates without sending",
+        execute: () => setTemplatesOpen(true),
+      });
     if (busy) {
       commands.push(
         {
@@ -116,6 +138,7 @@ export function DurableControls() {
           emptyItemsLabel="No commands available for this state"
         />
       )}
+      <PromptTemplates open={templatesOpen} onOpenChange={setTemplatesOpen} />
       {status && <AgentStatus state="waiting" label={status} role="status" title={host.title} />}
       {host.state?.hasEarlier && !host.onLoadEarlier && (
         <AgentStatus

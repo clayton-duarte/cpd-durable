@@ -8,6 +8,10 @@ test("edit uses the native composer, safely retries the same operation and keeps
   let recoveredRequestId = "";
   const requests: unknown[] = [];
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
@@ -155,6 +159,10 @@ test("prepared recovery requires explicit matching text and rejects wrong-scope 
   const requests: { requestId: string; text: string }[] = [];
   let reads = 0;
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({

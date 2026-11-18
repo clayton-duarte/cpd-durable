@@ -11,6 +11,9 @@ export interface ChatProps {
   onUnsavedDraft?: (chatId: string) => void;
   active?: boolean;
   readOnly?: boolean;
+  mutationAllowed?: (() => boolean) | undefined;
+  canRequestTangent?: boolean;
+  inputBlockedReason?: string | undefined;
   onFork?: ((entryId: number) => void) | undefined;
   onRegenerate?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;
@@ -59,6 +62,7 @@ type ChatHost = ChatProps & {
   readDraft: () => string;
   draftVersion: () => number;
   applyPrompt: (version: number, text: string, mode: "append" | "replace") => boolean;
+  requestTangent: (command: "tangent" | "side") => Promise<boolean>;
 };
 
 export const ChatHostContext = createContext<ChatHost | null>(null);

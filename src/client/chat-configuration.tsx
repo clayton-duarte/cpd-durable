@@ -48,7 +48,8 @@ export function ChatConfiguration() {
     };
   }, [base, host.chatId, host.active, refresh]);
   async function save() {
-    if (!data || !draft || pending || error) return;
+    if (!data || !draft || pending || error || host.readOnly || host.mutationAllowed?.() === false)
+      return;
     setPending(true);
     try {
       const response = await fetch(`${base}/configuration`, {

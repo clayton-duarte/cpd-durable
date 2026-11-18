@@ -36,6 +36,10 @@ const pending = {
 };
 async function setup(page: Page) {
   await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/*/tangents", (route) => route.fulfill({ json: { tangents: [] } }));
+  await page.route("**/api/chats/*/workers", (route) =>
+    route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
+  );
   await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({

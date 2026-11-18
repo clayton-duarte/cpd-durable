@@ -7,22 +7,47 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
-import { modelKey, openChats } from "./chats.ts";
+import { assertInteractiveChat, createTangentCatalogHooks, modelKey, openChats } from "./chats.ts";
+import { createTangentRoutes } from "./tangent-routes.ts";
+import type { TangentHooks } from "./tangents/index.ts";
+import type { ResolvedTangentModel } from "../shared/tangents.ts";
+import type { Tx } from "@earendil-works/pi-durable";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
-import { createModelPolicy } from "./model-policy.ts";
+import { assertModelPolicyTx, createModelPolicy } from "./model-policy.ts";
+import { createWorkerTools, type WorkerToolDependencies } from "./worker-tools.ts";
+import { createWorkerRoutes } from "./worker-routes.ts";
+import { helperHasUnsettled } from "./helpers.ts";
+import { createHandoffRoutes } from "./handoff-routes.ts";
+import { createHandoffGuards } from "./handoffs.ts";
 import { readConfiguredExtensions } from "./extensions/config.ts";
 import { loadConfiguredExtensions } from "./extensions/loader.ts";
 import { openConfiguredMcp } from "./mcp/config.ts";
 import { createSavedPrompts } from "./saved-prompts.ts";
 
+export type TangentPolicy = {
+  resolveModel(): Promise<ResolvedTangentModel>;
+  assertResolvedModel(tx: Tx, resolved: ResolvedTangentModel): Promise<void>;
+};
+export type WorkerHostFactory = (harness: () => Harness) => Omit<WorkerToolDependencies, "harness">;
+import { compactIntentUnsettled, directShellHasUnsettled } from "./direct-shell.ts";
 export async function openChat(
   dataDir: string,
   models: Models,
   cwd = workingDirectory(),
-  options: { extensionsConfigPath?: string; mcpConfigPath?: string } = {},
+  options: {
+    extensionsConfigPath?: string;
+    mcpConfigPath?: string;
+    tangentPolicy?: (harness: Harness, models: Models) => TangentPolicy;
+    assertNoUnsettledTangent?: (
+      tx: Tx,
+      tangent: import("@earendil-works/pi-durable").ConversationId,
+    ) => Promise<void>;
+    workers?: WorkerHostFactory;
+  } = {},
 ) {
+  let boundTangentHooks: TangentHooks | undefined;
   const mcp = await openConfiguredMcp(
     options.mcpConfigPath !== undefined ? { path: options.mcpConfigPath } : {},
   );
@@ -30,8 +55,37 @@ export async function openChat(
   let configured: Awaited<ReturnType<typeof loadConfiguredExtensions>> | undefined;
   let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
+  const getHarness = () => {
+    if (!harness) throw new Error("Worker host is not ready.");
+    return harness;
+  };
+  let workerOptions: WorkerToolDependencies | undefined;
+  const getWorkers = () => {
+    if (!workerOptions) throw new Error("Worker service unavailable.");
+    return workerOptions;
+  };
+  const createRuntime = () =>
+    createExecution(
+      cwd,
+      () => {
+        if (!boundTangentHooks) throw new Error("Tangent service unavailable.");
+        return boundTangentHooks;
+      },
+      createWorkerTools({
+        harness: getHarness,
+        policy: {
+          resolveModelForRole: (role, options) =>
+            getWorkers().policy.resolveModelForRole(role, options),
+          assertModelPolicy: (tx, resolved) => getWorkers().policy.assertModelPolicy(tx, resolved),
+          assertParentWritable: (tx, id) => getWorkers().policy.assertParentWritable(tx, id),
+          assertInteractiveParent: (tx, id) => getWorkers().policy.assertInteractiveParent(tx, id),
+        },
+        assertReadable: (tx, id) => getWorkers().assertReadable(tx, id),
+      }),
+      mcp,
+    );
   try {
-    execution = createExecution(cwd, mcp);
+    execution = createRuntime();
     configured = await loadConfiguredExtensions(
       execution.registry,
       await readConfiguredExtensions(options.extensionsConfigPath),
@@ -69,6 +123,73 @@ export async function openChat(
     };
     const modelPolicy = createModelPolicy(harness, models);
     const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
+    const handoffs = createHandoffRoutes({
+      harness,
+      guards: createHandoffGuards(),
+      resolve: async (id) => (await chats.resolve(id))?.conversation,
+    });
+    const custom = options.workers?.(getHarness);
+    workerOptions = {
+      harness: getHarness,
+      policy: {
+        resolveModelForRole: (role, opts) =>
+          custom
+            ? custom.policy.resolveModelForRole(role, opts)
+            : modelPolicy.resolveModelForRole(role, opts),
+        assertModelPolicy: (tx, resolved) =>
+          custom
+            ? custom.policy.assertModelPolicy(tx, resolved)
+            : assertModelPolicyTx(tx, resolved),
+        async assertParentWritable(tx, id) {
+          await assertInteractiveChat(tx, id, true);
+          await custom?.policy.assertParentWritable(tx, id);
+        },
+        async assertInteractiveParent(tx, id) {
+          await assertInteractiveChat(tx, id, false);
+          await custom?.policy.assertInteractiveParent(tx, id);
+        },
+      },
+      async assertReadable(tx, id) {
+        await assertInteractiveChat(tx, id, false);
+        await custom?.assertReadable(tx, id);
+      },
+    };
+    const policy = options.tangentPolicy?.(harness, models) ?? {
+      resolveModel: () => modelPolicy.resolveModelForRole("tangent"),
+      assertResolvedModel: assertModelPolicyTx,
+    };
+    const tangentHooks = createTangentCatalogHooks({
+      resolveModel: async () => {
+        return policy.resolveModel();
+      },
+      assertResolvedModel: async (tx, resolved) => {
+        await policy.assertResolvedModel(tx, resolved);
+      },
+      cwd: (source) => workingDirectory(source ?? cwd),
+      async assertNoUnsettled(tx, tangent) {
+        if (await helperHasUnsettled(tx, tangent))
+          throw new Error("Tangent has unsettled workers.");
+        if (
+          (await directShellHasUnsettled(tx, tangent)) ||
+          (await compactIntentUnsettled(tx, tangent))
+        )
+          throw new Error("Tangent has unsettled shell or compaction work.");
+        await options.assertNoUnsettledTangent?.(tx, tangent);
+      },
+    });
+    boundTangentHooks = tangentHooks;
+    const tangents = { routes: createTangentRoutes(harness, tangentHooks, models) };
+    const workers = createWorkerRoutes({
+      harness,
+      resolve: async (id) => {
+        const scope = await chats.resolve(id);
+        return scope
+          ? { conversation: scope.conversation, policy: getWorkers().policy }
+          : undefined;
+      },
+      assertReadable: (tx, id) => getWorkers().assertReadable(tx, id),
+      modelName: (provider, id) => models.getModel(provider, id)?.name,
+    });
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({
       harness,
@@ -115,6 +236,9 @@ export async function openChat(
       modelPolicy,
       attachments,
       savedPrompts: createSavedPrompts(harness),
+      tangents,
+      workers,
+      handoffs,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

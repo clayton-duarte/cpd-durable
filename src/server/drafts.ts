@@ -10,6 +10,7 @@ import {
 import { PendingImagesDoc } from "./attachment-catalog.ts";
 import { CatalogDoc, ChatLifecycleError, type ChatScope } from "./chats.ts";
 import { directShellRequestExists } from "./direct-shell.ts";
+import { draftInputText } from "../shared/draft-intent.ts";
 import {
   DraftAttemptConflict,
   draftAttemptFingerprint,
@@ -84,6 +85,18 @@ export async function saveAttempt(scope: ChatScope, input: unknown) {
   const request = DraftAttemptRequestSchema.parse(input);
   return scope.conversation.commit(async (tx) => {
     await scope.assertWritable(tx);
+    if (request.intent) {
+      const item = (await tx.doc(CatalogDoc)).items.find(
+        (entry) => entry.id === scope.conversation.id,
+      );
+      if (
+        !item ||
+        item.kind === "tangent" ||
+        request.mode !== "reject" ||
+        draftInputText(request.text, request.intent) === undefined
+      )
+        throw new DraftAttemptConflict();
+    }
     const existing = await readDraftAttempt(tx, scope.conversation.id, request.requestId);
     const record = { ...request, fingerprint: draftAttemptFingerprint(request) };
     // Identical intent remains retryable after the user advances the draft.
