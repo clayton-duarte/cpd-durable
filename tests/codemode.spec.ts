@@ -35,12 +35,25 @@ test("nested code-mode calls use supplied disclosures without inventing output",
                         state: "complete",
                         nested: {
                           state: "available",
+                          outputSpilled: true,
                           calls: [
                             {
                               parentCallId: "parent",
                               callId: "parent/c1",
                               name: "read",
                               state: "complete",
+                            },
+                            {
+                              parentCallId: "parent",
+                              callId: "parent/c2",
+                              name: "write",
+                              state: "pending",
+                            },
+                            {
+                              parentCallId: "parent",
+                              callId: "parent/c3",
+                              name: "bash",
+                              state: "unavailable",
                             },
                           ],
                         },
@@ -64,6 +77,13 @@ test("nested code-mode calls use supplied disclosures without inventing output",
   await page.goto("/");
   await page.getByRole("button", { name: "1 tool call" }).click();
   await page.getByRole("button", { name: /Used tool.*codemode/ }).click();
+  await expect(page.getByRole("button", { name: "Pending tool: write" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Tool status unavailable: bash" })).toBeVisible();
+  await expect(
+    page.getByText(
+      "The SDK reports a code-mode output spill file; its contents are not shown here.",
+    ),
+  ).toBeVisible();
   await page.getByRole("button", { name: /Used tool.*read/ }).click();
   await expect(page.getByText("Nested arguments unavailable.")).toBeVisible();
   await expect(page.getByText("Nested output unavailable.")).toBeVisible();
