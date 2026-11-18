@@ -16,6 +16,7 @@ export default defineConfig({
     "edit-branch.spec.ts",
     "edit-diff.spec.ts",
     "questions.spec.ts",
+    "structured-table.spec.ts",
     "templates.spec.ts",
     "model-policy.spec.ts",
     "regeneration.spec.ts",

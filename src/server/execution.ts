@@ -9,6 +9,7 @@ import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
 import { DirectShellExtension } from "./direct-shell.ts";
+import { createTableExtension } from "./structured-table.ts";
 import type { openConfiguredMcp } from "./mcp/config.ts";
 
 export function workingDirectory(path = "~"): string {
@@ -32,6 +33,7 @@ export function createExecution(
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
   registry.install(DirectShellExtension);
+  registry.install(createTableExtension());
   registry.install(
     defineExtension({
       name: "cpd-context",

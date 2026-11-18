@@ -51,6 +51,38 @@ export default defineExtension({name: ${JSON.stringify(extensionName)}, tasks: [
 `;
 }
 describe("configured extension foundation", () => {
+  it("preserves the table and native tools when configured tools coexist or collide", async () => {
+    const dir = await fixture();
+    const log = join(dir, "cleanup.txt");
+    const execution = createExecution(dir);
+    try {
+      const names = () =>
+        execution.registry
+          .snapshot()
+          .tools()
+          .map(({ tool }) => tool.name);
+      const before = names();
+      expect(before).toContain("display_table");
+      await writeFile(join(dir, "extra.mjs"), moduleSource("extra", "extra_tool", log));
+      const loaded = await loadConfiguredExtensions(
+        execution.registry,
+        await config(dir, ["./extra.mjs"]),
+      );
+      expect(names()).toEqual([...before, "extra_tool"]);
+      await loaded.close();
+      expect(names()).toEqual(before);
+      await writeFile(
+        join(dir, "table-collision.mjs"),
+        moduleSource("collision", "display_table", log),
+      );
+      await expect(
+        loadConfiguredExtensions(execution.registry, await config(dir, ["./table-collision.mjs"])),
+      ).rejects.toThrow("could not be loaded");
+      expect(names()).toEqual(before);
+    } finally {
+      await execution.close();
+    }
+  });
   it("rejects configured replacements of the native direct-shell task without changing the registry", async () => {
     const dir = await fixture();
     const execution = createExecution(dir);

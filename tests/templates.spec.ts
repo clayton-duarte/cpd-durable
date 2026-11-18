@@ -84,7 +84,43 @@ test("templates insert into native drafts only after explicit append or replace"
             new MessageEvent("state", {
               data: JSON.stringify({
                 conversationId: 1,
-                messages: [],
+                messages: [
+                  {
+                    id: "1:0",
+                    role: "assistant",
+                    text: "",
+                    interrupted: false,
+                    outcome: "complete",
+                    parts: [
+                      {
+                        id: "1:0:0",
+                        type: "tool-call",
+                        callId: "table",
+                        name: "display_table",
+                        arguments: {},
+                        state: "complete",
+                        output: "Table receipt.",
+                        table: {
+                          version: 1,
+                          table: { columns: [{ id: "x", label: "X" }], rows: [{ x: "row" }] },
+                        },
+                      },
+                      {
+                        id: "1:0:1",
+                        type: "tool-call",
+                        callId: "edit",
+                        name: "edit",
+                        arguments: {},
+                        state: "complete",
+                        output: "Edit receipt.",
+                        editDiff: {
+                          kind: "patch",
+                          patch: "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+                        },
+                      },
+                    ],
+                  },
+                ],
                 partial: "",
                 busy: false,
                 hasEarlier: false,
@@ -146,6 +182,14 @@ test("templates insert into native drafts only after explicit append or replace"
   await expect(draft).toHaveValue("Literal $1 <b>text</b>");
   await expect.poll(() => savedTexts).toContain("Literal $1 <b>text</b>");
   await expect(page.getByRole("button", { name: "Remove one.png" })).toBeVisible();
+  await page.locator('[data-slot="tool-group-trigger"]').click();
+  await page.getByRole("button", { name: /Used tool.*display_table/ }).click();
+  await page.getByRole("button", { name: /Used tool.*edit/ }).click();
+  await expect(page.locator('[data-slot="data-table"]')).toContainText("row");
+  await expect(page.locator('[data-slot="code-diff"]')).toContainText("after");
+  await expect(page.getByText("Table receipt.", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("Edit receipt.", { exact: true })).toHaveCount(1);
+  await expect(draft).toHaveValue("Literal $1 <b>text</b>");
   expect(inputs).toBe(0);
 });
 

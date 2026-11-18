@@ -18,6 +18,74 @@ const entry = (id: number, content: unknown, stopReason = "stop", kind = "pi.ass
 });
 
 describe("validated ordered SDK presentation", () => {
+  it("projects matched table and edit receipts independently without forwarding extra details", () => {
+    const patch = "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-before\n+after\n";
+    const table = { version: 1, table: { columns: [{ id: "x", label: "X" }], rows: [{ x: 1 }] } };
+    const call = entry(
+      1,
+      [
+        { type: "toolCall", id: "table", name: "display_table", arguments: {} },
+        { type: "toolCall", id: "edit", name: "edit", arguments: {} },
+      ],
+      "toolUse",
+    );
+    const result = (id: number, name: string, details: unknown) => ({
+      id,
+      kind: "pi.tool-result",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: name === "display_table" ? "table" : "edit",
+          toolName: name,
+          content: [{ type: "text", text: "ordinary" }],
+          isError: false,
+          details,
+        },
+      ],
+    });
+    const state = ChatStateSchema.parse(
+      present(
+        view([
+          call,
+          result(2, "display_table", table),
+          result(3, "edit", { patch, diff: "diff", secret: "PRIVATE_EXTRA" }),
+        ]),
+      ),
+    );
+    const parts = state.messages.flatMap((message) => message.parts ?? []);
+    expect(
+      parts.find((part) => part.type === "tool-call" && part.name === "display_table"),
+    ).toMatchObject({ table });
+    expect(parts.find((part) => part.type === "tool-call" && part.name === "edit")).toMatchObject({
+      editDiff: { kind: "patch", patch },
+    });
+    expect(JSON.stringify(state)).not.toContain("PRIVATE_EXTRA");
+  });
+  it("does not project malformed or foreign table details", () => {
+    const call = entry(
+      1,
+      [{ type: "toolCall", id: "table", name: "display_table", arguments: {} }],
+      "toolUse",
+    );
+    const result = {
+      id: 2,
+      kind: "pi.tool-result",
+      model: [
+        {
+          role: "toolResult",
+          toolCallId: "table",
+          toolName: "display_table",
+          content: [{ type: "text", text: "Ordinary output" }],
+          isError: false,
+          details: { version: 1, table: { columns: [], rows: [], secret: "PRIVATE_EXTRA" } },
+        },
+      ],
+    };
+    const state = ChatStateSchema.parse(present(view([call, result])));
+    expect(JSON.stringify(state)).toContain("Ordinary output");
+    expect(JSON.stringify(state)).not.toContain("PRIVATE_EXTRA");
+    expect(state.messages[0]?.parts?.[0]).not.toHaveProperty("table");
+  });
   it("does not pair a tool result across an unresolved gap with a sparse upper bound", () => {
     const state = present(
       view([
