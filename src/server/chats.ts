@@ -22,6 +22,7 @@ import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
+import { directShellHasUnsettled, directShellRequestExists } from "./direct-shell.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -155,6 +156,13 @@ export async function openChats(
           const metadata = await tx.doc(CatalogDoc);
           const item = metadata.items.find((entry) => entry.id === conversation.id);
           await assertWritable(tx);
+          if (
+            draft.requestId &&
+            (await directShellRequestExists(tx, conversation.id, draft.requestId))
+          )
+            throw new ChatLifecycleError("Request identity already used.", 409);
+          if (await directShellHasUnsettled(tx, conversation.id))
+            throw new ChatLifecycleError("A direct shell command is running.", 409);
           if (options?.expectedModelKey !== undefined) {
             const current = selection(await tx.doc(AgentDoc, conversation.id));
             if (modelKey(current) !== options.expectedModelKey)
