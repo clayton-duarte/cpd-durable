@@ -84,6 +84,16 @@ Implementation proceeds through durable tangent creation and split-chat navigati
 
 Remaining design work includes promotion of a tangent to a main thread, deeper interactive nesting if justified, and broader multi-project organization. A filesystem living-brief watcher, automatic context synchronization and a global attention Inbox are not selected by this authorization.
 
+## Continuous parallel delivery
+
+On 2026-11-18 the User identified repeated cross-PR conflict repair during CPD's own development as a problem CPD should solve. The [delivery incident and lessons](problem-and-learning.md#parallel-implementation-is-not-continuous-delivery) are the authoritative history. The selected goal is continuous parallel delivery: independent work can proceed while compatible, reviewed increments keep landing, without making the User repeatedly coordinate rebases and integration repair.
+
+**Design implications, not implemented capabilities:** coordination needs to account for shared integration ownership and real dependencies before dispatch, not infer independence from separate conversations or worktrees. A result should identify the base and contracts it was built against; verification must remain attributable to its tested head and base. A changed base can require renewed integration evidence, and an integration conflict needs a responsible owner and a concrete next action.
+
+**Open mechanisms:** how to surface overlapping ownership, express dependencies, bound integration work in progress, and invalidate affected evidence without repeatedly refreshing every branch. An integration owner, dependency-aware stacking, stable module contracts and a landing queue are candidate techniques, not a selected scheduler or mandatory role hierarchy. Textual conflict detection alone cannot establish semantic compatibility.
+
+For this repository's current backlog, the User selected creation-order landing; that operational policy is not a universal product queue algorithm. Parallel investigation and isolated implementation should remain possible. Nothing here grants automatic merge authority, selects a new runtime or transcript store, or claims that current tangent and worker controls already provide continuous delivery.
+
 ## Cockpit purposes
 
 The User described four panel purposes from the v0 Cockpit. Preserve the purposes separately from its old role names, mandatory phases or DAG.
