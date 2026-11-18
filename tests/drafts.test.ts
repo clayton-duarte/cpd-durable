@@ -7,7 +7,7 @@ import { openChat } from "../src/server/chat.ts";
 import { testModels } from "./models.ts";
 
 describe("conversation draft service", () => {
-  it("clears a matching image draft on real host admission and preserves later edits on retry", async () => {
+  it("retains a legacy image draft on admission and preserves later edits on retry", async () => {
     const dir = await mkdtemp(join(tmpdir(), "draft-image-admission-"));
     const provider = testModels();
     const original = provider.models.getAvailable.bind(provider.models);
@@ -48,14 +48,17 @@ describe("conversation draft service", () => {
         images: [ref.id],
         draft: { revision: 1, text: "  image  ", images: [ref.id] },
       };
+      expect((await json("/input", "POST", { ...input, text: "different" })).status).toBe(400);
+      expect((await json("/input", "POST", { ...input, images: [] })).status).toBe(400);
+      expect(await get()).toEqual({ revision: 1, content: { text: "  image  ", images: [image] } });
       const admitted = await json("/input", "POST", input);
       expect(admitted.status).toBe(202);
-      expect(await admitted.json()).toMatchObject({ clearedDraftRevision: 2 });
-      expect(await get()).toEqual({ revision: 2, content: { text: "", images: [] } });
+      expect(await admitted.json()).not.toHaveProperty("clearedDraftRevision");
+      expect(await get()).toEqual({ revision: 1, content: { text: "  image  ", images: [image] } });
       expect(
         (
           await json("/draft", "PUT", {
-            expectedRevision: 2,
+            expectedRevision: 1,
             content: { text: "image", images: [image] },
           })
         ).status,
@@ -64,11 +67,11 @@ describe("conversation draft service", () => {
         (
           await json("/input", "POST", {
             ...input,
-            draft: { revision: 3, text: "image", images: [ref.id] },
+            draft: { revision: 2, text: "image", images: [ref.id] },
           })
         ).status,
       ).toBe(202);
-      expect(await get()).toEqual({ revision: 3, content: { text: "image", images: [image] } });
+      expect(await get()).toEqual({ revision: 2, content: { text: "image", images: [image] } });
       expect(
         (
           await json("/input", "POST", {
@@ -78,13 +81,13 @@ describe("conversation draft service", () => {
           })
         ).status,
       ).toBe(202);
-      expect(await get()).toEqual({ revision: 3, content: { text: "image", images: [image] } });
+      expect(await get()).toEqual({ revision: 2, content: { text: "image", images: [image] } });
     } finally {
       await host.close();
       await rm(dir, { recursive: true, force: true });
     }
   });
-  it("clears only the matching revision on first successful admission, never on retry", async () => {
+  it("retains a legacy text draft on first admission and on retries", async () => {
     const dir = await mkdtemp(join(tmpdir(), "draft-admit-"));
     const provider = testModels();
     const host = await openChat(dir, provider.models, dir);
@@ -113,15 +116,15 @@ describe("conversation draft service", () => {
       };
       const admitted = await request("/input", "POST", input);
       expect(admitted.status).toBe(202);
-      expect(await admitted.json()).toMatchObject({ clearedDraftRevision: 2 });
+      expect(await admitted.json()).not.toHaveProperty("clearedDraftRevision");
       expect(await (await request("/draft", "GET")).json()).toEqual({
-        revision: 2,
-        content: { text: "", images: [] },
+        revision: 1,
+        content: { text: "  hello  ", images: [] },
       });
       expect(
         (
           await request("/draft", "PUT", {
-            expectedRevision: 2,
+            expectedRevision: 1,
             content: { text: "hello", images: [] },
           })
         ).status,
@@ -130,23 +133,23 @@ describe("conversation draft service", () => {
         (
           await request("/input", "POST", {
             ...input,
-            draft: { revision: 3, text: "hello", images: [] },
+            draft: { revision: 2, text: "hello", images: [] },
           })
         ).status,
       ).toBe(202);
       expect(await (await request("/draft", "GET")).json()).toEqual({
-        revision: 3,
+        revision: 2,
         content: { text: "hello", images: [] },
       });
       const busy = {
         requestId: crypto.randomUUID(),
         text: "hello",
-        draft: { revision: 3, text: "hello", images: [] },
+        draft: { revision: 2, text: "hello", images: [] },
       };
       expect((await request("/input", "POST", busy)).status).toBe(409);
       expect(
         ((await (await request("/draft", "GET")).json()) as { revision: number }).revision,
-      ).toBe(3);
+      ).toBe(2);
       const followUp = {
         requestId: crypto.randomUUID(),
         text: "hello",
@@ -155,7 +158,7 @@ describe("conversation draft service", () => {
       };
       expect((await request("/input", "POST", followUp)).status).toBe(202);
       expect(await (await request("/draft", "GET")).json()).toEqual({
-        revision: 3,
+        revision: 2,
         content: { text: "hello", images: [] },
       });
     } finally {

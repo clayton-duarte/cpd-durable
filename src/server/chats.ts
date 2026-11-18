@@ -395,7 +395,7 @@ export async function openChats(
             ? await tx.submissionByRequest(conversation.id, draft.requestId)
             : undefined;
           const savedDraft =
-            options?.draft && !prior && draft.type === "input"
+            attempt && options?.draft && !prior && draft.type === "input"
               ? await tx.doc(DraftDoc, conversation.id)
               : undefined;
           const record = draft.requestId
