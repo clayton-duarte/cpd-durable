@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import { compactIntentUnsettled, directShellHasUnsettled } from "./direct-shell.ts";
 import {
   defineDoc,
   InboxDoc,
@@ -79,7 +80,13 @@ export async function currentHandoffHead(tx: Tx, id: ConversationId) {
 export async function assertIdleHandoffDestination(tx: Tx, id: ConversationId) {
   const live = await tx.doc(LiveDoc, id);
   const inbox = await tx.doc(InboxDoc, id);
-  if (live.run || live.compactions?.length || inbox.items.length)
+  if (
+    live.run ||
+    live.compactions?.length ||
+    inbox.items.length ||
+    (await directShellHasUnsettled(tx, id)) ||
+    (await compactIntentUnsettled(tx, id))
+  )
     throw new Error(
       "Handoff delivery requires an idle destination with no queued work or compaction.",
     );

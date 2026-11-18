@@ -150,6 +150,9 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+
+  await page.route("**/api/compact/reservation", (route) => route.fulfill({ json: null }));
+  await page.route("**/api/chats/*/compact/reservation", (route) => route.fulfill({ json: null }));
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },

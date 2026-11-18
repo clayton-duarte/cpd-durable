@@ -13,6 +13,8 @@ import { HelpersExtension } from "./helpers.ts";
 import type { createWorkerTools } from "./worker-tools.ts";
 import { createHandoffTools } from "./handoff-tools.ts";
 import { createHandoffGuards } from "./handoffs.ts";
+import { DirectShellExtension } from "./direct-shell.ts";
+import type { openConfiguredMcp } from "./mcp/config.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -25,11 +27,13 @@ export function createExecution(
   defaultCwd = workingDirectory(),
   tangentHooks?: () => TangentHooks,
   workerTools?: ReturnType<typeof createWorkerTools>,
+  mcp?: Awaited<ReturnType<typeof openConfiguredMcp>>,
 ) {
   const registry = createRegistry();
-  const codeMode = createCodeMode();
+  const codeMode = createCodeMode(mcp ? { namespaces: mcp.namespaces } : {});
   registry.install(CodingTools);
   registry.install(codeMode.extension);
+  if (mcp) registry.install(mcp.extension);
   registry.install(createSearchTools());
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
   registry.install(createResourceExtension());
@@ -38,6 +42,7 @@ export function createExecution(
   registry.install(HelpersExtension);
   if (workerTools) registry.install(workerTools);
   registry.install(createHandoffTools(createHandoffGuards()));
+  registry.install(DirectShellExtension);
   registry.install(
     defineExtension({
       name: "cpd-context",

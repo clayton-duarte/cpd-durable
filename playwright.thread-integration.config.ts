@@ -8,6 +8,8 @@ export default defineConfig({
     "chat-sidebar.spec.ts",
     "theme.spec.ts",
     "codemode.spec.ts",
+    "direct-shell.spec.ts",
+    "edit-branch.spec.ts",
     "history-operations.spec.ts",
     "questions.spec.ts",
     "model-policy.spec.ts",

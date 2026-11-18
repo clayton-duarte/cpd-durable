@@ -104,6 +104,7 @@ export function MainThreadView({
   onSelectTangent,
   onCloseTangent,
   onFork,
+  onEdit,
 }: {
   mainId: string;
   title: string;
@@ -113,6 +114,7 @@ export function MainThreadView({
   onSelectTangent: (id: string) => void;
   onCloseTangent: () => void;
   onFork: (entryId: number) => void;
+  onEdit: (entryId: number, text: string) => void;
 }) {
   const [items, setItems] = useState<TangentView[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -265,6 +267,7 @@ export function MainThreadView({
               readOnly={readOnly}
               canRequestTangent={configured}
               onFork={onFork}
+              onEdit={onEdit}
             />
           </div>
         )}

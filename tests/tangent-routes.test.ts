@@ -97,6 +97,24 @@ describe("tangent HTTP and catalog composition", () => {
       const denied = await f.post(`http://localhost:3000/api/chats/${created.id}/input`, input);
       expect(denied.status).toBe(409);
       expect(JSON.stringify(await denied.json())).toContain("Start tangent with its handoff first");
+      for (const includeInContext of [true, false]) {
+        const shell = await f.post(`http://localhost:3000/api/chats/${created.id}/shell`, {
+          requestId: crypto.randomUUID(),
+          command: "printf synthetic",
+          includeInContext,
+        });
+        expect(shell.status).toBe(409);
+        expect(JSON.stringify(await shell.json())).toContain(
+          "Start tangent with its handoff first",
+        );
+      }
+      const edit = await f.post(`http://localhost:3000/api/chats/${created.id}/edit-branch`, {
+        sourceId: String(created.id),
+        entryId: "1",
+        requestId: crypto.randomUUID(),
+        text: "replacement",
+      });
+      expect(edit.status).toBe(409);
       expect(f.provider.calls).toHaveLength(0);
       const start = { requestId: "explicit-start", expectedHandoffRevision: 1 };
       expect(

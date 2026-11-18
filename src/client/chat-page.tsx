@@ -8,6 +8,7 @@ export function ChatPage({
   canRequestTangent = false,
   inputBlockedReason,
   onFork,
+  onEdit,
 }: {
   chatId?: string;
   active?: boolean;
@@ -15,6 +16,7 @@ export function ChatPage({
   canRequestTangent?: boolean;
   inputBlockedReason?: string | undefined;
   onFork?: ((entryId: number) => void) | undefined;
+  onEdit?: ((entryId: number, text: string) => void) | undefined;
 }) {
   const chat = useChat(chatId, active);
   return (
@@ -26,6 +28,7 @@ export function ChatPage({
         canRequestTangent={canRequestTangent}
         inputBlockedReason={inputBlockedReason}
         onFork={onFork}
+        onEdit={onEdit}
         title="CPD Durable"
         description="Durable chat · model settings in Chat details"
         state={chat.state}
@@ -36,11 +39,14 @@ export function ChatPage({
         retryAction={chat.retryAction}
         uncertain={chat.uncertain}
         notice={chat.notice}
+        shell={chat.shell}
         onRetry={chat.retryRequest}
         {...(readOnly
           ? {}
           : {
               onSend: chat.send,
+              onShell: chat.sendShell,
+              onShellStop: chat.stopShell,
               onStop: chat.stop,
               onContinue: chat.continueRun,
               onReset: chat.reset,

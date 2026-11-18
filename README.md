@@ -48,9 +48,36 @@ Use **New chat** in the supplied assistant-ui sidebar. It reuses the existing em
 
 Main chats show their immediate tangents and workers above the conversation. Select a tangent to open its independent chat beside the main chat; on narrow screens use the pane tabs. Closing is navigation, not Stop or conclusion. Write a goal and select **`/tangent`** (or **`/side`**) to request that the main agent prepare a handoff and use the creation tool; the request does not guarantee the model calls it. A create-only tangent requires an explicit **Start tangent** with its stored handoff before ordinary input. See [interactive threads](docs/chat-components.md#interactive-tangents-and-workers) for lifecycle, return review and delivery limits.
 
+**Edit in new chat** is available in main chats for committed single-message plain-text user entries. It creates a separate conversation before the original entry and sends the replacement after confirmation; the original chat and its draft are unchanged. Tangent entries, image-bearing and ambiguous entries cannot be edited this way. See [durable edit semantics](docs/chat-components.md#editing-in-a-new-chat).
+
 **Execution defaults to your home directory (`~/`)**, independently of the repository and session-data location. `CPD_CWD` overrides it and expands `~`/`~/…`. This is not a sandbox: tools can access absolute paths, parent directories, network programs and the server account's inherited environment with normal OS permissions. There are no cpd approval prompts, path/command restrictions, forced shell timeouts or tool-round caps. Commands can modify/delete files and expose account secrets in tool output; protect the local host and conversation data accordingly. Shell `cd` affects that invocation, not the default directory of later calls. See [pi TUI parity and remaining work](docs/pi-durable-features.md#pi-tui-parity); native tools alone are not full TUI parity.
 
-The SDK's `codemode` tool can call installed native tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled; MCP is not yet integrated.
+The SDK's `codemode` tool can call installed native tools and explicitly configured MCP tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled.
+
+### Optional MCP stdio tools
+
+MCP is disabled by default. To opt in, set `CPD_MCP_CONFIG` **only in the server environment** to a JSON file, for example:
+
+```json
+{
+  "servers": [
+    {
+      "id": "example",
+      "transport": "stdio",
+      "command": "example-server",
+      "args": [],
+      "cwd": ".",
+      "env": {}
+    }
+  ]
+}
+```
+
+The configuration path is relative to the server process directory; each required `cwd` is absolute or relative to the configuration file's directory, fixed for all chats. IDs contain only letters, digits, underscores or hyphens and must be unique. `args` is an array of strings; optional `env` supplies string overrides to the inherited server environment. Unknown fields are rejected. Protect this file and any credentials in it; never commit it. Configured commands run with the host's normal authority and can access inherited credentials. Tool descriptions, arguments and outputs can themselves contain private data and enter model context or conversation history; trust the configured servers accordingly.
+
+Startup connects explicitly configured processes once and fails if discovery fails; there is no automatic installation, reconnection, request deadline or hidden retry. Only MCP 2025-03-26 stdio tool discovery and calls are supported. Tool schemas using integers, unsupported constraints or structured output schemas are rejected rather than weakened; non-text results are omission receipts. HTTP, OAuth, resources, prompts, sampling, elicitation and MCP tasks are not supported. Changing configuration requires restarting the host. See [tool semantics](docs/chat-components.md#3-agent-activity-tools-and-tasks).
+
+In the composer, start a fresh message with `!` to run a shell command directly and include its command and bounded result in later model context. `!!` keeps the command and result in the visible transcript but excludes them from model context. An empty prefix is ordinary text; start with `\!` for a literal leading exclamation mark. Commands cannot include image attachments. They use the conversation's configured host environment and normal OS authority, with no added sandbox, approval or deadline; there is no interactive PTY. Stop requests cancellation, not reversal of completed effects. Output is a bounded observed tail; a stopped or interrupted command may have produced output that was not committed. Interrupted commands are not automatically rerun.
 
 ### Project guidance and skills
 
@@ -78,7 +105,7 @@ The server opens one Harness and resumes pending SDK work. A disconnect detaches
 
 Requests admitted before the host recorded request fingerprints cannot be verified against a retry payload; retrying one of those legacy request IDs returns 409, including an identical payload. Inspect saved state rather than assuming it was not admitted.
 
-Stop targets current work rather than a request ID. If Stop cannot be confirmed, inspect current state before explicitly stopping again; the UI does not offer it as a supposedly safe original-action retry.
+Model Stop targets current conversation work rather than a request ID. Direct-shell Stop targets its identified SDK task. If Stop cannot be confirmed, inspect current state before explicitly stopping again; the UI does not offer it as a supposedly safe original-action retry.
 
 Run only one application host against a data directory. The fixed loopback listener is acquired before writable storage opens, so a second application host fails without touching it. To restart, stop the existing host and start again with the same data directory. Do not edit or delete SQLite/sidecar files to resolve an error. Session-open failures leave existing data in place for inspection.
 

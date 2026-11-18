@@ -27,11 +27,14 @@ export type TangentPolicy = {
   assertResolvedModel(tx: Tx, resolved: ResolvedTangentModel): Promise<void>;
 };
 export type WorkerHostFactory = (harness: () => Harness) => Omit<WorkerToolDependencies, "harness">;
+import { openConfiguredMcp } from "./mcp/config.ts";
+import { compactIntentUnsettled, directShellHasUnsettled } from "./direct-shell.ts";
 export async function openChat(
   dataDir: string,
   models: Models,
   cwd = workingDirectory(),
   options: {
+    mcpConfigPath?: string;
     tangentPolicy?: (harness: Harness, models: Models) => TangentPolicy;
     assertNoUnsettledTangent?: (
       tx: Tx,
@@ -41,8 +44,12 @@ export async function openChat(
   } = {},
 ) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
   let boundTangentHooks: TangentHooks | undefined;
+  const mcp = await openConfiguredMcp(
+    options.mcpConfigPath !== undefined ? { path: options.mcpConfigPath } : {},
+  );
+  let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
+  let execution: ReturnType<typeof createExecution> | undefined;
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   const getHarness = () => {
     if (!harness) throw new Error("Worker host is not ready.");
@@ -53,25 +60,29 @@ export async function openChat(
     if (!workerOptions) throw new Error("Worker service unavailable.");
     return workerOptions;
   };
-  const execution = createExecution(
-    cwd,
-    () => {
-      if (!boundTangentHooks) throw new Error("Tangent service unavailable.");
-      return boundTangentHooks;
-    },
-    createWorkerTools({
-      harness: getHarness,
-      policy: {
-        resolveModelForRole: (role, options) =>
-          getWorkers().policy.resolveModelForRole(role, options),
-        assertModelPolicy: (tx, resolved) => getWorkers().policy.assertModelPolicy(tx, resolved),
-        assertParentWritable: (tx, id) => getWorkers().policy.assertParentWritable(tx, id),
-        assertInteractiveParent: (tx, id) => getWorkers().policy.assertInteractiveParent(tx, id),
+  const createRuntime = () =>
+    createExecution(
+      cwd,
+      () => {
+        if (!boundTangentHooks) throw new Error("Tangent service unavailable.");
+        return boundTangentHooks;
       },
-      assertReadable: (tx, id) => getWorkers().assertReadable(tx, id),
-    }),
-  );
+      createWorkerTools({
+        harness: getHarness,
+        policy: {
+          resolveModelForRole: (role, options) =>
+            getWorkers().policy.resolveModelForRole(role, options),
+          assertModelPolicy: (tx, resolved) => getWorkers().policy.assertModelPolicy(tx, resolved),
+          assertParentWritable: (tx, id) => getWorkers().policy.assertParentWritable(tx, id),
+          assertInteractiveParent: (tx, id) => getWorkers().policy.assertInteractiveParent(tx, id),
+        },
+        assertReadable: (tx, id) => getWorkers().assertReadable(tx, id),
+      }),
+      mcp,
+    );
   try {
+    storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
+    execution = createRuntime();
     harness = await Harness.open(
       storage,
       {
@@ -149,6 +160,11 @@ export async function openChat(
       async assertNoUnsettled(tx, tangent) {
         if (await helperHasUnsettled(tx, tangent))
           throw new Error("Tangent has unsettled workers.");
+        if (
+          (await directShellHasUnsettled(tx, tangent)) ||
+          (await compactIntentUnsettled(tx, tangent))
+        )
+          throw new Error("Tangent has unsettled shell or compaction work.");
         await options.assertNoUnsettledTangent?.(tx, tangent);
       },
     });
@@ -211,16 +227,24 @@ export async function openChat(
         try {
           await harness!.close(BACKGROUND_CONTEXT);
         } finally {
-          await execution.close();
+          try {
+            await execution!.close();
+          } finally {
+            await mcp.close();
+          }
         }
       },
     };
   } catch (error) {
     try {
       if (harness) await harness.close(BACKGROUND_CONTEXT);
-      else await storage.close(BACKGROUND_CONTEXT);
+      else if (storage) await storage.close(BACKGROUND_CONTEXT);
     } finally {
-      await execution.close();
+      try {
+        await execution?.close();
+      } finally {
+        await mcp.close();
+      }
     }
     throw error;
   }

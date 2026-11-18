@@ -23,6 +23,11 @@ import {
 } from "@/components/ui/dialog";
 import { Settings } from "./settings.tsx";
 import {
+  EditBranchReceiptSchema,
+  RecentEditOperationsSchema,
+  type RecentEditOperation,
+} from "../shared/branch-operations.ts";
+import {
   AlertDialog,
   AlertDialogContent,
   AlertDialogHeader,
@@ -60,6 +65,18 @@ function Workspace() {
     at: string;
     requestId: string;
   } | null>(null);
+  const [editing, setEditing] = useState<{
+    sourceId: string;
+    entryId: string;
+    requestId: string;
+    text: string;
+  } | null>(null);
+  const [editUncertain, setEditUncertain] = useState(false);
+  const [recentEdits, setRecentEdits] = useState<RecentEditOperation[] | null>(null);
+  const [recoveryError, setRecoveryError] = useState(false);
+  const [recoveryReload, setRecoveryReload] = useState(0);
+  const [selectedRecovery, setSelectedRecovery] = useState<string | null>(null);
+  const cancelEdit = useRef<HTMLButtonElement>(null);
   const cancelFork = useRef<HTMLButtonElement>(null);
   const activeChatId = useRef(chatId);
   activeChatId.current = chatId;
@@ -88,6 +105,30 @@ function Workspace() {
   useEffect(() => {
     setForking((current) => (current?.sourceId === chatId ? current : null));
   }, [chatId]);
+  useEffect(() => {
+    if (!editing) return;
+    const controller = new AbortController();
+    setRecentEdits(null);
+    setRecoveryError(false);
+    void fetch(`/api/chats/${editing.sourceId}/edit-operations/${editing.entryId}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Recovery unavailable");
+        const result = RecentEditOperationsSchema.parse(await response.json());
+        if (
+          result.operations.some(
+            (item) => item.sourceId !== editing.sourceId || item.entryId !== editing.entryId,
+          )
+        )
+          throw new Error("Wrong recovery scope");
+        if (!controller.signal.aborted) setRecentEdits(result.operations);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setRecoveryError(true);
+      });
+    return () => controller.abort();
+  }, [editing?.sourceId, editing?.entryId, recoveryReload]);
 
   useEffect(() => {
     let active = true;
@@ -273,6 +314,56 @@ function Workspace() {
       setManaging(false);
     }
   }
+  async function editBranch() {
+    if (!editing || managementInFlight.current || inFlight.current) return;
+    const request = editing;
+    managementInFlight.current = true;
+    setManaging(true);
+    setError(null);
+    let uncertain = true;
+    try {
+      const response = await fetch(`/api/chats/${request.sourceId}/edit-branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) {
+        uncertain = editUncertain || response.status >= 500;
+        throw new Error("Edit could not be confirmed.");
+      }
+      const receipt = EditBranchReceiptSchema.parse(await response.json());
+      if (
+        receipt.sourceId !== request.sourceId ||
+        receipt.entryId !== request.entryId ||
+        receipt.status !== "admitted" ||
+        !receipt.submissionId
+      )
+        throw new Error("Mismatched edit receipt.");
+      mutationVersion.current++;
+      const catalogResponse = await fetch("/api/chats");
+      if (!catalogResponse.ok) throw new Error("Edit admitted; chat list unavailable.");
+      const next = ChatCatalogSchema.parse(await catalogResponse.json());
+      if (!next.chats.some((item) => item.id === receipt.branchId))
+        throw new Error("Edit branch unavailable.");
+      setCatalog(next);
+      setEditing(null);
+      setEditUncertain(false);
+      if (activeChatId.current === request.sourceId) switchChat(receipt.branchId);
+      setReload((value) => value + 1);
+    } catch {
+      setEditUncertain(uncertain);
+      setError(
+        uncertain
+          ? "Edit delivery could not be confirmed. Retry uses the same source, entry, text and request ID."
+          : selectedRecovery
+            ? "Resume was rejected. The replacement must exactly match the original, and the branch must remain available and unchanged."
+            : "Edit was rejected. The original chat remains unchanged.",
+      );
+    } finally {
+      managementInFlight.current = false;
+      setManaging(false);
+    }
+  }
   // This runtime presents navigation metadata only. Each Chat below retains its
   // own immutable runtime; pi-durable alone owns execution and transcripts.
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -421,11 +512,159 @@ function Workspace() {
                   setError(null);
                   setForking({ sourceId: id, at: String(entryId), requestId: crypto.randomUUID() });
                 }}
+                onEdit={(entryId, text) => {
+                  if (
+                    managementInFlight.current ||
+                    inFlight.current ||
+                    editing ||
+                    id !== activeChatId.current
+                  )
+                    return;
+                  setError(null);
+                  setEditUncertain(false);
+                  setSelectedRecovery(null);
+                  setEditing({
+                    sourceId: id,
+                    entryId: String(entryId),
+                    text,
+                    requestId: crypto.randomUUID(),
+                  });
+                }}
               />
             </div>
           ))}
         </div>
       </SidebarInset>
+      <AlertDialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open && !managing && !editUncertain) setEditing(null);
+        }}
+      >
+        <AlertDialogContent initialFocus={cancelEdit}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Edit in a new chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The original chat and its draft remain unchanged. A new chat inherits history before
+              the entire saved entry. Earlier-boundary configuration is inherited; editing the first
+              entry uses the source chat’s current saved configuration. Sending the replacement
+              starts a new response and may execute tools.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {recentEdits === null && (
+            <p>{recoveryError ? "Could not check previous edits." : "Checking previous edits…"}</p>
+          )}
+          {recoveryError && (
+            <Button variant="outline" onClick={() => setRecoveryReload((value) => value + 1)}>
+              Retry checking previous edits
+            </Button>
+          )}
+          {recentEdits && recentEdits.length > 0 && (
+            <div className="space-y-2">
+              <p>
+                Previous edits for this message. Choose one to recover it, or deliberately create
+                another chat below.
+              </p>
+              {recentEdits.map((operation) => (
+                <div key={operation.requestId} className="flex items-center gap-2">
+                  <span>
+                    Chat {operation.branchId}: {operation.status}
+                  </span>
+                  {operation.status === "admitted" ? (
+                    <Button
+                      variant="outline"
+                      disabled={managing}
+                      onClick={() => {
+                        setEditing(null);
+                        setEditUncertain(false);
+                        switchChat(operation.branchId);
+                      }}
+                    >
+                      Open created chat
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      disabled={managing}
+                      onClick={() => {
+                        if (!editing) return;
+                        setEditing({ ...editing, requestId: operation.requestId });
+                        setSelectedRecovery(operation.requestId);
+                        setEditUncertain(false);
+                        setError(null);
+                      }}
+                    >
+                      Select prepared edit
+                    </Button>
+                  )}
+                </div>
+              ))}
+              {selectedRecovery && (
+                <div>
+                  <p>
+                    Resume only if the replacement text you entered matches the original exactly.
+                  </p>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      if (editing) setEditing({ ...editing, requestId: crypto.randomUUID() });
+                      setSelectedRecovery(null);
+                      setError(null);
+                    }}
+                  >
+                    Choose a new edit instead
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+          {error && (
+            <ErrorState
+              title="Edit not confirmed"
+              detail={error}
+              retrying={managing}
+              onRetry={() => {
+                void editBranch();
+              }}
+            />
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              ref={cancelEdit}
+              disabled={managing}
+              onClick={() => {
+                if (editUncertain) {
+                  setEditing(null);
+                  setEditUncertain(false);
+                  setError(
+                    "Edit delivery was not confirmed. Reopen the message edit to recover previous operations.",
+                  );
+                  setReload((value) => value + 1);
+                }
+              }}
+            >
+              {editUncertain ? "Close and recover later" : "Cancel"}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={managing || recentEdits === null}
+              onClick={(event) => {
+                event.preventDefault();
+                void editBranch();
+              }}
+            >
+              {editUncertain
+                ? "Retry same edit"
+                : recentEdits?.some(
+                      (item) => item.requestId === editing?.requestId && item.status === "prepared",
+                    )
+                  ? "Resume selected edit"
+                  : recentEdits?.length
+                    ? "Create another edited chat"
+                    : "Create edited chat"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={forking !== null}
         onOpenChange={(open) => {

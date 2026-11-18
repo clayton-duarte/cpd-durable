@@ -106,6 +106,65 @@ async function fixture(configured = true) {
 }
 
 describe("combined production regression", () => {
+  it("keeps direct shell and model input mutually exclusive in main and started tangent", async () => {
+    const f = await fixture();
+    try {
+      const child = await f.create(true);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(1));
+      f.provider.calls[0]!.finish("prepared");
+      const childScope = await f.host.chats.resolve(child);
+      await childScope!.conversation.waitForIdle(BACKGROUND_CONTEXT);
+      expect(
+        (
+          await f.post(`/api/chats/${f.main}/tangents/${child}/returns`, {
+            requestId: "synthetic-return",
+            tangentId: Number(child),
+            expectedRevision: 1,
+            handoff,
+          })
+        ).status,
+      ).toBe(200);
+      for (const id of [f.main, child]) {
+        const requestId = crypto.randomUUID();
+        const shell = await f.post(`/api/chats/${id}/shell`, {
+          requestId,
+          command: "sleep 30",
+          includeInContext: false,
+        });
+        expect(shell.status).toBe(202);
+        const input = await f.post(`/api/chats/${id}/input`, {
+          requestId: crypto.randomUUID(),
+          text: "synthetic",
+          mode: "reject",
+        });
+        expect(input.status).toBe(409);
+        if (id === f.main)
+          expect(
+            (await f.post(`/api/chats/${f.main}/tangents/${child}/deliver`, { revision: 2 }))
+              .status,
+          ).toBe(409);
+        if (id === child) {
+          expect(
+            (
+              await f.post(`/api/chats/${f.main}/tangents/${child}/lifecycle`, {
+                expected: "open",
+                next: "archived",
+              })
+            ).status,
+          ).toBe(409);
+        }
+        expect((await f.post(`/api/chats/${id}/shell/stop`, { requestId })).status).toBe(200);
+        await vi.waitFor(async () => {
+          const response = await f.get(`/api/chats/${id}/shell?requestId=${requestId}`);
+          const status = (await response.json()) as { status: string };
+          expect(status.status).not.toBe("running");
+        });
+      }
+      expect(f.provider.calls).toHaveLength(1);
+    } finally {
+      await f.done();
+    }
+  });
   it("rejects tangent archive while an owned worker remains unsettled without stopping it", async () => {
     const f = await fixture();
     try {
