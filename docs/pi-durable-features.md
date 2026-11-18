@@ -135,7 +135,7 @@ For discussion, the closest additions to the existing single-chat boundary are:
 
 Continue, reset and busy-input queue/steer choices are now exposed with the [documented semantics](chat-components.md#2-composer-and-run-controls). The remaining items above are candidates, not authorization.
 
-The later [pi TUI parity authorization](#pi-tui-parity) expands the single-chat implementation agenda. The subsequent [main-thread, tangent and worker design](design.md#main-threads-tangents-and-workers) is also authorized for implementation; neither authorization makes unfinished capabilities current.
+The [pi TUI parity authorization](#pi-tui-parity) expands the implementation agenda. [Global model assignments](design.md#native-execution-and-pi-tui-parity) are implemented as described above; saved tangent and worker assignments do not by themselves implement those workflows.
 
 ## pi TUI parity
 
