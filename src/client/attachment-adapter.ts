@@ -10,10 +10,14 @@ export function createImageAttachmentAdapter(options: {
   previewUrl(id: string): string;
 }): AttachmentAdapter {
   return {
-    accept: "image/png",
+    accept: "image/png,image/jpeg",
     async add({ file }) {
-      if (file.type !== "image/png" || file.size === 0 || file.size > IMAGE_MAX_BYTES)
-        throw new Error("Choose a PNG image within the upload limit.");
+      if (
+        !["image/png", "image/jpeg"].includes(file.type) ||
+        file.size === 0 ||
+        file.size > IMAGE_MAX_BYTES
+      )
+        throw new Error("Choose a PNG or JPEG image within the upload limit.");
       const ref = ImageReferenceSchema.parse(await options.upload(file));
       return {
         id: ref.id,
