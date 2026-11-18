@@ -162,6 +162,7 @@ function PersistenceBridge({
   readOnly,
   writer,
   localRevision,
+  hasPendingUploads,
   onReady,
   onRetry,
   onUnsavedDraft,
@@ -172,6 +173,7 @@ function PersistenceBridge({
   readOnly: boolean;
   writer: React.RefObject<DraftWriter | null>;
   localRevision: () => number;
+  hasPendingUploads: () => boolean;
   onReady: (ready: boolean) => void;
   onUnsavedDraft?: (chatId: string) => void;
   onRetry: (record: {
@@ -232,17 +234,18 @@ function PersistenceBridge({
       if (
         !readOnly &&
         readOnlyRef.current &&
-        (writer.current?.hasUnsaved() ??
-          (runtime.thread.composer.getState().text !== "" ||
-            runtime.thread.composer.getState().attachments.length > 0 ||
-            localRevision() > 0))
+        (hasPendingUploads() ||
+          (writer.current?.hasUnsaved() ??
+            (runtime.thread.composer.getState().text !== "" ||
+              runtime.thread.composer.getState().attachments.length > 0 ||
+              localRevision() > 0)))
       )
         unsavedRef.current?.(chatId);
       writer.current?.stop();
       writer.current = null;
       onReady(false);
     },
-    [chatId, enabled, localRevision, onReady, readOnly, runtime, writer],
+    [chatId, enabled, hasPendingUploads, localRevision, onReady, readOnly, runtime, writer],
   );
   return (
     <>
@@ -323,6 +326,7 @@ export function Chat(props: ChatProps) {
   const persistence = useRef<DraftWriter | null>(null);
   const [persistenceReady, setPersistenceReady] = useState(false);
   const localRevision = useCallback(() => revision.current, []);
+  const hasPendingUploads = useCallback(() => pendingUploads.current > 0, []);
   const detached = useRef<{ revision: number } | null>(null);
   const submitted = useRef<{ text: string; ids: string[]; revision: number } | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -708,6 +712,7 @@ export function Chat(props: ChatProps) {
             readOnly={!props.onSend}
             writer={persistence}
             localRevision={localRevision}
+            hasPendingUploads={hasPendingUploads}
             onReady={setPersistenceReady}
             {...(props.onUnsavedDraft ? { onUnsavedDraft: props.onUnsavedDraft } : {})}
             onRetry={async (record) => {
@@ -715,6 +720,7 @@ export function Chat(props: ChatProps) {
                 return false;
               const state = runtime.thread.composer.getState();
               const original =
+                !hasPendingUploads() &&
                 state.text === record.text &&
                 JSON.stringify(state.attachments.map((item) => item.id)) ===
                   JSON.stringify(record.images)
@@ -741,7 +747,7 @@ export function Chat(props: ChatProps) {
                   },
                 },
               );
-              if (admitted && confirmedClear && original) {
+              if (admitted && confirmedClear && original && !hasPendingUploads()) {
                 writer?.beginSend();
                 submitted.current = original;
                 clearSubmitted();

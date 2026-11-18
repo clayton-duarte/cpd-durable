@@ -247,6 +247,81 @@ test("an external archive reports unconfirmed local draft changes", async ({ pag
   release();
 });
 
+for (const succeeds of [true, false]) {
+  test(`external archive warns about an upload-only draft even after late upload ${succeeds ? "success" : "failure"}`, async ({
+    page,
+  }) => {
+    await syntheticEvents(page);
+    let archived = false;
+    let uploads = 0;
+    const writes: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const method = route.request().method();
+      if (path === "/api/chats")
+        return route.fulfill({
+          json: {
+            rootId: "1",
+            chats: [
+              {
+                id: "1",
+                title: "First",
+                running: false,
+                status: archived ? "archived" : "regular",
+              },
+              { id: "2", title: "Second", running: false },
+            ],
+          },
+        });
+      if (path.endsWith("/draft/attempts"))
+        return route.fulfill({ json: { attempts: [], capped: false, nextCursor: null } });
+      if (path.endsWith("/draft") && method === "GET")
+        return route.fulfill({ json: { revision: 0, content: { text: "", images: [] } } });
+      if (path.endsWith("/draft") && method === "PUT") {
+        writes.push(path);
+        return route.fulfill({ status: 409, json: {} });
+      }
+      if (path === "/api/chats/1/attachments" && method === "POST") {
+        uploads++;
+        await gate;
+        if (!succeeds) return route.fulfill({ status: 503, json: {} }).catch(() => {});
+        return route
+          .fulfill({
+            status: 201,
+            json: {
+              id: "11111111-1111-4111-8111-111111111111",
+              mimeType: "image/png",
+              size: png.length,
+              prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+            },
+          })
+          .catch(() => {});
+      }
+      return route.fulfill({ status: 404, json: {} });
+    });
+    await page.goto("/chats/1");
+    const input = page.getByRole("textbox", { name: "Message input" });
+    await expect(input).toHaveValue("");
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Add Attachment" }).click();
+    await (await chooser).setFiles({ name: "new.png", mimeType: "image/png", buffer: png });
+    await expect.poll(() => uploads).toBe(1);
+    archived = true;
+    const warning = page.getByText(/archived elsewhere with unsaved draft changes/);
+    await expect(warning).toBeVisible();
+    release();
+    if (succeeds) await expect(page.getByText("new.png").first()).toBeVisible();
+    else await expect(page.getByText(/Image upload failed/).first()).toBeVisible();
+    await expect(warning).toBeVisible();
+    expect(writes).toEqual([]);
+    expect(uploads).toBe(1);
+  });
+}
+
 test("archive is blocked while an attachment upload is pending", async ({ page }) => {
   await syntheticEvents(page);
   let uploadStarted = false;
@@ -425,107 +500,125 @@ test("retry without a clear receipt retains an equal-content newer revision and 
   expect(draft.content.images).toEqual([image]);
 });
 
-test("recovery acknowledgement cannot clear a draft after a new upload starts", async ({
-  page,
-}) => {
-  await syntheticEvents(page);
-  const requestId = "11111111-1111-4111-8111-111111111111";
-  const newId = "22222222-2222-4222-8222-222222222222";
-  const record = {
-    requestId,
-    draftRevision: 1,
-    text: "original",
-    images: [],
-    mode: "reject",
-    fingerprint: "a".repeat(64),
-  };
-  let draft: {
-    revision: number;
-    content: {
-      text: string;
-      images: { id: string; name: string; mimeType: string; size: number }[];
+for (const uploadFirst of [false, true]) {
+  test(`recovery acknowledgement cannot clear a draft when an upload starts ${uploadFirst ? "before" : "after"} retry`, async ({
+    page,
+  }) => {
+    await syntheticEvents(page);
+    const requestId = "11111111-1111-4111-8111-111111111111";
+    const newId = "22222222-2222-4222-8222-222222222222";
+    const record = {
+      requestId,
+      draftRevision: 1,
+      text: "original",
+      images: [],
+      mode: "reject",
+      fingerprint: "a".repeat(64),
     };
-  } = {
-    revision: 1,
-    content: { text: "original", images: [] },
-  };
-  let releaseInput!: () => void;
-  let releaseUpload!: () => void;
-  let uploadStarted = false;
-  let inputStarted = false;
-  const inputGate = new Promise<void>((resolve) => {
-    releaseInput = resolve;
-  });
-  const uploadGate = new Promise<void>((resolve) => {
-    releaseUpload = resolve;
-  });
-  await page.route("**/api/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
-    const method = route.request().method();
-    if (path === "/api/chats")
-      return route.fulfill({
-        json: {
-          rootId: "1",
-          chats: [{ id: "1", title: "First", running: false }],
-        },
-      });
-    if (path.endsWith("/draft/attempts"))
-      return route.fulfill({
-        json: {
-          attempts: [{ record, admission: "unknown" }],
-          capped: false,
-          nextCursor: null,
-        },
-      });
-    if (path.endsWith("/draft") && method === "GET") return route.fulfill({ json: draft });
-    if (path.endsWith("/draft") && method === "PUT") {
-      const body = route.request().postDataJSON() as {
-        expectedRevision: number;
-        content: typeof draft.content;
+    let draft: {
+      revision: number;
+      content: {
+        text: string;
+        images: { id: string; name: string; mimeType: string; size: number }[];
       };
-      if (body.expectedRevision !== draft.revision) return route.fulfill({ status: 409, json: {} });
-      draft = { revision: draft.revision + 1, content: body.content };
-      return route.fulfill({ json: draft });
+    } = {
+      revision: 1,
+      content: { text: "original", images: [] },
+    };
+    let releaseInput!: () => void;
+    let releaseUpload!: () => void;
+    let uploadStarted = false;
+    let inputStarted = false;
+    let inputCalls = 0;
+    let uploadCalls = 0;
+    const writes: number[] = [];
+    const inputGate = new Promise<void>((resolve) => {
+      releaseInput = resolve;
+    });
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      const method = route.request().method();
+      if (path === "/api/chats")
+        return route.fulfill({
+          json: {
+            rootId: "1",
+            chats: [{ id: "1", title: "First", running: false }],
+          },
+        });
+      if (path.endsWith("/draft/attempts"))
+        return route.fulfill({
+          json: {
+            attempts: [{ record, admission: "unknown" }],
+            capped: false,
+            nextCursor: null,
+          },
+        });
+      if (path.endsWith("/draft") && method === "GET") return route.fulfill({ json: draft });
+      if (path.endsWith("/draft") && method === "PUT") {
+        const body = route.request().postDataJSON() as {
+          expectedRevision: number;
+          content: typeof draft.content;
+        };
+        writes.push(body.expectedRevision);
+        if (body.expectedRevision !== draft.revision)
+          return route.fulfill({ status: 409, json: {} });
+        draft = { revision: draft.revision + 1, content: body.content };
+        return route.fulfill({ json: draft });
+      }
+      if (path.endsWith("/input")) {
+        inputStarted = true;
+        inputCalls++;
+        await inputGate;
+        draft = { revision: 2, content: { text: "", images: [] } };
+        return route.fulfill({ status: 202, json: { id: "1", clearedDraftRevision: 2 } });
+      }
+      if (path.endsWith("/attachments") && method === "POST") {
+        uploadStarted = true;
+        uploadCalls++;
+        await uploadGate;
+        return route.fulfill({
+          status: 201,
+          json: {
+            id: newId,
+            mimeType: "image/png",
+            size: png.length,
+            prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+          },
+        });
+      }
+      if (path.includes("/attachments/"))
+        return route.fulfill({ body: png, contentType: "image/png" });
+      return route.fulfill({ status: 404, json: {} });
+    });
+    await page.goto("/chats/1");
+    const input = page.getByRole("textbox", { name: "Message input" });
+    await expect(input).toHaveValue("original");
+    if (!uploadFirst) {
+      await page.getByRole("button", { name: "Retry original" }).click();
+      await expect.poll(() => inputStarted).toBe(true);
     }
-    if (path.endsWith("/input")) {
-      inputStarted = true;
-      await inputGate;
-      draft = { revision: 2, content: { text: "", images: [] } };
-      return route.fulfill({ status: 202, json: { id: "1", clearedDraftRevision: 2 } });
+    const chooserPromise = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Add Attachment" }).click();
+    await (await chooserPromise).setFiles({ name: "new.png", mimeType: "image/png", buffer: png });
+    await expect.poll(() => uploadStarted).toBe(true);
+    if (uploadFirst) {
+      await page.getByRole("button", { name: "Retry original" }).click();
+      await expect.poll(() => inputStarted).toBe(true);
     }
-    if (path.endsWith("/attachments") && method === "POST") {
-      uploadStarted = true;
-      await uploadGate;
-      return route.fulfill({
-        status: 201,
-        json: {
-          id: newId,
-          mimeType: "image/png",
-          size: png.length,
-          prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
-        },
-      });
-    }
-    if (path.includes("/attachments/"))
-      return route.fulfill({ body: png, contentType: "image/png" });
-    return route.fulfill({ status: 404, json: {} });
+    releaseInput();
+    await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+    await expect(input).toHaveValue("original");
+    releaseUpload();
+    await expect.poll(() => draft.content.images.some((image) => image.id === newId)).toBe(true);
+    expect(draft.content.text).toBe("original");
+    expect(writes).toEqual([2]);
+    expect(inputCalls).toBe(1);
+    expect(uploadCalls).toBe(1);
   });
-  await page.goto("/chats/1");
-  const input = page.getByRole("textbox", { name: "Message input" });
-  await expect(input).toHaveValue("original");
-  await page.getByRole("button", { name: "Retry original" }).click();
-  await expect.poll(() => inputStarted).toBe(true);
-  const chooserPromise = page.waitForEvent("filechooser");
-  await page.getByRole("button", { name: "Add Attachment" }).click();
-  await (await chooserPromise).setFiles({ name: "new.png", mimeType: "image/png", buffer: png });
-  await expect.poll(() => uploadStarted).toBe(true);
-  releaseInput();
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
-  await expect(input).toHaveValue("original");
-  releaseUpload();
-  await expect.poll(() => draft.content.images.some((image) => image.id === newId)).toBe(true);
-  expect(draft.content.text).toBe("original");
-});
+}
 
 test("retry saving persists the latest text and retained image after a network failure", async ({
   page,
