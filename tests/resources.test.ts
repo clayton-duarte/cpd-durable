@@ -8,6 +8,8 @@ import { Harness, createRegistry } from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat";
+import { openChat } from "../src/server/chat";
+import { createExecution } from "../src/server/execution";
 import { testModels } from "./models";
 import {
   createResourceExtension,
@@ -259,6 +261,47 @@ describe("resource discovery", () => {
     } finally {
       await harness.close(BACKGROUND_CONTEXT);
       await Promise.all(environments.map((env) => env.cleanup(BACKGROUND_CONTEXT)));
+    }
+  });
+  it("installs resource guidance and skill loading in the actual host execution registry", async () => {
+    const { root, cwd } = await setup();
+    await put(join(cwd, "AGENTS.md"), "host-specific-project-guidance");
+    await put(join(cwd, ".pi/skills/host/SKILL.md"), skill("host", "host-specific-skill-body"));
+    const execution = createExecution(cwd);
+    try {
+      expect(execution.registry.snapshot().extension("cpd-resources")).toBeDefined();
+      expect(
+        execution.registry
+          .snapshot()
+          .tools()
+          .map(({ tool }) => tool.name),
+      ).toContain("load_skill");
+    } finally {
+      await execution.close();
+    }
+    const provider = testModels();
+    const chat = await openChat(join(root, "data"), provider.models, cwd);
+    try {
+      await chat.conversation.submit(
+        { type: "input", content: "Exercise resources" },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      const prompt = JSON.stringify(provider.calls[0]!.context.messages);
+      expect(prompt).toContain("host-specific-project-guidance");
+      expect(prompt).toContain("Helpful guidance");
+      expect(prompt).not.toContain("host-specific-skill-body");
+      provider.calls[0]!.tools([
+        { id: "host-skill", name: "load_skill", arguments: { name: "host" } },
+      ]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      expect(JSON.stringify(provider.calls[1]!.context.messages)).toContain(
+        "host-specific-skill-body",
+      );
+      provider.calls[1]!.finish("done");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await chat.close();
     }
   });
 });
