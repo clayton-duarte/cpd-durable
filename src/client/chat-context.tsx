@@ -77,7 +77,7 @@ export function ChatContext() {
     };
   }, [base, host.active, host.chatId, refresh]);
   async function compact() {
-    if (admission !== undefined) return;
+    if (admission !== undefined || host.readOnly || host.mutationAllowed?.() === false) return;
     setAdmission("Admitting compaction…");
     try {
       const response = await fetch(`${base}/compact`, {
@@ -275,6 +275,7 @@ export function ChatContext() {
                 <Button
                   variant="outline"
                   onClick={() => {
+                    if (host.readOnly || host.mutationAllowed?.() === false) return;
                     void fetch(`${base}/compact/recover`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },

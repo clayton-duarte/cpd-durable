@@ -5,6 +5,7 @@ export function ChatPage({
   chatId,
   active = true,
   readOnly = false,
+  mutationAllowed,
   canRequestTangent = false,
   inputBlockedReason,
   onFork,
@@ -13,6 +14,7 @@ export function ChatPage({
   chatId?: string;
   active?: boolean;
   readOnly?: boolean;
+  mutationAllowed?: (() => boolean) | undefined;
   canRequestTangent?: boolean;
   inputBlockedReason?: string | undefined;
   onFork?: ((entryId: number) => void) | undefined;
@@ -25,6 +27,7 @@ export function ChatPage({
         chatId={chatId}
         active={active}
         readOnly={readOnly}
+        mutationAllowed={mutationAllowed}
         canRequestTangent={canRequestTangent}
         inputBlockedReason={inputBlockedReason}
         onFork={onFork}
@@ -40,17 +43,26 @@ export function ChatPage({
         uncertain={chat.uncertain}
         notice={chat.notice}
         shell={chat.shell}
-        onRetry={chat.retryRequest}
+        onRetry={async () => (mutationAllowed?.() === false ? false : chat.retryRequest())}
         {...(readOnly
           ? {}
           : {
-              onSend: chat.send,
-              onShell: chat.sendShell,
-              onShellStop: chat.stopShell,
-              onStop: chat.stop,
-              onContinue: chat.continueRun,
-              onReset: chat.reset,
-              onWithdraw: chat.withdraw,
+              onSend: async (...args) =>
+                mutationAllowed?.() === false ? false : chat.send(...args),
+              onShell: async (...args) =>
+                mutationAllowed?.() === false ? false : chat.sendShell(...args),
+              onShellStop: async (...args) => {
+                if (mutationAllowed?.() !== false) await chat.stopShell(...args);
+              },
+              onStop: async () => {
+                if (mutationAllowed?.() !== false) await chat.stop();
+              },
+              onContinue: async () => (mutationAllowed?.() === false ? false : chat.continueRun()),
+              onReset: async (...args) =>
+                mutationAllowed?.() === false ? false : chat.reset(...args),
+              onWithdraw: async (...args) => {
+                if (mutationAllowed?.() !== false) await chat.withdraw(...args);
+              },
             })}
         historyLoading={chat.historyLoading}
         historyError={chat.historyError}

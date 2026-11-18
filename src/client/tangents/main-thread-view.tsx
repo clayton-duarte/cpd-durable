@@ -23,11 +23,13 @@ function StartPanel({
   parentId,
   item,
   disabled,
+  mutationAllowed,
   onStarted,
 }: {
   parentId: string;
   item: TangentView;
   disabled: boolean;
+  mutationAllowed: () => boolean;
   onStarted: (item: TangentView) => void;
 }) {
   const request = useRef<string | null>(null);
@@ -36,7 +38,8 @@ function StartPanel({
   const [error, setError] = useState<string | null>(null);
   if (item.startState === "admitted") return null;
   async function start() {
-    if (pending.current || disabled || item.latestHandoff.kind !== "delegate") return;
+    if (pending.current || disabled || !mutationAllowed() || item.latestHandoff.kind !== "delegate")
+      return;
     pending.current = true;
     setWaiting(true);
     request.current ??= crypto.randomUUID();
@@ -119,6 +122,12 @@ export function MainThreadView({
   const [items, setItems] = useState<TangentView[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
+  const stale = useRef(false);
+  const parentReadOnly = useRef(readOnly);
+  const childWritable = useRef(new Map<string, boolean>());
+  parentReadOnly.current = readOnly;
+  const childMutationAllowed = (id: string) =>
+    !stale.current && !parentReadOnly.current && childWritable.current.get(id) === true;
   const [retry, setRetry] = useState(0);
   const [configured, setConfigured] = useState(false);
   const mutationVersion = useRef(0);
@@ -174,6 +183,9 @@ export function MainThreadView({
         )
           throw new Error("Invalid ownership");
         if (alive && version === mutationVersion.current) {
+          childWritable.current = new Map(
+            result.tangents.map((item) => [String(item.id), !item.readOnly]),
+          );
           setItems((current) =>
             result.tangents.map((item) =>
               current.some((prior) => prior.id === item.id && prior.startState === "admitted")
@@ -182,10 +194,14 @@ export function MainThreadView({
             ),
           );
           setLoaded(true);
+          stale.current = false;
           setError(false);
         }
       } catch {
-        if (alive && version === mutationVersion.current) setError(true);
+        if (alive && version === mutationVersion.current) {
+          stale.current = true;
+          setError(true);
+        }
       } finally {
         if (alive)
           timer = setTimeout(() => {
@@ -283,6 +299,7 @@ export function MainThreadView({
                     item={item}
                     active={active && visible}
                     readOnly={readOnly || item.lifecycle === "archived" || error}
+                    mutationAllowed={() => !stale.current && !parentReadOnly.current}
                   />
                 ) : null,
               )}
@@ -294,11 +311,13 @@ export function MainThreadView({
                   parentId={mainId}
                   item={item}
                   disabled={readOnly || item.readOnly || error}
-                  onStarted={(started) =>
+                  mutationAllowed={() => childMutationAllowed(tangent.id)}
+                  onStarted={(started) => {
+                    childWritable.current.set(String(started.id), !started.readOnly);
                     setItems((current) =>
                       current.map((entry) => (entry.id === started.id ? started : entry)),
-                    )
-                  }
+                    );
+                  }}
                 />
               ))}
             {items
@@ -322,7 +341,13 @@ export function MainThreadView({
                         changing
                       }
                       onClick={() => {
-                        if (mutationPending.current || readOnly || error) return;
+                        if (
+                          mutationPending.current ||
+                          stale.current ||
+                          parentReadOnly.current ||
+                          (item.lifecycle === "open" && !childMutationAllowed(tangent.id))
+                        )
+                          return;
                         mutationPending.current = true;
                         mutationVersion.current++;
                         setChanging(true);
@@ -350,6 +375,7 @@ export function MainThreadView({
                               result.lifecycle !== next
                             )
                               throw new Error("Lifecycle response could not be confirmed.");
+                            childWritable.current.set(String(result.id), !result.readOnly);
                             setItems((current) =>
                               current.map((entry) => (entry.id === result.id ? result : entry)),
                             );
@@ -381,15 +407,21 @@ export function MainThreadView({
               chatId={tangent.id}
               active={active && visible}
               readOnly={
-                readOnly || (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
+                readOnly ||
+                error ||
+                (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
               }
+              mutationAllowed={() => childMutationAllowed(tangent.id)}
             />
             <ChatPage
               chatId={tangent.id}
               active={active && visible}
               readOnly={
-                readOnly || (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
+                readOnly ||
+                error ||
+                (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
               }
+              mutationAllowed={() => childMutationAllowed(tangent.id)}
               inputBlockedReason={
                 items.find((item) => String(item.id) === tangent.id)?.startState === "admitted"
                   ? undefined

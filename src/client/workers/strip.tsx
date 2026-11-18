@@ -25,7 +25,7 @@ export function WorkerStrip({
                     ? "working"
                     : "waiting"
             }
-            label={`${worker.status} · ${worker.modelName ?? (worker.model ? `${worker.model.provider}/${worker.model.modelId}` : "model unknown")}${worker.stop === "none" ? "" : ` · stop ${worker.stop}`}`}
+            label={`${worker.label ?? `Worker ${worker.taskId}`} · ${worker.mode} · ${worker.status} · ${worker.modelName ?? (worker.model ? `${worker.model.provider}/${worker.model.modelId}` : "model unknown")}${worker.stop === "none" ? "" : ` · stop ${worker.stop}`}`}
           />
           <Button variant="ghost" onClick={() => onInspect(worker.taskId)}>
             Inspect worker {worker.taskId}

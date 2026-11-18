@@ -19,6 +19,12 @@ export const HelperViewSchema = z.strictObject({
   requestId: z.string(),
   taskId: z.string(),
   childId: z.string().nullable(),
+  label: z
+    .string()
+    .min(1)
+    .refine((value) => new TextEncoder().encode(value).length <= 120)
+    .nullable()
+    .optional(),
   mode: z.enum(["foreground", "background"]),
   model: z.strictObject({ provider: z.string(), modelId: z.string() }).nullable(),
   modelName: z.string().nullable(),

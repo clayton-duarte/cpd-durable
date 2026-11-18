@@ -8,10 +8,12 @@ export function WorkerPanel({
   chatId,
   active,
   readOnly,
+  mutationAllowed,
 }: {
   chatId: string;
   active: boolean;
   readOnly: boolean;
+  mutationAllowed?: (() => boolean) | undefined;
 }) {
   const [view, setView] = useState<HelpersView>();
   const [error, setError] = useState<string | null>(null);
@@ -69,7 +71,13 @@ export function WorkerPanel({
     }
   }
   async function stop(taskId: string) {
-    if (busy.current || readOnly || error?.startsWith("Worker status unavailable")) return;
+    if (
+      busy.current ||
+      readOnly ||
+      mutationAllowed?.() === false ||
+      error?.startsWith("Worker status unavailable")
+    )
+      return;
     busy.current = true;
     const requestId = intents.current.get(taskId) ?? crypto.randomUUID();
     intents.current.set(taskId, requestId);

@@ -34,11 +34,13 @@ export function ReturnReview({
   item,
   active,
   readOnly,
+  mutationAllowed,
 }: {
   parentId: string;
   item: TangentView;
   active: boolean;
   readOnly: boolean;
+  mutationAllowed?: (() => boolean) | undefined;
 }) {
   const revision = item.latestHandoff.revision;
   const [status, setStatus] = useState<Status>();
@@ -92,6 +94,7 @@ export function ReturnReview({
     if (
       !active ||
       readOnly ||
+      mutationAllowed?.() === false ||
       pending ||
       error ||
       !status?.placed ||
@@ -129,6 +132,7 @@ export function ReturnReview({
     if (
       !active ||
       readOnly ||
+      mutationAllowed?.() === false ||
       pending ||
       error ||
       writing.current ||

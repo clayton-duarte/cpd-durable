@@ -223,6 +223,7 @@ export function Chat(props: ChatProps) {
       },
       upload: async (file) => {
         try {
+          if (props.mutationAllowed?.() === false) throw new Error("Chat is read-only.");
           const response = await fetch(`/api/chats/${id}/attachments`, {
             method: "POST",
             headers: { "Content-Type": file.type },
@@ -237,7 +238,13 @@ export function Chat(props: ChatProps) {
       },
       previewUrl: (attachmentId) => `/api/chats/${id}/attachments/${attachmentId}`,
     });
-  }, [props.chatId, props.state?.conversationId, props.onSend, props.attachmentAdapter]);
+  }, [
+    props.chatId,
+    props.state?.conversationId,
+    props.onSend,
+    props.attachmentAdapter,
+    props.mutationAllowed,
+  ]);
 
   const clearSubmitted = useCallback(() => {
     const composer = runtimeRef.current?.thread.composer;

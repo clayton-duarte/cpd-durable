@@ -118,7 +118,27 @@ test("production route keeps native chats and drafts through tangent navigation"
         },
       });
     if (path.endsWith("/questions"))
-      return route.fulfill({ json: { conversationId: path.split("/")[3], questions: [] } });
+      return route.fulfill({
+        json: {
+          conversationId: path.split("/")[3],
+          questions: path.includes("/3/")
+            ? [
+                {
+                  questionId: "q-9",
+                  taskId: 9,
+                  revision: 1,
+                  status: "pending",
+                  actionable: true,
+                  cancelled: false,
+                  spec: {
+                    message: "Child question",
+                    fields: [{ id: "answer", kind: "text", label: "Answer", required: true }],
+                  },
+                },
+              ]
+            : [],
+        },
+      });
     if (path.endsWith("/workers")) {
       const id = path.split("/")[3];
       return route.fulfill({
@@ -212,12 +232,25 @@ test("production route keeps native chats and drafts through tangent navigation"
   ).toBeVisible();
   expect(requests.filter((r) => /^POST \/api\/chats\/\d+\/(input|stop)$/.test(r))).toEqual([]);
   await page.route("**/api/chats/1/tangents", (route) => route.fulfill({ status: 503 }));
+  await expect(idleSide.getByText("Child question")).toBeVisible();
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open tangent: Running child" })).toBeDisabled();
   await expect(page.getByRole("region", { name: "Tangent chat: Idle child" })).toBeVisible();
+  await expect(input(idleSide)).toHaveValue("/tangent secret");
+  await expect(idleSide.getByRole("button", { name: "Stop worker task-3" })).toBeDisabled();
+  await expect(idleSide.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
+  await expect(idleSide.getByRole("button", { name: "Decline" })).toBeDisabled();
+  await expect(idleSide.getByRole("button", { name: "Conclude tangent" })).toBeDisabled();
+  const childMutationsBefore = requests.filter((r) => r.startsWith("POST /api/chats/3/")).length;
   await page.unroute("**/api/chats/1/tangents");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("button", { name: "Open tangent: Running child" })).toBeEnabled();
+  await expect(idleSide.getByRole("button", { name: "Stop worker task-3" })).toBeEnabled();
+  await expect(idleSide.getByLabel("Answer")).toBeEnabled();
+  await expect(input(idleSide)).toHaveValue("/tangent secret");
+  expect(requests.filter((r) => r.startsWith("POST /api/chats/3/"))).toHaveLength(
+    childMutationsBefore,
+  );
   await expect.poll(() => requests.includes("GET /api/model-policy")).toBe(true);
   await input(main).fill("/ Explore the architecture");
   await input(main).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(1, 1));

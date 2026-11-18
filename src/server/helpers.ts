@@ -262,6 +262,21 @@ export async function helperHasUnsettled(tx: Tx, conversationId: ConversationId)
 }
 
 /** Conservative projection: missing task records and outcomes stay unknown. */
+export function workerLabel(assignment: unknown): string | null {
+  if (typeof assignment !== "string") return null;
+  const first = (assignment.split(/[\r\n]/u)[0] ?? "")
+    .replace(/(?:[A-Za-z]:\\|~\/|\/)\S+/gu, "[path]")
+    .replace(/\p{Cc}/gu, " ")
+    .trim();
+  let result = "";
+  const encoder = new TextEncoder();
+  for (const char of first) {
+    if (encoder.encode(result + char).length > 120) break;
+    result += char;
+  }
+  return result.trim() || null;
+}
+
 export async function inspectHelpers(harness: Harness, conversation: Conversation) {
   const [doc, stopIntents] = await Promise.all([
     harness.snapshot(HelpersDoc, conversation.id, BACKGROUND_CONTEXT),
@@ -283,6 +298,7 @@ export async function inspectHelpers(harness: Harness, conversation: Conversatio
         requestId: item.request.requestId,
         taskId: String(item.taskId),
         childId: item.childId === null ? null : String(item.childId),
+        label: workerLabel(item.request.assignment),
         mode: item.request.mode,
         model: item.model ?? null,
         modelName: null,
