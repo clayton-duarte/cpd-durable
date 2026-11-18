@@ -23,7 +23,7 @@ const measurements: ContextMeasurements = {
     scope: "conversation-generation",
     entryId: "2",
     model: { provider: "test", modelId: "previous" },
-    requestStartedAt: 500,
+    messageTimestamp: 500,
     stopReason: "stop",
     usageStatus: "reported",
     usage: {
@@ -36,6 +36,7 @@ const measurements: ContextMeasurements = {
       totalTokens: 40,
     },
   },
+  lastRequestScan: "found",
   comparison: { valid: false, reasons: ["assembled-request-unavailable", "model-changed"] },
   occupancy: { status: "unknown", tokens: null },
   headroom: { status: "unknown", tokens: null, reason: "assembled-request-unavailable" },
@@ -356,6 +357,7 @@ test("context compaction reports admission rather than placement and never retri
   await expect(context).toContainText("tool schemas");
   await expect(context).toContainText("does not guarantee the next request fits");
   await expect(context).toContainText("Previous assistant request: test/previous");
+  await expect(context).toContainText("message timestamp");
   await expect(context).toContainText("cache read 11");
   await expect(context).toContainText("1h subset 1");
   await expect(context).toContainText("reasoning 4 (subset of output)");
@@ -413,6 +415,42 @@ test("context inspector reports unsupported estimates and missing counters as un
   await expect(context).toContainText("Catalog context window: unknown");
   await expect(context).toContainText("Request usage unknown");
   await expect(context).not.toContainText("approximately 0 tokens");
+});
+
+test("context inspector distinguishes a capped request scan from an absent observation", async ({
+  page,
+}) => {
+  await connect(page);
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        measurements: {
+          ...measurements,
+          lastRequest: null,
+          lastRequestScan: "capped",
+          comparison: {
+            valid: false,
+            reasons: ["assembled-request-unavailable", "request-observation-scan-capped"],
+          },
+        },
+        headId: null,
+        entryCount: 0,
+        messageCount: 0,
+        roles: [],
+        entries: [],
+        truncated: false,
+        compactions: [],
+        failure: null,
+      },
+    }),
+  );
+  await page.goto("/");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const context = page.getByRole("region", { name: "Active context" });
+  await expect(context).toContainText("Observation unknown: the scan stopped after 200 entries.");
+  await expect(context).not.toContainText("No durable request observation found");
 });
 
 test("supplied model picker saves scoped choices and supported thinking without submitting the draft", async ({

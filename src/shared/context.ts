@@ -23,7 +23,7 @@ export const ContextMeasurementsSchema = z.strictObject({
       scope: z.literal("conversation-generation"),
       entryId: z.string(),
       model: ModelSchema,
-      requestStartedAt: z.number().finite(),
+      messageTimestamp: z.number().finite(),
       stopReason: z.string(),
       usageStatus: z.enum(["reported", "unknown"]),
       usage: z
@@ -39,12 +39,14 @@ export const ContextMeasurementsSchema = z.strictObject({
         .nullable(),
     })
     .nullable(),
+  lastRequestScan: z.enum(["found", "exhausted", "capped"]),
   comparison: z.strictObject({
     valid: z.literal(false),
     reasons: z.array(
       z.enum([
         "assembled-request-unavailable",
         "no-request-observation",
+        "request-observation-scan-capped",
         "usage-unavailable",
         "model-changed",
         "context-boundary-changed",

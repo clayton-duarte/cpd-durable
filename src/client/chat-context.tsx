@@ -127,8 +127,10 @@ export function ChatContext() {
             <p>
               <strong>Previous assistant request:</strong>{" "}
               {data.measurements.lastRequest
-                ? `${data.measurements.lastRequest.model.provider}/${data.measurements.lastRequest.model.modelId} · started ${new Date(data.measurements.lastRequest.requestStartedAt).toLocaleString()} · ${data.measurements.lastRequest.stopReason}`
-                : "No durable request observation."}
+                ? `${data.measurements.lastRequest.model.provider}/${data.measurements.lastRequest.model.modelId} · message timestamp ${new Date(data.measurements.lastRequest.messageTimestamp).toLocaleString()} · ${data.measurements.lastRequest.stopReason}`
+                : data.measurements.lastRequestScan === "capped"
+                  ? "Observation unknown: the scan stopped after 200 entries."
+                  : "No durable request observation found."}
             </p>
             {data.measurements.lastRequest &&
               (data.measurements.lastRequest.usage ? (

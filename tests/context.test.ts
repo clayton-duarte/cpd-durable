@@ -115,6 +115,12 @@ describe("SDK context and compaction", () => {
       cacheWrite1h: 1,
       reasoning: 4,
     });
+    expect(measurement.lastRequestScan).toBe("found");
+    const saved = await chat.conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+    const assistant = saved.items
+      .flatMap((entry) => entry.model ?? [])
+      .find((message) => message.role === "assistant");
+    expect(measurement.lastRequest?.messageTimestamp).toBe(assistant?.timestamp);
     expect(measurement.comparison.valid).toBe(false);
     expect(measurement.comparison.reasons).toContain("response-appended");
     expect(measurement.comparison.reasons).toContain("assembled-request-unavailable");
@@ -136,6 +142,34 @@ describe("SDK context and compaction", () => {
     expect(measurement.comparison.reasons).toContain("context-boundary-changed");
     expect(measurement.lastRequest?.usage?.input).toBe(17);
     expect(measurement.occupancy).toEqual({ status: "unknown", tokens: null });
+  });
+  async function writeDisplayEntries(count: number) {
+    for (let index = 0; index < count; index++)
+      await chat.conversation.submit(
+        { type: "write", entry: { kind: "test.display", data: { index } } },
+        BACKGROUND_CONTEXT,
+      );
+  }
+  it("reports a capped scan rather than claiming no observation in long assistant-free history", async () => {
+    expect((await read()).measurements.lastRequestScan).toBe("exhausted");
+    await writeDisplayEntries(201);
+    const measurement = (await read()).measurements;
+    expect(measurement.lastRequest).toBeNull();
+    expect(measurement.lastRequestScan).toBe("capped");
+    expect(measurement.comparison.reasons).toContain("request-observation-scan-capped");
+    expect(measurement.comparison.reasons).not.toContain("no-request-observation");
+  });
+  it("does not claim an older assistant observation was absent when beyond the scan cap", async () => {
+    await chat.conversation.submit({ type: "input", content: "question" }, BACKGROUND_CONTEXT);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.finish("answer");
+    await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    expect((await read()).measurements.lastRequestScan).toBe("found");
+    await writeDisplayEntries(201);
+    const measurement = (await read()).measurements;
+    expect(measurement.lastRequest).toBeNull();
+    expect(measurement.lastRequestScan).toBe("capped");
+    expect(measurement.comparison.reasons).toContain("request-observation-scan-capped");
   });
   it("admits while busy but does not claim the summary has been placed", async () => {
     await seed();

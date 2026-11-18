@@ -74,13 +74,21 @@ export function estimateCommittedContext(messages: readonly Message[]) {
 
 async function lastAssistant(conversation: Conversation) {
   let cursor: Cursor | undefined;
-  do {
-    const page = await conversation.entries({}, 200, cursor, BACKGROUND_CONTEXT);
-    const entry = page.items.find((item) => item.kind === AssistantEntry.kind);
-    if (entry) return entry;
+  // Two pages bound work even for large transcripts. Each SDK read is
+  // independent of the other context/live/agent reads; it is not a single
+  // atomic snapshot, and concurrent writes may advance between reads.
+  for (let pageNumber = 0; pageNumber < 2; pageNumber++) {
+    const page = await conversation.entries({}, 100, cursor, BACKGROUND_CONTEXT);
+    const entry = page.items.find(
+      (item) =>
+        item.kind === AssistantEntry.kind &&
+        item.model?.some((message) => message.role === "assistant"),
+    );
+    if (entry) return { status: "found" as const, entry };
     cursor = page.next;
-  } while (cursor);
-  return undefined;
+    if (!cursor) return { status: "exhausted" as const, entry: undefined };
+  }
+  return { status: "capped" as const, entry: undefined };
 }
 
 export async function inspectContext(
@@ -103,7 +111,7 @@ export async function inspectContext(
     : null;
   const catalog = model ? models?.getModel(model.provider, model.modelId) : undefined;
   const window = catalog?.contextWindow;
-  const lastEntry = history;
+  const lastEntry = history.entry;
   const lastMessage = lastEntry?.model?.find((message) => message.role === "assistant");
   const inFlight = !!live?.run || !!live?.compactions?.length;
   const queued = !!inbox?.items.length;
@@ -121,7 +129,7 @@ export async function inspectContext(
       scope: "conversation-generation",
       entryId: String(lastEntry.id),
       model: { provider: lastMessage.provider, modelId: lastMessage.model },
-      requestStartedAt: lastMessage.timestamp,
+      messageTimestamp: lastMessage.timestamp,
       stopReason: lastMessage.stopReason,
       usageStatus: reported ? "reported" : "unknown",
       usage: reported
@@ -145,7 +153,10 @@ export async function inspectContext(
       reasons.push("response-appended");
       if (index < view.entries.length - 1) reasons.push("new-entries");
     }
-  } else reasons.push("no-request-observation");
+  } else
+    reasons.push(
+      history.status === "capped" ? "request-observation-scan-capped" : "no-request-observation",
+    );
   if (inFlight) reasons.push("in-flight-work");
   if (queued) reasons.push("queued-work");
   const measurements: ContextMeasurements = {
@@ -155,6 +166,7 @@ export async function inspectContext(
     contextWindowSource: "model-catalog",
     committed: estimateCommittedContext(view.messages),
     lastRequest,
+    lastRequestScan: history.status,
     comparison: { valid: false, reasons },
     occupancy: { status: "unknown", tokens: null },
     headroom: { status: "unknown", tokens: null, reason: "assembled-request-unavailable" },
