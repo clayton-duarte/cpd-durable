@@ -178,3 +178,106 @@ test("ignores a shell status from another chat", async ({ page }) => {
   await expect(page.getByText("wrong chat")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 });
+
+test("a delayed old poll cannot replace a newer shell or change its Stop target", async ({
+  page,
+}) => {
+  await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats", (route) =>
+    route.fulfill({
+      json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
+    }),
+  );
+  let release!: () => void;
+  let started = false;
+  let delivered = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let request: { requestId: string; command: string; includeInContext: boolean } | undefined;
+  let stopped: unknown;
+  await page.route("**/api/chats/1/shell/stop", (route) => {
+    stopped = route.request().postDataJSON();
+    return route.fulfill({ json: { status: "marked" } });
+  });
+  await page.route("**/api/chats/1/shell**", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/stop")) return route.fallback();
+    if (route.request().method() === "POST") {
+      request = route.request().postDataJSON() as typeof request;
+      return route.fulfill({ status: 202, json: { id: "22" } });
+    }
+    if (!url.searchParams.has("requestId")) {
+      started = true;
+      await gate;
+      await route.fulfill({
+        json: {
+          conversationId: "1",
+          taskId: "11",
+          requestId: "11111111-1111-4111-8111-111111111111",
+          command: "old",
+          includeInContext: true,
+          status: "running",
+          output: "stale output",
+          truncated: false,
+        },
+      });
+      delivered = true;
+      return;
+    }
+    return route.fulfill({
+      json: {
+        ...request,
+        conversationId: "1",
+        taskId: "22",
+        status: "running",
+        output: "new output",
+        truncated: false,
+      },
+    });
+  });
+  await page.addInitScript(() => {
+    class Events extends EventTarget {
+      constructor() {
+        super();
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: 1,
+                messages: [],
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+                controls: { canContinue: false, resetPending: false, queue: [] },
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Events });
+  });
+  try {
+    await page.goto("/chats/1");
+    await expect.poll(() => started).toBe(true);
+    const input = page.getByRole("textbox", { name: "Message input" });
+    await input.fill("!printf fresh");
+    await input.press("Enter");
+    await page.getByRole("button", { name: "1 tool call" }).click();
+    await page.getByRole("button", { name: /Running tool.*Direct shell/ }).click();
+    await expect(page.getByText("new output")).toBeVisible();
+    release();
+    await expect.poll(() => delivered).toBe(true);
+    await expect(page.getByText("stale output")).toHaveCount(0);
+    await expect(page.getByText("new output")).toBeVisible();
+    await input.fill("unsent newer draft");
+    await page.getByRole("button", { name: "Stop generating" }).click();
+    await expect.poll(() => stopped).toEqual({ requestId: request?.requestId });
+    await expect(input).toHaveValue("unsent newer draft");
+  } finally {
+    release();
+  }
+});

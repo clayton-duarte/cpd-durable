@@ -181,7 +181,7 @@ PNG/JPEG uploads are limited to four per input, 5 MiB each, 8,192 pixels per dim
 
 After uncertain input/control delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` or `retryAction`. Retain the original operation/payload/request ID. Other mutations stay blocked while a new draft remains editable. Continue/reset/withdraw do not consume the composer draft. Reset handoff text survives a failed attempt.
 
-The transport serializes mutations and keeps retry identity only until refresh. Inspect restored state before repeating an uncertain action after refresh. Stop is a current-scope abort, not a request-ID admission; an uncertain Stop asks for state inspection before explicitly stopping again.
+The transport serializes mutations and keeps retry identity only until refresh. Inspect restored state before repeating an uncertain action after refresh. Model Stop is a current-scope abort; shell Stop targets its identified task. An uncertain Stop asks for state inspection before explicitly stopping again.
 
 ## Remaining work
 

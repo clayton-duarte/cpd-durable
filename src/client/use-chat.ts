@@ -30,6 +30,7 @@ export function useChat(chatId?: string, observing = true) {
   const [shell, setShell] = useState<z.infer<typeof DirectShellStatusSchema> | null>(null);
   const [shellRequestId, setShellRequestId] = useState<string>();
   const [shellTaskId, setShellTaskId] = useState<string>();
+  const shellEpoch = useRef(0);
   const [retry, setRetry] = useState<Request | null>(null);
   const uncertain = useRef<Request | null>(null);
   const inFlight = useRef(false);
@@ -95,6 +96,7 @@ export function useChat(chatId?: string, observing = true) {
   }, [base, observing, view, oldest]);
 
   useEffect(() => {
+    const epoch = ++shellEpoch.current;
     if (!observing || chatId === undefined) return;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -114,7 +116,7 @@ export function useChat(chatId?: string, observing = true) {
             (selectedTask && selectedTask !== next.taskId))
         )
           throw new Error("Wrong shell status");
-        if (!active) return;
+        if (!active || shellEpoch.current !== epoch) return;
         if (next) selectedTask = next.taskId;
         polling = next?.status === "running";
         setShell(next?.status === "running" ? next : null);
@@ -131,6 +133,7 @@ export function useChat(chatId?: string, observing = true) {
     void refresh();
     return () => {
       active = false;
+      if (shellEpoch.current === epoch) shellEpoch.current++;
       clearTimeout(timer);
     };
   }, [base, chatId, observing, shellRequestId, shellTaskId]);
