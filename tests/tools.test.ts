@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -7,6 +7,8 @@ import { openChat } from "../src/server/chat.ts";
 import { workingDirectory } from "../src/server/execution.ts";
 import { present } from "../src/server/presentation.ts";
 import { ChatStateSchema } from "../src/shared/chat.ts";
+import { parseEditPatch } from "../src/shared/edit-diff.ts";
+import { presentEditDiff } from "../src/server/edit-diff-presentation.ts";
 import { testModels } from "./models.ts";
 
 describe("native host tools through the durable scheduler", () => {
@@ -44,6 +46,66 @@ describe("native host tools through the durable scheduler", () => {
   it("expands the home default and explicit home-relative working directories", () => {
     expect(workingDirectory()).toBe(homedir());
     expect(workingDirectory("~/example")).toBe(join(homedir(), "example"));
+  });
+
+  it("projects a real native edit receipt and refuses failed or malformed details", async () => {
+    await writeFile(join(cwd, "sample.txt"), "before café\nsecond\n");
+    await start();
+    provider.calls[0]!.tools([
+      {
+        id: "edit-one",
+        name: "edit",
+        arguments: {
+          path: "sample.txt",
+          edits: [{ oldText: "before café", newText: "after café" }],
+        },
+      },
+    ]);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+    const state = await snapshot();
+    const message = state.messages.find((item) =>
+      item.parts?.some((part) => part.type === "tool-call" && part.callId === "edit-one"),
+    );
+    const edit = message?.parts?.find((part) => part.type === "tool-call");
+    expect(edit).toMatchObject({
+      name: "edit",
+      state: "complete",
+      resultEntryId: expect.any(Number) as unknown,
+      editDiff: { kind: "patch", patch: expect.stringContaining("after café") as unknown },
+    });
+    expect(message?.source?.entryId).toEqual(expect.any(Number));
+    if (edit?.type !== "tool-call" || edit.editDiff?.kind !== "patch") throw new Error("No patch");
+    expect(parseEditPatch(edit.editDiff.patch)).toEqual(
+      expect.arrayContaining([
+        { kind: "removed", text: "before café" },
+        { kind: "added", text: "after café" },
+      ]),
+    );
+    expect(JSON.stringify(state)).not.toContain("diagnostics");
+    expect(
+      presentEditDiff({
+        role: "toolResult",
+        toolName: "edit",
+        toolCallId: "x",
+        isError: false,
+        details: { diff: 3, patch: "bad", secret: "private" },
+      }),
+    ).toEqual({ kind: "unavailable" });
+    provider.calls[1]!.tools([
+      {
+        id: "edit-fail",
+        name: "edit",
+        arguments: { path: "sample.txt", edits: [{ oldText: "not found", newText: "x" }] },
+      },
+    ]);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(3));
+    const failed = (await snapshot()).messages
+      .flatMap((item) => item.parts ?? [])
+      .find((part) => part.type === "tool-call" && part.callId === "edit-fail");
+    expect(failed).toMatchObject({ state: "error" });
+    expect(failed).not.toHaveProperty("editDiff");
+    provider.calls[2]!.finish("Done.");
+    await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
   });
 
   it("writes, reads, edits and runs shell commands, including paths outside cwd", async () => {
