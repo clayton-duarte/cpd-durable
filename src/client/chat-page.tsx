@@ -5,10 +5,12 @@ export function ChatPage({
   chatId,
   active = true,
   readOnly = false,
+  onFork,
 }: {
   chatId?: string;
   active?: boolean;
   readOnly?: boolean;
+  onFork?: ((entryId: number) => void) | undefined;
 }) {
   const chat = useChat(chatId, active);
   return (
@@ -17,6 +19,7 @@ export function ChatPage({
         chatId={chatId}
         active={active}
         readOnly={readOnly}
+        onFork={onFork}
         title="CPD Durable"
         description="Durable chat · model settings in Chat details"
         state={chat.state}

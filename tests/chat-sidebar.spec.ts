@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { RenameChatSchema, ForkChatSchema, type ChatSummary } from "../src/shared/chats.ts";
 
 async function workspace(page: Page, withHistory = false) {
   await page.route("**/api/**", (route) => route.abort());
@@ -32,6 +33,7 @@ async function workspace(page: Page, withHistory = false) {
                         role: "user",
                         text: `Historical turn ${index + 1}\nLine two\nLine three`,
                         interrupted: false,
+                        source: { entryId: index + 1 },
                       }))
                     : [],
                   partial: "",
@@ -52,6 +54,99 @@ async function workspace(page: Page, withHistory = false) {
   }, withHistory);
 }
 const draft = (page: Page) => page.getByRole("textbox", { name: "Message input", exact: true });
+
+test("supplied inline rename persists a title without changing route or unsent draft", async ({
+  page,
+}) => {
+  await workspace(page);
+  let title = "Second chat";
+  await page.route("**/api/chats", (route) =>
+    route.fulfill({
+      json: {
+        rootId: "1",
+        chats: [
+          { id: "1", title: "Original chat", running: false },
+          { id: "2", title, running: false },
+        ],
+      },
+    }),
+  );
+  await page.route("**/api/chats/2/rename", async (route) => {
+    const request = RenameChatSchema.parse(route.request().postDataJSON());
+    expect(request.expected).toBe("Second chat");
+    title = request.title;
+    return route.fulfill({
+      json: {
+        rootId: "1",
+        chats: [
+          { id: "1", title: "Original chat", running: false },
+          { id: "2", title, running: false },
+        ],
+      },
+    });
+  });
+  await page.goto("/chats/2");
+  await draft(page).fill("Retain rename draft");
+  const row = page.locator('[data-slot="aui_thread-list-item"]').filter({ hasText: "Second chat" });
+  await row.getByRole("button", { name: "More options" }).click();
+  await page.getByRole("menuitem", { name: "Rename", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Rename thread" });
+  await input.fill("Renamed branch");
+  await input.press("Enter");
+  await expect(page.getByRole("button", { name: "Renamed branch", exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/\/chats\/2$/);
+  await expect(draft(page)).toHaveValue("Retain rename draft");
+});
+
+test("durable fork retries keep their boundary and branch navigation restores the source draft", async ({
+  page,
+}) => {
+  await workspace(page, true);
+  const chats: ChatSummary[] = [
+    { id: "1", title: "Original chat", running: false, status: "regular" },
+    { id: "2", title: "Second chat", running: false, status: "regular" },
+  ];
+  await page.route("**/api/chats", (route) => route.fulfill({ json: { rootId: "1", chats } }));
+  const requests: unknown[] = [];
+  await page.route("**/api/chats/2/fork", async (route) => {
+    const request = ForkChatSchema.parse(route.request().postDataJSON());
+    requests.push(request);
+    if (requests.length === 1) return route.abort();
+    const created: ChatSummary = {
+      id: "3",
+      title: "Fork of Second chat",
+      running: false,
+      status: "regular",
+      parentId: "2",
+      forkEntryId: request.at,
+      branchRootId: "2",
+    };
+    chats.push(created);
+    return route.fulfill({ status: 201, json: created });
+  });
+  await page.goto("/chats/2");
+  await draft(page).fill("Source draft survives");
+  const lastRow = page.locator('[data-durable-id="80:0"]');
+  await lastRow.hover();
+  await lastRow.getByRole("button", { name: "Fork from saved entry" }).click();
+  const dialog = page.getByRole("alertdialog");
+  await expect(dialog).toContainText("Fork from saved entry 80?");
+  await dialog.getByRole("button", { name: "Create fork", exact: true }).click();
+  await expect(dialog).toContainText("Fork not confirmed");
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page).toHaveURL(/\/chats\/3$/);
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toEqual(requests[1]);
+  await expect(draft(page)).toHaveValue("");
+  await draft(page).fill("Fork draft");
+  await page.getByRole("button", { name: "Show previous saved branch" }).click();
+  await expect(page).toHaveURL(/\/chats\/2$/);
+  await expect(draft(page)).toHaveValue("Source draft survives");
+  await page.getByRole("button", { name: "Show next saved branch" }).click();
+  await expect(draft(page)).toHaveValue("Fork draft");
+  await page.getByRole("button", { name: "Open source chat", exact: true }).click();
+  await expect(draft(page)).toHaveValue("Source draft survives");
+});
 
 test("routes, back/forward and drafts stay isolated while another chat runs", async ({ page }) => {
   await workspace(page);
@@ -222,13 +317,14 @@ test("chat context menus archive, restore and confirm deletion without resurrect
   await page.goto("/chats/2");
   await draft(page).fill("Retain on archive");
   await page.getByRole("button", { name: "Second chat", exact: true }).click({ button: "right" });
-  await expect(page.getByRole("menuitem", { name: "Rename" })).toHaveCount(0);
+  await expect(page.getByRole("menuitem", { name: "Rename" })).toHaveCount(1);
   await page.getByRole("menuitem", { name: "Archive", exact: true }).click();
   await expect(page).toHaveURL(/\/chats\/1$/);
   await expect(page.getByRole("button", { name: "Second chat", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Archived chats", exact: true }).click();
   const row = page.locator('[data-slot="aui_thread-list-item"]').filter({ hasText: "Second chat" });
   await row.getByRole("button", { name: "More options" }).click();
+  await expect(page.getByRole("menuitem", { name: "Rename" })).toHaveCount(0);
   await page.getByRole("menuitem", { name: "Restore", exact: true }).click();
   await page.getByRole("button", { name: "Second chat", exact: true }).click();
   await expect(draft(page)).toHaveValue("Retain on archive");

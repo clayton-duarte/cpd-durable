@@ -18,7 +18,13 @@ import {
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
 import type { openChat } from "./chat.ts";
-import { ChatIdSchema, CreateChatSchema, ChatActionSchema } from "../shared/chats.ts";
+import {
+  ChatIdSchema,
+  CreateChatSchema,
+  ChatActionSchema,
+  RenameChatSchema,
+  ForkChatSchema,
+} from "../shared/chats.ts";
 import { ChatLifecycleError } from "./chats.ts";
 import type { ChatScope } from "./chats.ts";
 import { CompactSchema } from "../shared/context.ts";
@@ -91,6 +97,25 @@ export function createApp(
   const routes = new Hono<{
     Variables: { scope: ChatScope; history: ReturnType<typeof createHistory> };
   }>();
+  app.post("/api/chats/:chatId/rename", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const result = RenameChatSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!id.success || !result.success) return c.json({ error: "Invalid rename." }, 400);
+    if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
+    await chat.chats.rename(id.data, result.data.title, result.data.expected);
+    return c.json(await chat.chats.list());
+  });
+  app.post("/api/chats/:chatId/fork", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const result = ForkChatSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!id.success || !result.success) return c.json({ error: "Invalid fork." }, 400);
+    if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
+    return c.json(await chat.chats.fork(id.data, result.data.requestId, result.data.at), 201);
+  });
   routes.use("*", async (c, next) => {
     const id = c.req.param("chatId");
     if (id !== undefined && !ChatIdSchema.safeParse(id).success)

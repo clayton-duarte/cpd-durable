@@ -153,6 +153,7 @@ describe("source-proven live-to-committed identity", () => {
     expect(done.messages.at(-1)?.id).toBe(first.liveKey);
     expect(done.messages.at(-1)?.metadata?.custom).toMatchObject({
       durableId: "2:0",
+      sourceEntryId: 2,
       partIds: ["2:0:0"],
       interrupted: false,
     });

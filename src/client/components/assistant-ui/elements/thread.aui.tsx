@@ -29,6 +29,7 @@ import { cn } from "@/lib/utils";
 import { ConversationMapAui } from "./conversation-map.aui";
 import { ThreadNavigation } from "@/thread-navigation";
 import { ChatDetails } from "@/chat-details";
+import { ForkMessageAction } from "@/fork-message-action";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -795,6 +796,7 @@ const AssistantActionBar: FC = () => {
       autohide="not-last"
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
     >
+      <ForkMessageAction />
       <ActionBarPrimitive.Copy render={<TooltipIconButton tooltip="Copy" />}>
         <AuiIf condition={(s) => s.message.isCopied}>
           <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
@@ -928,6 +930,7 @@ const UserActionBar: FC = () => {
       autohide="not-last"
       className="aui-user-action-bar-root flex flex-col items-end"
     >
+      <ForkMessageAction />
       <ActionBarPrimitive.Edit
         render={<TooltipIconButton tooltip="Edit" className="aui-user-action-edit" />}
       >
