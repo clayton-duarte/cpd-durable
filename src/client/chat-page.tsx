@@ -23,6 +23,13 @@ export function ChatPage() {
         onContinue={chat.continueRun}
         onReset={chat.reset}
         onWithdraw={chat.withdraw}
+        historyLoading={chat.historyLoading}
+        historyError={chat.historyError}
+        historyGap={chat.historyGap}
+        onRetryHistory={chat.retryHistory}
+        {...(chat.state?.history
+          ? { onLoadEarlier: chat.loadEarlier, onFillGap: chat.fillGap }
+          : {})}
       />
     </main>
   );

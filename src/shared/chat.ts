@@ -32,6 +32,21 @@ export const WithdrawResultSchema = z.strictObject({
 });
 
 const RecordIdSchema = z.number().int().positive().safe();
+export const HistoryGapSchema = z
+  .strictObject({
+    after: RecordIdSchema,
+    upTo: RecordIdSchema,
+  })
+  .refine((gap) => gap.upTo > gap.after, "Invalid history gap");
+export type HistoryGap = z.infer<typeof HistoryGapSchema>;
+export const HistoryQuerySchema = z.strictObject({
+  view: z.uuid(),
+  oldest: z.coerce.number().int().positive().safe().optional(),
+});
+export const HistoryLoadSchema = z.strictObject({
+  view: z.uuid(),
+  gap: HistoryGapSchema.optional(),
+});
 export const ToolStateSchema = z.enum([
   "pending",
   "running",
@@ -91,6 +106,15 @@ export const ChatStateSchema = z
     hasEarlier: z.boolean(),
     failure: z.string().nullable(),
     conversationId: RecordIdSchema.optional(),
+    history: z
+      .strictObject({
+        view: z.uuid(),
+        epoch: z.uuid(),
+        revision: z.number().int().nonnegative().safe(),
+        oldest: RecordIdSchema.optional(),
+        gaps: z.array(HistoryGapSchema),
+      })
+      .optional(),
     window: z
       .strictObject({
         entryIds: z.array(RecordIdSchema),
@@ -122,6 +146,12 @@ export const ChatStateSchema = z
       .optional(),
   })
   .superRefine((state, context) => {
+    if (
+      state.history &&
+      new Set(state.history.gaps.map((gap) => `${gap.after}:${gap.upTo}`)).size !==
+        state.history.gaps.length
+    )
+      context.addIssue({ code: "custom", message: "Duplicate history gap" });
     if (new Set(state.messages.map((message) => message.id)).size !== state.messages.length)
       context.addIssue({ code: "custom", message: "Duplicate message identity" });
     for (const message of state.messages) {

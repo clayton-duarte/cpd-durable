@@ -4,6 +4,7 @@ import {
   ChatStateSchema,
   SubmissionSchema,
   WithdrawResultSchema,
+  type HistoryGap,
   type ChatInput,
   type ChatControl,
   type ChatState,
@@ -25,12 +26,39 @@ export function useChat() {
   const [retry, setRetry] = useState<Request | null>(null);
   const uncertain = useRef<Request | null>(null);
   const inFlight = useRef(false);
+  const [view] = useState(() => crypto.randomUUID());
+  const [oldest, setOldest] = useState<number>();
+  const accepted = useRef<ChatState | null>(null);
+  const retired = useRef(new Set<string>());
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const historyInFlight = useRef(false);
+  const historyRetry = useRef<HistoryGap | undefined>(undefined);
+  const [historyGap, setHistoryGap] = useState<HistoryGap>();
+
+  function accept(next: ChatState) {
+    const previous = accepted.current?.history;
+    if (next.history) {
+      if (next.history.view !== view) throw new Error("Mismatched history view");
+      if (retired.current.has(next.history.epoch)) return;
+      if (previous?.epoch === next.history.epoch && next.history.revision <= previous.revision)
+        return;
+      if (previous && previous.epoch !== next.history.epoch) retired.current.add(previous.epoch);
+      setOldest(next.history.oldest);
+    }
+    accepted.current = next;
+    setState(next);
+  }
 
   useEffect(() => {
-    const source = new EventSource("/api/events");
+    let active = true;
+    const source = new EventSource(
+      `/api/events?view=${view}${oldest === undefined ? "" : `&oldest=${oldest}`}`,
+    );
     source.addEventListener("state", (event: MessageEvent<string>) => {
+      if (!active) return;
       try {
-        setState(ChatStateSchema.parse(JSON.parse(event.data)));
+        accept(ChatStateSchema.parse(JSON.parse(event.data)));
         setConnected(true);
         // Recover a rejected frame without erasing an uncertain operation's retry.
         setError((current) =>
@@ -41,10 +69,45 @@ export function useChat() {
         setError("Received an invalid conversation update.");
       }
     });
-    source.addEventListener("unavailable", () => setConnected(false));
-    source.onerror = () => setConnected(false);
-    return () => source.close();
-  }, []);
+    source.addEventListener("unavailable", () => {
+      if (active) setConnected(false);
+    });
+    source.onerror = () => {
+      if (active) setConnected(false);
+    };
+    return () => {
+      active = false;
+      source.close();
+    };
+  }, [view, oldest]);
+
+  async function loadHistory(gap?: HistoryGap) {
+    if (historyInFlight.current || !connected || !accepted.current?.history) return;
+    historyInFlight.current = true;
+    setHistoryLoading(true);
+    setHistoryGap(gap);
+    historyRetry.current = gap;
+    setHistoryError(null);
+    try {
+      const response = await fetch("/api/history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ view, ...(gap ? { gap } : {}) }),
+      });
+      if (!response.ok) throw new Error("History unavailable");
+      accept(ChatStateSchema.parse(await response.json()));
+    } catch {
+      const current = accepted.current;
+      const gapStillMissing =
+        !gap ||
+        current?.history?.gaps.some((item) => item.after < gap.upTo && gap.after < item.upTo);
+      if (gapStillMissing)
+        setHistoryError("History could not be loaded. Retry without resending any message.");
+    } finally {
+      historyInFlight.current = false;
+      setHistoryLoading(false);
+    }
+  }
 
   async function perform(request: Request): Promise<boolean> {
     if (inFlight.current || (uncertain.current && uncertain.current !== request)) return false;
@@ -128,6 +191,12 @@ export function useChat() {
 
   return {
     state,
+    historyLoading,
+    historyError,
+    historyGap,
+    retryHistory: () => loadHistory(historyRetry.current),
+    loadEarlier: () => loadHistory(),
+    fillGap: (gap: HistoryGap) => loadHistory(gap),
     connected,
     pending,
     error,

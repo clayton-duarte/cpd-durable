@@ -123,6 +123,22 @@ export function projectAssistantMessages(
   const messages = (snapshot?.messages ?? []).map((message) =>
     committedMessage(message, aliases.get(message.id) ?? message.id),
   );
+  for (const gap of snapshot?.history?.gaps ?? []) {
+    const index = snapshot!.messages.findIndex(
+      (message) => (message.source?.entryId ?? Infinity) >= gap.upTo,
+    );
+    const next = index < 0 ? undefined : snapshot!.messages[index];
+    const insertion = next
+      ? messages.findIndex((message) => message.metadata?.custom?.["durableId"] === next.id)
+      : -1;
+    messages.splice(insertion < 0 ? messages.length : insertion, 0, {
+      id: `history-gap:${gap.after}:${gap.upTo}`,
+      role: "assistant",
+      content: [{ type: "data-history-gap", data: gap }],
+      status: { type: "complete", reason: "stop" },
+      metadata: { custom: { durableId: null, historyMarker: true } },
+    });
+  }
   if (live && liveKey)
     messages.push({
       id: liveKey,

@@ -12,5 +12,11 @@
     "types": ["node", "vite/client"],
     "paths": { "@/*": ["./src/client/*"] }
   },
-  "include": ["src", "vite.config.ts", "playwright.config.ts", "tests"]
+  "include": [
+    "src",
+    "vite.config.ts",
+    "playwright.config.ts",
+    "playwright.presentation.config.ts",
+    "tests"
+  ]
 }

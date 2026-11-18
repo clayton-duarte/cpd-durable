@@ -18,6 +18,39 @@ const entry = (id: number, content: unknown, stopReason = "stop", kind = "pi.ass
 });
 
 describe("validated ordered SDK presentation", () => {
+  it("does not pair a tool result across an unresolved gap with a sparse upper bound", () => {
+    const state = present(
+      view([
+        entry(
+          1,
+          [{ type: "toolCall", id: "old", name: "bash", arguments: { command: "pwd" } }],
+          "toolUse",
+        ),
+        {
+          id: 30,
+          kind: "pi.tool-result",
+          model: [
+            {
+              role: "toolResult",
+              toolCallId: "old",
+              toolName: "bash",
+              content: [{ type: "text", text: "Result" }],
+              isError: false,
+            },
+          ],
+        },
+      ]),
+      false,
+      [{ after: 1, upTo: 20 }],
+    );
+    expect(state.messages).toHaveLength(2);
+    expect(state.messages[0]?.parts?.[0]).toMatchObject({ state: "unavailable" });
+    expect(state.messages[1]?.parts?.[0]).toMatchObject({
+      state: "complete",
+      argumentsUnavailable: true,
+    });
+  });
+
   it("omits empty reasoning and never treats signatures as display text", () => {
     const state = present(
       view([

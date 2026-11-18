@@ -145,7 +145,11 @@ const failureReasons = new Set([
   "turn_limit",
 ]);
 
-export function present(view: ConversationView, canContinue = false): ChatState {
+export function present(
+  view: ConversationView,
+  canContinue = false,
+  gaps: readonly { after: number; upTo: number }[] = [],
+): ChatState {
   const live = LiveSchema.parse(view.docs["pi.live"] ?? {});
   const inbox = InboxSchema.parse(view.docs["pi.inbox"] ?? {});
   const taskId = live.run?.taskId;
@@ -160,7 +164,13 @@ export function present(view: ConversationView, canContinue = false): ChatState 
   const messages: ChatMessage[] = [];
   const pending = new Map<string, Extract<ChatPart, { type: "tool-call" }>>();
   const pendingTasks = new Map<string, number | undefined>();
+  let gapIndex = 0;
   for (const entry of view.entries) {
+    while (gaps[gapIndex] && entry.id >= gaps[gapIndex]!.upTo) {
+      pending.clear();
+      pendingTasks.clear();
+      gapIndex++;
+    }
     for (const [index, raw] of (entry.model ?? []).entries()) {
       const resultMessage =
         entry.kind === "pi.tool-result" ? ToolResultSchema.safeParse(raw) : null;

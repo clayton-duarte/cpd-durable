@@ -48,7 +48,7 @@ Select **`/reset`** for a compact confirmation dialog with optional multiline ha
 
 ## Persistence and recovery
 
-pi-durable's Node SQLite adapter owns the transcript and execution state in `data/session.sqlite` by default (`CPD_DATA_DIR` can change the directory). Browser refresh/reconnect reconstructs the latest view through SSE; the browser does not persist a transcript. The UI shows the SDK's recent-message window and labels omitted earlier history, which stays in storage.
+pi-durable's Node SQLite adapter owns the transcript and execution state in `data/session.sqlite` by default (`CPD_DATA_DIR` can change the directory). The UI starts with a recent window and offers **Load earlier messages** in 50-entry pages. SDK transcript merging retains loaded history across reconnects and exposes **Load missing messages** for gaps; reading/retrying history never resends a message. The browser does not persist a transcript. See [history semantics and cache/restart limits](docs/chat-components.md#complete-history-access-batch-3).
 
 The server opens one Harness and resumes pending SDK work. A disconnect detaches observation, not execution. SDK request IDs deduplicate retried input, Continue and reset admissions; the client retains retry identity only until refresh. While delivery is uncertain, retry the original action before another mutation; a newer composer draft remains editable and is not consumed by retrying a control. After an ambiguous action followed by refresh, inspect the restored state before repeating it. Durability is not a guarantee of uninterrupted token streaming: the SDK can retry interrupted provider requests, and its documented progress-persistence window may lose recent partial output on a crash.
 
@@ -85,7 +85,7 @@ All external contributors require workflow approval in repository settings. Revi
 
 Integration tests use the real SDK and SQLite with a controllable test provider. Browser tests exercise the built frontend through Hono/SSE and the real SDK, substituting only the provider. They do not establish that a live OpenCode Go credential/request succeeds. These checks need no provider secrets. Browser traces may contain conversation text; local tests use synthetic data only.
 
-The separate presentation browser configuration uses Vite on port 5173 (reusing the live client when available) and synthetic API state. It does not submit to the running conversation and can run while the application owns port 3000. It covers loading/empty presentation, send modes, queue/withdraw feedback, Continue/reset confirmation and retry, draft preservation and the default theme; it does not replace the full SDK/browser suite.
+The separate presentation browser configuration uses Vite on port 5173 (reusing the live client when available) and synthetic API state. `CPD_PRESENTATION_URL=http://127.0.0.1:5174` selects an isolated client port when needed. Tests intercept API traffic and never submit to the running conversation. Coverage includes loading/empty presentation, history prepend/gap recovery, stale-read protection, independent read/delivery retries, run controls, drafts, native reasoning/tools and the default theme. It does not replace the full SDK/browser suite.
 
 ## Read next
 
