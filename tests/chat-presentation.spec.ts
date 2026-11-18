@@ -141,6 +141,56 @@ test("native earlier loading prepends history while preserving draft, row identi
   expect(requests).toHaveLength(1);
 });
 
+test("loaded-history search steps and wraps real text hits without searching hidden reasoning", async ({
+  page,
+}) => {
+  const initial = historyState(1, 40, 1);
+  initial.messages[0]!.text = "Needle first and needle again";
+  initial.messages[1]!.text = "Needle second";
+  initial.messages[3]!.parts = [{ id: "4:0:0", type: "reasoning", text: "private needle" }];
+  initial.messages[3]!.text = "";
+  await connect(page, initial);
+  await page.goto("/");
+  await page.getByRole("button", { name: "Find in loaded history" }).click();
+  const search = page.locator('[data-slot="conversation-search"]');
+  await search.getByRole("textbox", { name: "Find in conversation" }).fill("needle");
+  await expect(search).toContainText("1/3");
+  await search.getByRole("button", { name: "Next match" }).click();
+  await expect(search).toContainText("2/3");
+  await search.getByRole("textbox").press("Enter");
+  await expect(search).toContainText("3/3");
+  await search.getByRole("textbox").press("Enter");
+  await expect(search).toContainText("1/3");
+  await search.getByRole("textbox").press("Shift+Enter");
+  await expect(search).toContainText("3/3");
+  await search.getByRole("textbox").fill("not loaded");
+  await search.getByRole("button", { name: "Next match" }).click();
+  await expect(search).toContainText("0");
+  await expect(search).toHaveAttribute("aria-label", /unloaded messages are not searched/);
+});
+
+test("conversation map selects actual loaded turns and preserves the native draft", async ({
+  page,
+}) => {
+  await connect(page, historyState(1, 50, 1));
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep navigation draft");
+  const map = page.getByRole("navigation", { name: "Conversation map" });
+  await expect(map.getByRole("button")).toHaveCount(25);
+  await map.getByRole("button", { name: "Turn 1", exact: true }).click();
+  const row = page.locator('[data-durable-id="1:0"]');
+  await expect
+    .poll(() =>
+      row.evaluate((element) => {
+        const viewport = element.closest('[data-slot="aui_thread-viewport"]')!;
+        return Math.abs(element.getBoundingClientRect().top - viewport.getBoundingClientRect().top);
+      }),
+    )
+    .toBeLessThan(5);
+  await expect(draft).toHaveValue("Keep navigation draft");
+});
+
 test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
   await connect(page, historyState(61, 90, 1));
   let release!: () => void;
