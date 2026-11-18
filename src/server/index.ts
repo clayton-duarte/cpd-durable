@@ -13,6 +13,7 @@ const ConfigSchema = z.object({
   OPENCODE_API_KEY: z.string().trim().min(1),
   CPD_DATA_DIR: z.string().min(1).default("./data"),
   CPD_CWD: z.string().min(1).default("~"),
+  CPD_EXTENSIONS_CONFIG: z.string().min(1).optional(),
   CPD_MCP_CONFIG: z.string().min(1).optional(),
 });
 const config = ConfigSchema.safeParse(process.env);
@@ -58,9 +59,14 @@ if (!config.success) {
         resolve(config.data.CPD_DATA_DIR),
         models,
         workingDirectory(config.data.CPD_CWD),
-        config.data.CPD_MCP_CONFIG === undefined
-          ? {}
-          : { mcpConfigPath: config.data.CPD_MCP_CONFIG },
+        {
+          ...(config.data.CPD_EXTENSIONS_CONFIG === undefined
+            ? {}
+            : { extensionsConfigPath: config.data.CPD_EXTENSIONS_CONFIG }),
+          ...(config.data.CPD_MCP_CONFIG === undefined
+            ? {}
+            : { mcpConfigPath: config.data.CPD_MCP_CONFIG }),
+        },
       );
       if (stopping) {
         await chat.close();
@@ -75,7 +81,7 @@ if (!config.success) {
     }
   } catch {
     console.error(
-      "Server could not start. Check the listener, local data directory and MCP configuration.",
+      "Server could not start. Check the listener, local data directory and configured integrations.",
     );
     shutdown();
     process.exitCode = 1;

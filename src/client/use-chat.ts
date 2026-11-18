@@ -10,11 +10,12 @@ import {
   type ChatState,
   type SendMode,
 } from "../shared/chat.ts";
+import type { DraftAdmission } from "../shared/drafts.ts";
 import { DirectShellStatusSchema } from "../shared/direct-shell.ts";
 import type { z } from "zod";
 
 type Request =
-  | { path: "/api/input"; body: ChatInput }
+  | { path: "/api/input"; body: ChatInput; onClear?: (revision: number) => void }
   | { path: "/api/control"; body: ChatControl }
   | { path: "/api/shell"; body: { requestId: string; command: string; includeInContext: boolean } }
   | { path: "/api/withdraw"; body: { id: string } }
@@ -209,6 +210,8 @@ export function useChat(chatId?: string, observing = true) {
         );
       } else if (request.path !== "/api/stop") {
         const receipt = SubmissionSchema.parse(await response.json());
+        if (request.path === "/api/input" && receipt.clearedDraftRevision !== undefined)
+          request.onClear?.(receipt.clearedDraftRevision);
         if (request.path === "/api/control") {
           setNotice(
             request.body.type === "reset"
@@ -245,12 +248,27 @@ export function useChat(chatId?: string, observing = true) {
     }
   }
 
-  function send(text: string, mode: SendMode = "reject", images: string[] = []) {
+  function send(
+    text: string,
+    mode: SendMode = "reject",
+    images: string[] = [],
+    prepared?: { requestId: string; draft: DraftAdmission; onClear?: (revision: number) => void },
+  ) {
     const previous = uncertain.current;
-    if (previous?.path === "/api/input") return perform(previous);
+    if (previous?.path === "/api/input") {
+      if (prepared && previous.body.requestId !== prepared.requestId) return Promise.resolve(false);
+      return perform(previous);
+    }
     return perform({
       path: "/api/input",
-      body: { text, mode, ...(images.length ? { images } : {}), requestId: crypto.randomUUID() },
+      body: {
+        text,
+        mode,
+        ...(images.length ? { images } : {}),
+        requestId: prepared?.requestId ?? crypto.randomUUID(),
+        ...(prepared ? { draft: prepared.draft } : {}),
+      },
+      ...(prepared?.onClear ? { onClear: prepared.onClear } : {}),
     });
   }
   function sendShell(command: string, includeInContext: boolean) {
