@@ -789,6 +789,10 @@ it.each(["image-first", "regeneration-first"])(
       } else {
         expect((await regenerate()).status).toBe(202);
         expect((await image()).status).toBe(409);
+        expect(
+          (await post("shell", { requestId, command: "printf safe", includeInContext: false }))
+            .status,
+        ).toBe(409);
         expect((await chat.chats.list()).chats).toHaveLength(2);
       }
       await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
@@ -797,6 +801,33 @@ it.each(["image-first", "regeneration-first"])(
         expect((await chat.chats.list()).chats.every((item) => !item.running)).toBe(true),
       );
       expect(provider.calls).toHaveLength(1);
+      if (order === "image-first") {
+        const shellId = crypto.randomUUID();
+        expect(
+          (
+            await post("shell", {
+              requestId: shellId,
+              command: "printf safe",
+              includeInContext: false,
+            })
+          ).status,
+        ).toBe(202);
+        expect(
+          (
+            await post("regenerate", {
+              sourceId: String(conversation.id),
+              entryId: String(answer.id),
+              requestId: shellId,
+            })
+          ).status,
+        ).toBe(409);
+        const scope = (await chat.chats.resolve(String(conversation.id)))!;
+        await vi.waitFor(async () =>
+          expect((await scope.shellStatus(shellId))?.status).not.toBe("running"),
+        );
+        expect((await chat.chats.list()).chats).toHaveLength(1);
+        expect(provider.calls).toHaveLength(1);
+      }
     } finally {
       await chat.close();
       await rm(directory, { recursive: true, force: true });

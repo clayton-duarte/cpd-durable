@@ -12,6 +12,11 @@ import {
 } from "@earendil-works/pi-durable";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import {
+  compactIntentUnsettled,
+  directShellHasUnsettled,
+  directShellRequestExists,
+} from "./direct-shell.ts";
+import {
   RegenerationRequestSchema,
   type RegenerationReceipt,
   type RegenerationRequest,
@@ -136,6 +141,8 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
         !regenerableAnswer(visible.items[0])
       )
         throw new RegenerationError("Answer boundary changed.", 409);
+      if (await directShellRequestExists(tx, sourceId, request.requestId))
+        throw new RegenerationError("Request identity already used.", 409);
       const recordSource = await checkAdmissionRequest(
         tx,
         sourceId,
@@ -192,6 +199,12 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
         throw new RegenerationError("Preparation unavailable.", 409);
       await catalog.requireActive(tx, branch.id);
       if (operation.submissionId !== undefined) return receipt(operation);
+      if (
+        (await directShellRequestExists(tx, branch.id, request.requestId)) ||
+        (await directShellHasUnsettled(tx, branch.id)) ||
+        (await compactIntentUnsettled(tx, branch.id))
+      )
+        throw new RegenerationError("Prepared branch changed before admission.", 409);
       const latest = await tx.latestEntryId(branch.id);
       const live = await tx.doc(LiveDoc, branch.id);
       const inbox = await tx.doc(InboxDoc, branch.id);

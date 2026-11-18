@@ -1,6 +1,8 @@
 import { createContext, useContext } from "react";
 import type { AttachmentAdapter } from "@assistant-ui/react";
 import type { ChatState, SendMode, HistoryGap } from "../shared/chat.ts";
+import type { DirectShellStatusSchema } from "../shared/direct-shell.ts";
+import type { z } from "zod";
 
 export interface ChatProps {
   chatId?: string | undefined;
@@ -27,6 +29,9 @@ export interface ChatProps {
   onLoadEarlier?: () => Promise<void>;
   onFillGap?: (gap: HistoryGap) => Promise<void>;
   onSend?: (text: string, mode?: SendMode, images?: string[]) => Promise<boolean>;
+  onShell?: (command: string, includeInContext: boolean) => Promise<boolean>;
+  shell?: z.infer<typeof DirectShellStatusSchema> | null;
+  onShellStop?: () => Promise<void>;
   attachmentAdapter?: AttachmentAdapter;
   onStop?: () => Promise<void>;
   onContinue?: () => Promise<boolean>;

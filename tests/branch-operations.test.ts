@@ -24,6 +24,7 @@ import { openChat } from "../src/server/chat.ts";
 import { createApp } from "../src/server/app.ts";
 import { imageRequestDigest } from "../src/server/attachment-catalog.ts";
 import { reserveBranchIdentity } from "../src/server/branch-identity.ts";
+import { DirectShellDoc } from "../src/server/direct-shell.ts";
 
 describe("durable edit branch foundation", () => {
   let directory: string;
@@ -110,6 +111,24 @@ describe("durable edit branch foundation", () => {
     provider.calls[index]!.finish("Answer");
     await harness.waitForIdle(BACKGROUND_CONTEXT);
   }
+
+  it("does not admit a prepared edit over an unsettled shell or compaction reservation", async () => {
+    const entry = await append("Original");
+    const input = request(entry);
+    const operations = createBranchOperations(harness, hooks);
+    const prepared = await operations.prepareEdit(input);
+    const branch = Number(prepared.branchId) as ConversationId;
+    await harness.commit(async (tx) => {
+      (await tx.doc(DirectShellDoc, branch)).active = 999999;
+    }, BACKGROUND_CONTEXT);
+    await expect(operations.admitEdit(input)).rejects.toThrow("direct shell");
+    await harness.commit(async (tx) => {
+      const doc = await tx.doc(DirectShellDoc, branch);
+      doc.active = null;
+      doc.compactIntent = { id: crypto.randomUUID() };
+    }, BACKGROUND_CONTEXT);
+    await expect(operations.admitEdit(input)).rejects.toThrow("Compaction admission");
+  });
 
   it("edits a middle entry at its actual visible predecessor with historical fork configuration", async () => {
     await root.configure({ thinkingLevel: "high" }, BACKGROUND_CONTEXT);

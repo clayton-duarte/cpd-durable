@@ -115,6 +115,8 @@ Known `pi.tool-result` entries attach to the preceding unmatched call with the s
 
 Code-mode disclosures show allowlisted nested call names, canonical IDs and actual states, under the matching parent call. Live slots are associated by the SDK parent task and call IDs; completed calls use the SDK code-mode receipt. Nested arguments, outputs and raw errors are not projected and are labeled unavailable. Missing receipts remain unavailable. A recorded spill is indicated without exposing its path; absence of a spill receipt does not prove output was never truncated.
 
+Fresh composer `!` and `!!` commands run as foreground SDK tasks, not model tool calls; `!!` entries have no model contribution. A scoped status read supplies observed progress independently of the conversation watch. Supplied tool disclosures show the command and bounded combined stdout/stderr tail in callback arrival order; this is not an interactive terminal. Stop targets the actual shell task. Cancellation or restart may lose uncommitted output and cannot undo effects; an interrupted command is not rerun. Image attachments are rejected for direct shell input, and `\!` sends a literal leading exclamation mark.
+
 Explicitly configured MCP stdio tools are callable through code mode, not offered as direct model tools. The same nested disclosure shows their SDK identities and states; no MCP-specific browser configuration or credential projection exists. Server descriptions and tool results can contain sensitive data. Stop requests cancellation without guaranteeing a remote effect was undone; unsafe interrupted calls are not automatically replayed. The [server configuration](../README.md#optional-mcp-stdio-tools) describes protocol and schema limits.
 
 Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Saved PNG/JPEG tool images use the requesting conversation's authorized SDK history and preserve text/image order; unsupported formats remain omission receipts. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
@@ -135,7 +137,9 @@ The newest durable assistant generation message found in a backward scan of at m
 
 Manual Compact context invokes SDK `compact()` with optional instructions and reports **task admission**, not completion or summary placement. SDK summarization can overlap work; a nonblocking summary write is placed immediately when idle, or at an eligible boundary when busy. Empty/no-cut compaction can finish without a new head. Saved transcript entries are not erased. Details projects actual manual/threshold/overflow compactions, blocking/attempt/retry state and sanitized failure identity; raw errors stay private. Automatic thresholds remain SDK defaults rather than a second browser policy. Stop aborts manual foreground compaction through the existing SDK abort; background compactions retain SDK ownership semantics.
 
-Compaction writes have no SDK request-ID API and are never automatically retried. Unconfirmed admission disables that inspector's action and asks the reader to inspect state before deliberately trying again (closing/reopening permits a new action). This is not durable deduplication. Read-only archived views omit the action, and lifecycle checks refuse archive/delete while a compaction is active. The optional instructions field reuses supplied Textarea because assistant-ui has no compaction-instructions input.
+Compaction writes have no SDK request-ID API and are never automatically retried. Unconfirmed admission disables that inspector's action and asks the reader to inspect state before deliberately trying again. This is not durable deduplication. Read-only archived views omit the action, and lifecycle checks refuse archive/delete while a compaction is active. The optional instructions field reuses supplied Textarea because assistant-ui has no compaction-instructions input.
+
+Manual compaction and direct shell admission use a durable reservation to avoid starting both concurrently. If compaction admission throws or the host stops before recording the task identity, the reservation remains unresolved; the public `compact()` contract does not identify a generally safe class of such failures to clear automatically. After restarting, an explicit release is allowed only when no compaction is live and any known task is terminal. Release does not start another compaction or establish whether an unknown original ran.
 
 ## 5. Recovery and connection
 
@@ -195,7 +199,7 @@ PNG/JPEG uploads are limited to four per input, 5 MiB each, 8,192 pixels per dim
 
 After uncertain input/control delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` or `retryAction`. Retain the original operation/payload/request ID. Other mutations stay blocked while a new draft remains editable. Continue/reset/withdraw do not consume the composer draft. Reset handoff text survives a failed attempt.
 
-The transport serializes mutations and keeps retry identity only until refresh. Inspect restored state before repeating an uncertain action after refresh. Stop is a current-scope abort, not a request-ID admission; an uncertain Stop asks for state inspection before explicitly stopping again.
+The transport serializes mutations and keeps retry identity only until refresh. Inspect restored state before repeating an uncertain action after refresh. Model Stop is a current-scope abort; shell Stop targets its identified task. An uncertain Stop asks for state inspection before explicitly stopping again.
 
 ## Remaining work
 

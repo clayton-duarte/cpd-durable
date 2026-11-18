@@ -36,11 +36,14 @@ export function ChatPage({
         retryAction={chat.retryAction}
         uncertain={chat.uncertain}
         notice={chat.notice}
+        shell={chat.shell}
         onRetry={chat.retryRequest}
         {...(readOnly
           ? {}
           : {
               onSend: chat.send,
+              onShell: chat.sendShell,
+              onShellStop: chat.stopShell,
               onStop: chat.stop,
               onContinue: chat.continueRun,
               onReset: chat.reset,
