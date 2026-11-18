@@ -50,6 +50,9 @@ async function prepare(
   let uploads = 0;
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/tangents")) return route.fulfill({ json: { tangents: [] } });
+    if (url.pathname.endsWith("/workers"))
+      return route.fulfill({ json: { helpers: [], hasUnsettled: false } });
     if (url.pathname === "/api/chats")
       return route.fulfill({
         json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },

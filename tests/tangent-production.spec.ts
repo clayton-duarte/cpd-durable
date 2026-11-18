@@ -296,9 +296,11 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(page.getByRole("alert")).toContainText("work is still active");
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
   let placed = false;
+  let admitted = false;
   let accepted = false;
   let acceptCount = 0;
   let wrongRevision = true;
+  const deliveries: unknown[] = [];
   let delayStatus = false;
   let lateStarted = false;
   let releaseLate!: () => void;
@@ -313,7 +315,7 @@ test("production route keeps native chats and drafts through tangent navigation"
       ...unstarted.latestHandoff,
       revision: 2,
       kind: "return",
-      delivery: "admitted",
+      delivery: "available",
       handoff: {
         ...handoff,
         goal: unsafe,
@@ -331,13 +333,25 @@ test("production route keeps native chats and drafts through tangent navigation"
       .fulfill({
         json: {
           revision: wrongRevision ? 1 : 2,
-          admitted: true,
+          admitted,
           placed,
           submissionStatus: "queued",
           accepted,
         },
       })
       .catch(() => {});
+  });
+  await page.route("**/api/chats/1/tangents/3/deliver", (route) => {
+    deliveries.push(route.request().postDataJSON());
+    if (deliveries.length === 1)
+      return route.fulfill({ status: 409, json: { error: "Context changed", currentHead: "21" } });
+    if (deliveries.length === 2) return route.abort();
+    if (deliveries.length === 3)
+      return route.fulfill({ status: 409, json: { error: "Context changed", currentHead: "22" } });
+    admitted = true;
+    return route.fulfill({
+      json: { revision: 2, delivery: "admitted", submissionId: 5, accepted: false },
+    });
   });
   await page.route("**/api/chats/1/tangents/3/accept", (route) => {
     acceptCount++;
@@ -357,6 +371,17 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(report.getByRole("alert")).toContainText("Return status unavailable");
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
   wrongRevision = false;
+  await expect(report.getByText("Available; not admitted")).toBeVisible();
+  await report.getByRole("button", { name: "Bring findings back" }).click();
+  await expect(report.getByText(/Current context head: 21/)).toBeVisible();
+  expect(deliveries).toHaveLength(1);
+  await report.getByRole("button", { name: "Deliver to current context" }).click();
+  await expect(report.getByRole("button", { name: "Retry delivery" })).toBeVisible();
+  await report.getByRole("button", { name: "Retry delivery" }).click();
+  await expect(report.getByText(/Current context head: 22/)).toBeVisible();
+  expect(deliveries[1]).toEqual(deliveries[2]);
+  await report.getByRole("button", { name: "Deliver to current context" }).click();
+  expect(deliveries[3]).toEqual({ revision: 2, expectedHead: "22", acknowledgeRetired: true });
   await expect(report.getByText("Admitted; not yet placed")).toBeVisible();
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
   await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();

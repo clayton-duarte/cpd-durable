@@ -15,6 +15,18 @@ const AcceptSchema = z.strictObject({
   revision: z.number().int().positive(),
   accepted: z.boolean(),
 });
+const DeliverySchema = z.strictObject({
+  revision: z.number().int().positive(),
+  delivery: z.enum(["available", "admitted"]),
+  submissionId: z.number().int().positive().nullable(),
+  accepted: z.boolean(),
+});
+const HeadConflictSchema = z.object({ currentHead: z.string().nullable() });
+type DeliveryChoice = {
+  revision: number;
+  expectedHead?: string | null;
+  acknowledgeRetired?: boolean;
+};
 type Status = z.infer<typeof StatusSchema>;
 
 export function ReturnReview({
@@ -33,6 +45,9 @@ export function ReturnReview({
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const [pending, setPending] = useState(false);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
+  const [headConflict, setHeadConflict] = useState<{ head: string | null } | null>(null);
+  const [retryDelivery, setRetryDelivery] = useState<DeliveryChoice | null>(null);
   const epoch = useRef(0);
   const writing = useRef(false);
   useEffect(() => {
@@ -110,6 +125,63 @@ export function ReturnReview({
       setReload((value) => value + 1);
     }
   }
+  async function deliver(choice: DeliveryChoice) {
+    if (
+      !active ||
+      readOnly ||
+      pending ||
+      error ||
+      writing.current ||
+      status?.admitted ||
+      item.lifecycle !== "open"
+    )
+      return;
+    writing.current = true;
+    const current = ++epoch.current;
+    setPending(true);
+    setDeliveryError(null);
+    setRetryDelivery(choice);
+    try {
+      const response = await fetch(`/api/chats/${parentId}/tangents/${item.id}/deliver`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(choice),
+      });
+      const body: unknown = await response.json().catch(() => null);
+      if (epoch.current !== current) return;
+      if (!response.ok) {
+        const conflict = response.status === 409 ? HeadConflictSchema.safeParse(body) : null;
+        if (conflict?.success) {
+          setHeadConflict({ head: conflict.data.currentHead });
+          setRetryDelivery(null);
+          setDeliveryError(
+            "The parent context changed. Review the report and explicitly choose whether to deliver to the current context.",
+          );
+        } else {
+          setDeliveryError(
+            "Delivery was not confirmed. The parent must be idle; check its state before retrying the same choice.",
+          );
+        }
+        return;
+      }
+      const result = DeliverySchema.parse(body);
+      if (result.revision !== revision || result.delivery !== "admitted") throw new Error();
+      setRetryDelivery(null);
+      setHeadConflict(null);
+      setStatus((previous) =>
+        previous ? { ...previous, admitted: true, accepted: result.accepted } : previous,
+      );
+    } catch {
+      if (epoch.current === current)
+        setDeliveryError(
+          "Delivery was not confirmed. Retry the same choice or check the parent state.",
+        );
+    } finally {
+      writing.current = false;
+      setPending(false);
+      setReload((value) => value + 1);
+    }
+  }
   return (
     <section aria-label={`Return report revision ${revision}`}>
       <p>
@@ -142,7 +214,43 @@ export function ReturnReview({
         {status?.accepted ? "Accepted by parent review." : "Not accepted by parent review."}{" "}
         Acceptance records a review decision, not model comprehension.
       </p>
-      <p>Delivery integration pending.</p>
+      {deliveryError && <p role="alert">{deliveryError}</p>}
+      {headConflict && (
+        <div>
+          <p>
+            Current context head: {headConflict.head ?? "empty"}. The report may refer to retired
+            context.
+          </p>
+          <Button
+            type="button"
+            disabled={!active || readOnly || pending || !!error || !!status?.admitted}
+            onClick={() => {
+              void deliver(
+                retryDelivery ?? {
+                  revision,
+                  expectedHead: headConflict.head,
+                  acknowledgeRetired: true,
+                },
+              );
+            }}
+          >
+            {retryDelivery ? "Retry delivery" : "Deliver to current context"}
+          </Button>
+        </div>
+      )}
+      {!headConflict && !status?.admitted && (
+        <Button
+          type="button"
+          disabled={
+            !active || readOnly || pending || !!error || !status || item.lifecycle !== "open"
+          }
+          onClick={() => {
+            void deliver(retryDelivery ?? { revision });
+          }}
+        >
+          {retryDelivery ? "Retry delivery" : "Bring findings back"}
+        </Button>
+      )}
       {error && <p role="alert">{error}</p>}
       <Button
         type="button"
