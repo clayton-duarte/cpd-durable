@@ -22,6 +22,8 @@ import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
+import { assertBranchIdentityAvailable, reserveBranchIdentity } from "./branch-identity.ts";
+import { createRegeneration, regenerableAnswer, RegenerationError } from "./regeneration.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -92,6 +94,30 @@ export async function openChats(
       }
     }
   }, BACKGROUND_CONTEXT);
+
+  const regeneration = createRegeneration(harness, {
+    async requireActive(tx, id) {
+      const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
+      if (!item || item.status) throw new RegenerationError("Chat unavailable.", item ? 409 : 404);
+    },
+    async reserveBranchRequest(tx, request) {
+      return reserveBranchIdentity(tx, request.requestId, "regenerate");
+    },
+    async register(tx, { sourceId, branchId, forkEntryId }) {
+      const catalog = await tx.doc(CatalogDoc);
+      const source = catalog.items.find((item) => item.id === sourceId && !item.status);
+      if (!source) throw new RegenerationError("Chat unavailable.", 409);
+      catalog.items.push({
+        id: branchId,
+        title: `Regeneration of ${source.title}`.slice(0, 80),
+        named: true,
+        requestId: null,
+        parentId: sourceId,
+        forkEntryId,
+        branchRootId: source.branchRootId ?? sourceId,
+      });
+    },
+  });
 
   async function resolve(id: string) {
     const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
@@ -184,6 +210,28 @@ export async function openChats(
 
   return {
     resolve,
+    async canRegenerate(id: string, at: string) {
+      const scoped = await resolve(id);
+      if (!scoped || scoped.archived) return false;
+      const entryId = Number(at) as EntryId;
+      const page = await scoped.conversation.entries(
+        { maxEntryId: entryId, order: "descending" },
+        2,
+        undefined,
+        BACKGROUND_CONTEXT,
+      );
+      if (page.items[0]?.id !== entryId || !regenerableAnswer(page.items[0]) || !page.items[1])
+        return false;
+      const view = await scoped.conversation.context(BACKGROUND_CONTEXT, { at: page.items[1].id });
+      const tail = view.messages.at(-1);
+      return tail?.role === "user" || tail?.role === "toolResult";
+    },
+    regenerate: async (request: Parameters<typeof regeneration.prepare>[0]) => {
+      await regeneration.prepare(request);
+      return regeneration.admit(request);
+    },
+    recentRegenerations: (id: string, at: string) =>
+      regeneration.recent(Number(id) as ConversationId, Number(at) as EntryId),
     async list(): Promise<ChatCatalog> {
       const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
       const chats = await Promise.all(
@@ -229,6 +277,7 @@ export async function openChats(
     },
     async fork(id: string, requestId: string, at: string): Promise<ChatSummary> {
       const created = await harness.commit(async (tx) => {
+        await assertBranchIdentityAvailable(tx, requestId);
         const catalog = await tx.doc(CatalogDoc);
         const parent = catalog.items.find(
           (item) => String(item.id) === id && item.status !== "deleted",
@@ -310,6 +359,7 @@ export async function openChats(
     },
     async create(requestId: string): Promise<ChatSummary> {
       const item = await harness.commit(async (tx) => {
+        await assertBranchIdentityAvailable(tx, requestId);
         const catalog = await tx.doc(CatalogDoc);
         const previous = catalog.requests?.find((entry) => entry.requestId === requestId);
         const existing = catalog.items.find(

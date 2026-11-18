@@ -13,7 +13,8 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
-import { CatalogDoc } from "../src/server/chats.ts";
+import { CatalogDoc, openChats } from "../src/server/chats.ts";
+import { createApp } from "../src/server/app.ts";
 import {
   createRegeneration,
   RegenerationError,
@@ -455,6 +456,72 @@ describe("regeneration durable identity and recovery", () => {
     expect(new Set(prepared.map((item) => item.branchId)).size).toBe(1);
     expect((await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT))!.items).toHaveLength(2);
     expect(provider.calls).toHaveLength(0);
+  });
+
+  it("production create and fork routes reject an existing regeneration identity", async () => {
+    const request = input();
+    const service = createRegeneration(harness, hooks);
+    await service.prepare(request);
+    const chats = await openChats(harness, root, {}, provider.models);
+    const app = createApp({
+      conversation: root,
+      chats,
+      withdraw: (id) => harness.abortSubmission(id, BACKGROUND_CONTEXT, root.id),
+    });
+    const post = (path: string, data: unknown) =>
+      app.request(`http://localhost:3000${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+    expect((await post("/api/chats", { requestId: request.requestId })).status).toBe(409);
+    expect(
+      (
+        await post(`/api/chats/${root.id}/fork`, {
+          requestId: request.requestId,
+          at: String(answerId),
+        })
+      ).status,
+    ).toBe(409);
+    expect((await chats.list()).chats).toHaveLength(2);
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("production routes prepare, admit and recover the same regeneration", async () => {
+    const request = input();
+    const chats = await openChats(harness, root, {}, provider.models);
+    const app = createApp({
+      conversation: root,
+      chats,
+      withdraw: (id) => harness.abortSubmission(id, BACKGROUND_CONTEXT, root.id),
+    });
+    const path = `http://localhost:3000/api/chats/${root.id}`;
+    const get = (suffix: string) => app.request(`${path}/${suffix}`);
+    expect(await (await get(`regeneration-eligibility/${answerId}`)).json()).toEqual({
+      eligible: true,
+    });
+    expect(await (await get(`regenerations/${answerId}`)).json()).toEqual({ operations: [] });
+    expect(provider.calls).toHaveLength(0);
+    const post = () =>
+      app.request(`${path}/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+    const response = await post();
+    expect(response.status).toBe(202);
+    const receipt = (await response.json()) as { branchId: string; submissionId: string };
+    expect(await (await post()).json()).toEqual(receipt);
+    expect(await (await get(`regenerations/${answerId}`)).json()).toEqual({
+      operations: [{ ...receipt, requestId: request.requestId }],
+    });
+    const created = (await chats.list()).chats.find((item) => item.id === receipt.branchId);
+    expect(created?.parentId).toBe(String(root.id));
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    expect(JSON.stringify(provider.calls[0]!.context)).not.toContain("Answer");
+    provider.calls[0]!.finish("New answer");
+    await harness.waitForIdle(BACKGROUND_CONTEXT);
+    expect(provider.calls).toHaveLength(1);
   });
 
   it("linearizes concurrent configuration and admission without bypassing the guard", async () => {
