@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   configure,
+  AgentDoc,
   defineDoc,
   LiveDoc,
   InboxDoc,
@@ -15,6 +16,9 @@ import {
 import type { ChatCatalog, ChatSummary } from "../shared/chats.ts";
 import { accounting } from "./accounting.ts";
 import { inspectContext } from "./context.ts";
+import type { Models } from "@earendil-works/pi-ai/models";
+import { modelChoices, sameSelection, selection } from "./configuration.ts";
+import type { Selection } from "../shared/configuration.ts";
 
 type CatalogItem = {
   id: number;
@@ -54,7 +58,12 @@ async function empty(tx: Tx, item: CatalogItem) {
   );
 }
 
-export async function openChats(harness: Harness, root: Conversation, defaults: AgentChange) {
+export async function openChats(
+  harness: Harness,
+  root: Conversation,
+  defaults: AgentChange,
+  models: Models,
+) {
   await harness.commit(async (tx) => {
     const catalog = await tx.doc(CatalogDoc);
     if (!catalog.items.some((item) => item.id === root.id))
@@ -62,7 +71,11 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
     let retainedEmpty = false;
     for (const item of catalog.items) {
       if (item.status === "deleted") continue;
-      await configure(tx, item.id as ConversationId, defaults);
+      const agent = await tx.doc(AgentDoc, item.id as ConversationId);
+      await configure(tx, item.id as ConversationId, {
+        ...defaults,
+        ...(agent.model ? { model: agent.model } : {}),
+      });
       if (!item.status && (await empty(tx, item))) {
         if (retainedEmpty) item.status = "archived";
         retainedEmpty = true;
@@ -83,6 +96,37 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
       conversation,
       accounting: () => accounting(harness, conversation.id),
       context: () => inspectContext(harness, conversation),
+      configuration: async () => ({
+        conversationId: String(conversation.id),
+        selection: selection(await harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)),
+        choices: await modelChoices(models),
+      }),
+      configure: async (expected: Selection, next: Selection) => {
+        const choices = await modelChoices(models);
+        const choice = choices.find(
+          (choice) => choice.provider === next.provider && choice.modelId === next.modelId,
+        );
+        if (!choice || !choice.thinkingLevels.includes(next.thinkingLevel))
+          throw new ChatLifecycleError("Model or thinking level is unavailable.", 409);
+        await harness.commit(async (tx) => {
+          const catalog = await tx.doc(CatalogDoc);
+          const item = catalog.items.find((item) => item.id === conversation.id);
+          if (!item || item.status)
+            throw new ChatLifecycleError("Restore this chat before changing configuration.", 409);
+          const agent = await tx.doc(AgentDoc, conversation.id);
+          const current = selection(agent);
+          if (sameSelection(current, next)) return;
+          if (!sameSelection(current, expected))
+            throw new ChatLifecycleError(
+              "Configuration changed. Refresh before choosing again.",
+              409,
+            );
+          await configure(tx, conversation.id, {
+            model: { provider: next.provider, modelId: next.modelId },
+            thinkingLevel: next.thinkingLevel,
+          });
+        }, BACKGROUND_CONTEXT);
+      },
       archived: item.status === "archived",
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),

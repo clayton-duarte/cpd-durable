@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/shared/chat.ts";
+import { ConfigurationChangeSchema } from "../src/shared/configuration.ts";
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
 const controls = { canContinue: false, resetPending: false, queue: [] };
@@ -196,6 +197,15 @@ test("details use chat/session SDK scopes and read retries never resend the draf
 }) => {
   await connect(page);
   let reads = 0;
+  await page.route("**/api/chats/1/configuration", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        selection: { provider: "test", modelId: "one", thinkingLevel: "off" },
+        choices: [],
+      },
+    }),
+  );
   await page.route("**/api/chats/1/context", (route) =>
     route.fulfill({
       json: {
@@ -309,6 +319,46 @@ test("context compaction reports admission rather than placement and never retri
   expect(posts).toEqual([{ instructions: "Keep decisions" }]);
   await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
   await expect(draft).toHaveValue("Preserve compact draft");
+});
+
+test("supplied model picker saves scoped choices and supported thinking without submitting the draft", async ({
+  page,
+}) => {
+  await connect(page);
+  let selection = { provider: "test", modelId: "one", thinkingLevel: "off" };
+  const posts: unknown[] = [];
+  const choices = [
+    { provider: "test", modelId: "one", name: "First model", thinkingLevels: ["off", "low"] },
+    { provider: "test", modelId: "two", name: "Second model", thinkingLevels: ["off", "high"] },
+  ];
+  await page.route("**/api/chats/1/configuration", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = ConfigurationChangeSchema.parse(route.request().postDataJSON());
+      posts.push(body);
+      selection = body.selection;
+    }
+    return route.fulfill({ json: { conversationId: "1", selection, choices } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep model draft");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const config = page.getByRole("region", { name: "Model configuration" });
+  await config.getByRole("combobox").click();
+  await page.getByRole("option", { name: /Second model/ }).click();
+  await config.getByRole("combobox").click();
+  await page.getByRole("radio", { name: "high", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await config.getByRole("button", { name: "Save model settings" }).click();
+  await expect(config).toContainText("Saved: test/two · thinking high");
+  expect(posts).toEqual([
+    {
+      expected: { provider: "test", modelId: "one", thinkingLevel: "off" },
+      selection: { provider: "test", modelId: "two", thinkingLevel: "high" },
+    },
+  ]);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Keep model draft");
 });
 
 test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
