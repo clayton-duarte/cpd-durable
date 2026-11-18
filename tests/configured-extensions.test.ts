@@ -12,6 +12,8 @@ import { readConfiguredExtensions } from "../src/server/extensions/config.ts";
 import { loadConfiguredExtensions } from "../src/server/extensions/loader.ts";
 import { openChat } from "../src/server/chat.ts";
 import { createApp } from "../src/server/app.ts";
+import { createExecution } from "../src/server/execution.ts";
+import { DirectShellTask } from "../src/server/direct-shell.ts";
 import { testModels } from "./models.ts";
 
 const roots: string[] = [];
@@ -49,6 +51,36 @@ export default defineExtension({name: ${JSON.stringify(extensionName)}, tasks: [
 `;
 }
 describe("configured extension foundation", () => {
+  it("rejects configured replacements of the native direct-shell task without changing the registry", async () => {
+    const dir = await fixture();
+    const execution = createExecution(dir);
+    try {
+      const before = execution.registry.snapshot();
+      expect(before.task(DirectShellTask.definition.name)).toBe(DirectShellTask);
+      await writeFile(
+        join(dir, "shell-conflict.mjs"),
+        taskSource(
+          "external-shell",
+          DirectShellTask.definition.name,
+          DirectShellTask.definition.version + 1,
+        ),
+      );
+      await expect(
+        loadConfiguredExtensions(execution.registry, await config(dir, ["./shell-conflict.mjs"])),
+      ).rejects.toThrow("could not be loaded");
+      expect(execution.registry.snapshot().task(DirectShellTask.definition.name)).toBe(
+        DirectShellTask,
+      );
+      expect(
+        execution.registry
+          .snapshot()
+          .installed()
+          .map((entry) => entry.name),
+      ).toEqual(before.installed().map((entry) => entry.name));
+    } finally {
+      await execution.close();
+    }
+  });
   it("combines configured MCP and extensions, closing the extension before the MCP process", async () => {
     const dir = await fixture();
     const pidFile = join(dir, "mcp.pid");
@@ -111,6 +143,23 @@ export async function dispose(){const pid=Number(await readFile(${JSON.stringify
     ).rejects.toThrow("could not be loaded");
     const collisionPid = Number(await readFile(pidFile, "utf8"));
     expect(() => process.kill(collisionPid, 0)).toThrow();
+    await writeFile(
+      join(dir, "shell-collision.mjs"),
+      taskSource(
+        "external-shell",
+        DirectShellTask.definition.name,
+        DirectShellTask.definition.version,
+      ),
+    );
+    await writeFile(extPath, JSON.stringify({ modules: ["./shell-collision.mjs"] }));
+    await expect(
+      openChat(join(dir, "shell-collision"), provider.models, dir, {
+        mcpConfigPath: mcpPath,
+        extensionsConfigPath: extPath,
+      }),
+    ).rejects.toThrow("could not be loaded");
+    const shellCollisionPid = Number(await readFile(pidFile, "utf8"));
+    expect(() => process.kill(shellCollisionPid, 0)).toThrow();
   });
   it("loads a configured tool in production openChat, and closes it only after the SDK harness", async () => {
     const dir = await fixture();

@@ -109,7 +109,7 @@ export const ChatMessageSchema = z.strictObject({
   source: z
     .strictObject({
       entryId: RecordIdSchema,
-      // Only known SDK assistant entries receive generation-task attribution.
+      // Known SDK assistant entries and direct-shell result entries carry task attribution.
       taskId: RecordIdSchema.optional(),
     })
     .optional(),
