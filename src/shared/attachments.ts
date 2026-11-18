@@ -21,6 +21,13 @@ export const ImageReferenceSchema = z.strictObject({
   }),
 });
 export type ImageReference = z.infer<typeof ImageReferenceSchema>;
+// Public projection contains coordinates only, never model bytes or provider payloads.
+export const SavedImageReferenceSchema = z.strictObject({
+  entryId: z.number().int().positive().safe(),
+  modelIndex: z.number().int().nonnegative().max(10_000),
+  partIndex: z.number().int().nonnegative().max(10_000),
+});
+export type SavedImageReference = z.infer<typeof SavedImageReferenceSchema>;
 export const ImageInputSchema = z
   .strictObject({
     text: z.string().trim().max(32_000),

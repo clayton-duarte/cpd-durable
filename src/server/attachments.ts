@@ -102,7 +102,7 @@ export async function prepareImage(
  * Original files and saved SDK model content are retained; draft removal and catalog
  * tombstones do not delete them. No automatic deletion is implemented. */
 export interface AttachmentAuthorization {
-  bindPending(id: string): Promise<void>;
+  bindPending(id: string, mimeType: ImageMime, size: number): Promise<void>;
   canReadPending(id: string): Promise<boolean>;
 }
 export function createAttachmentService(
@@ -125,7 +125,7 @@ export function createAttachmentService(
         await file.close();
       }
       // Binding failure leaves a retained orphan, not an actionable reference.
-      await authorization.bindPending(id);
+      await authorization.bindPending(id, mime, bytes.length);
       return {
         id,
         mimeType: mime,
