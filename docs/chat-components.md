@@ -17,7 +17,7 @@ This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual e
 
 | Capability             | assistant-ui composition                                         | Status/boundary                                                                                              |
 | ---------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Transcript and scroll  | Official Thread and its supplied viewport/footer/scroll controls | Adopted; centered reading surface and registered sticky composer                                             |
+| Transcript and scroll  | Official Thread and its supplied viewport/footer/scroll controls | Native bottom-following, user-scroll pause, centered reading surface and registered sticky composer          |
 | Participant content    | Message Root and Parts                                           | Adopted; durable IDs and order retained, no automatic adjacent-assistant merging                             |
 | Assistant text         | Thread's supplied MarkdownText element                           | Adopted: Markdown/GFM headings, lists, tables and fenced code with code-copy controls                        |
 | User text              | MessagePart Text                                                 | Adopted: literal text, line breaks and indentation preserved                                                 |
@@ -32,13 +32,15 @@ This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual e
 
 Markdown does not enable raw HTML or code execution. Markdown image elements are disallowed rather than fetching remote URLs. Links are not verified citations. Neither Shiki nor Prism, math, Mermaid, maps nor arbitrary generative UI execution is installed just because the catalogue offers it.
 
+The native viewport uses bottom anchoring with automatic following, not top-turn anchoring and its reserved empty response area. Reading older content pauses following; native ScrollToBottom resumes it. Free layout space stays outside the measured footer inset, so it is not mistaken for content covered by the sticky composer. Message rows use actual layout heights rather than offscreen `content-visibility`/intrinsic-height placeholders, so collapsed reasoning/tool rows do not retain expanded-height gaps. This trades away that rendering optimization for accurate layout. Disclosures retain their supplied open/close behavior; completion alone is not an error. Routine Working/acknowledgement status pills are omitted; native Send/Stop carries that control state without adding/removing a footer row when a turn ends.
+
 ### Transcript identity and projection (Batch 2)
 
 Batch 2 added optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. The native-tools increment projects validated tool calls, arguments and textual output alongside ordered text. Provider-supplied `thinking` text is now a native `reasoning` part; signatures/encrypted metadata, media, arbitrary custom entry data and provider diagnostics are not forwarded.
 
 Reasoning uses the official [assistant-ui runtime composition](https://www.assistant-ui.com/elements/reasoning): Thread's GroupedParts, ReasoningRoot/Trigger/Content/Text and Markdown renderer, with the supplied `ghost` variant. It opens during reasoning streaming and collapses afterward unless the reader chose otherwise. Only actual provider text is rendered; empty reasoning produces no disclosure. No synthetic step titles, elapsed-time estimates or hidden-reasoning reconstruction is added. Older omission-only reasoning receipts render nothing, not a paused AgentStatus bar. ThinkingIndicator, loaders and typing indicators are transient activity feedback, ReasoningEffort is configuration, and GuardrailNotice requires an actual guardrail event; none substitutes for the reasoning trace.
 
-SDK `aborted` is an interruption, `error` an error and `length` an incomplete output limit. Unknown/missing assistant stop reasons remain incomplete. A busy run is not necessarily a streaming assistant message: explicit `live: null` suppresses stale partial replay and false streaming on settled answers. Generic busy feedback says Working.
+SDK `aborted` is an interruption, `error` an error and `length` an incomplete output limit. Unknown/missing assistant stop reasons remain incomplete. A busy run is not necessarily a streaming assistant message: explicit `live: null` suppresses stale partial replay and false streaming on settled answers. Native Stop reflects an active run; no separate generic Working pill is rendered.
 
 Render aliases are transient and separate from canonical durable IDs. A pure projector transfers the previous live row key only to exactly one new, known single-message SDK assistant entry attributed to the same task after the observed append boundary, while that boundary remains in the window or is its immediate predecessor. Task/attempt and append boundaries distinguish retries and reused attempts; no text-prefix or timestamp matching occurs. React layout effects commit the per-Chat cache. Canonical entry/part IDs remain separate metadata; future durable actions must not target render aliases.
 
@@ -89,7 +91,7 @@ Tool output/arguments can contain sensitive local data: they are intentionally v
 
 ## 4. Context, configuration and usage
 
-ModelSelector, reasoning effort, context displays/breakdowns and CostMeter are future presentation candidates backed by selected SDK projections. The current provider/model remain fixed server-side. Cumulative usage is not active context occupancy; unknown token breakdowns remain unknown. Browser model-context registration is not an automatic pi-durable configuration API.
+ModelSelector, reasoning effort, context displays/breakdowns and CostMeter are future presentation candidates backed by selected SDK projections. The current provider/model remain fixed server-side. The host's SDK prompt section supplies the request's configured provider/model from `agent.model`, including subsequent requests in existing chats; it is configuration evidence, not independent verification of provider weights. No environment/config search is required to discover that supplied identity. Cumulative usage is not active context occupancy; unknown token breakdowns remain unknown. Browser model-context registration is not an automatic pi-durable configuration API.
 
 Automatic/manual compaction, context inspection and configuration surfaces remain pending. Do not replace missing metrics with decorative rings or imply that a usage estimate is an invoice.
 
@@ -97,7 +99,7 @@ Automatic/manual compaction, context inspection and configuration surfaces remai
 
 Connection, failure, cancellation and completion remain distinct. SSE disconnect detaches observation, not work; reconnect does not submit another run. Retain visible history and editable draft while observation is unavailable.
 
-AgentStatus shows actual connection/admission/busy/reset/notice/interruption/read-only states; idle has no permanent Ready pill. ErrorState exposes Retry only for an actual original-operation callback. Do not adopt StoppedRun/ConnectionState defaults with unwired actions or unobserved server-progress claims. No request-ID-safe retry is offered for uncertain Stop, because a later abort could stop newer work.
+AgentStatus shows actual connection/reset/notice/interruption/read-only states; routine admission/busy feedback uses native composer controls, and idle has no permanent Ready pill. ErrorState exposes Retry only for an actual original-operation callback. Do not adopt StoppedRun/ConnectionState defaults with unwired actions or unobserved server-progress claims. No request-ID-safe retry is offered for uncertain Stop, because a later abort could stop newer work.
 
 Diagnostics, detailed task recovery, compaction failure detail and custom document inspection require sanitized host projections. Raw provider errors, paths and credentials stay private.
 

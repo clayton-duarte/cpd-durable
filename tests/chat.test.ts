@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import { createApp } from "../src/server/app.ts";
 import { openChat } from "../src/server/chat.ts";
 import { present } from "../src/server/presentation.ts";
-import { ChatStateSchema, SubmissionSchema, type SendMode } from "../src/shared/chat.ts";
+import {
+  ChatStateSchema,
+  SubmissionSchema,
+  MODEL_ID,
+  PROVIDER_ID,
+  type SendMode,
+} from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
 import { projectAssistantMessages } from "../src/client/assistant-messages.ts";
 
@@ -113,6 +119,28 @@ describe("single durable chat", () => {
       "keep this",
       "Recovered",
     ]);
+  });
+
+  it("supplies host-configured model identity in real provider contexts for existing and new chats", async () => {
+    await app.request(input("Which model?"));
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    function modelSection(index: number) {
+      const sections: Record<string, string | null> = {};
+      for (const message of provider.calls[index]!.context.messages)
+        if (message.role === "system") Object.assign(sections, message.sections);
+      return sections["model"];
+    }
+    expect(modelSection(0)).toContain(`Host-configured provider: ${PROVIDER_ID}`);
+    expect(modelSection(0)).toContain(`Host-configured model: ${MODEL_ID}`);
+    provider.calls[0]!.finish("Done");
+    await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    const created = await chat.chats.create(crypto.randomUUID());
+    const scope = await chat.chats.resolve(created.id);
+    await scope!.admit({ type: "input", content: "Which model?" });
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+    expect(modelSection(1)).toContain(`Host-configured model: ${MODEL_ID}`);
+    provider.calls[1]!.finish("Done");
+    await scope!.conversation.waitForIdle(BACKGROUND_CONTEXT);
   });
 
   it("stops explicitly and retains partial output as interrupted", async () => {

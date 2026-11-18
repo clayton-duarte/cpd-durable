@@ -26,7 +26,7 @@ test("shows partial output and explicitly stops a running response", async ({ pa
   await page.getByRole("textbox", { name: "Message input", exact: true }).fill("Slow response");
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(page.getByText("A streamed partial", { exact: true })).toBeVisible();
-  await expect(page.locator('[data-slot="agent-status"][role="status"]')).toContainText("Working…");
+  await expect(page.locator('[data-slot="agent-status"][role="status"]')).toHaveCount(0);
   await page.getByRole("button", { name: "Stop generating" }).click();
   await expect(page.locator('[data-slot="agent-status"][role="status"]')).toHaveCount(0);
   await expect(page.getByRole("alert")).toContainText("Response stopped.");

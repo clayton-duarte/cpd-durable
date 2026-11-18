@@ -43,11 +43,7 @@ export function DurableControls() {
       ? host.state
         ? "Reconnecting…"
         : "Connecting…"
-      : host.pending
-        ? "Awaiting acknowledgement…"
-        : busy
-          ? "Working…"
-          : null;
+      : null;
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
@@ -115,14 +111,7 @@ export function DurableControls() {
           emptyItemsLabel="No commands available for this state"
         />
       )}
-      {status && (
-        <AgentStatus
-          state={busy || host.pending ? "working" : "waiting"}
-          label={status}
-          role="status"
-          title={host.title}
-        />
-      )}
+      {status && <AgentStatus state="waiting" label={status} role="status" title={host.title} />}
       {host.state?.hasEarlier && !host.onLoadEarlier && (
         <AgentStatus
           state="waiting"
