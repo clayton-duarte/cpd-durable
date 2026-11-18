@@ -9,6 +9,7 @@ import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
 import { HelpersExtension } from "./helpers.ts";
+import type { createWorkerTools } from "./worker-tools.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -17,7 +18,10 @@ export function workingDirectory(path = "~"): string {
 }
 
 // Native host execution, deliberately not a sandbox or approval policy.
-export function createExecution(defaultCwd = workingDirectory()) {
+export function createExecution(
+  defaultCwd = workingDirectory(),
+  workerTools?: ReturnType<typeof createWorkerTools>,
+) {
   const registry = createRegistry();
   const codeMode = createCodeMode();
   registry.install(CodingTools);
@@ -27,6 +31,7 @@ export function createExecution(defaultCwd = workingDirectory()) {
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
   registry.install(HelpersExtension);
+  if (workerTools) registry.install(workerTools);
   registry.install(
     defineExtension({
       name: "cpd-context",

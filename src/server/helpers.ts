@@ -16,6 +16,7 @@ import {
   HelperLaunchSchema,
   HelperResultSchema,
   HelpersViewSchema,
+  WorkerStopSchema,
   type HelperLaunch,
 } from "../shared/helpers.ts";
 import type { Selection } from "../shared/configuration.ts";
@@ -50,6 +51,17 @@ type Input = { request: HelperLaunch; agent: WorkerAgentSelection };
 
 export const HelpersDoc = defineDoc<{ items: Item[] }>({
   kind: "cpd.helpers",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ items: [] }),
+  checkpointWhen: () => true,
+});
+export const WorkerStopIntentsDoc = defineDoc<{
+  items: { requestId: string; taskId: number }[];
+}>({
+  kind: "cpd.worker-stop-intents",
   version: 1,
   scope: "conversation",
   history: "latest",
@@ -183,12 +195,53 @@ export async function launchHelper(
   }, BACKGROUND_CONTEXT);
 }
 
-/** Scope the explicit Stop to a recorded worker belonging to this conversation. */
-export async function stopHelper(harness: Harness, conversation: Conversation, taskId: string) {
-  const doc = await harness.snapshot(HelpersDoc, conversation.id, BACKGROUND_CONTEXT);
-  const item = doc?.items.find((candidate) => String(candidate.taskId) === taskId);
-  if (!item) return "not-found" as const;
-  return harness.abortTask(item.taskId as TaskId, BACKGROUND_CONTEXT);
+/**
+ * Admission and authority are transactional; abortTask is a separate public SDK
+ * operation. If interrupted between them, the same identity must be retried.
+ */
+export async function requestWorkerStop(
+  harness: Pick<Harness, "abortTask">,
+  conversation: Pick<Conversation, "id" | "commit">,
+  taskId: string,
+  raw: unknown,
+  dependencies: WorkerDependencies,
+) {
+  const { requestId } = WorkerStopSchema.parse(raw);
+  if (!/^[1-9]\d{0,19}$/.test(taskId)) throw new Error("Invalid worker identity");
+  const target = await conversation.commit(async (tx) => {
+    await dependencies.assertParentWritable(tx, conversation.id);
+    await dependencies.assertInteractiveParent(tx, conversation.id);
+    const doc = await tx.doc(HelpersDoc, conversation.id);
+    const intents = await tx.doc(WorkerStopIntentsDoc, conversation.id);
+    const prior = intents.items.find((item) => item.requestId === requestId);
+    if (prior && String(prior.taskId) !== taskId)
+      throw new Error("Stop request identity already used for another worker");
+    const item = doc.items.find((candidate) => String(candidate.taskId) === taskId);
+    if (!item) throw Object.assign(new Error("Worker not found"), { status: 404 });
+    const task = await tx.task(item.taskId as TaskId);
+    if (
+      !task ||
+      task.conversationId !== conversation.id ||
+      task.owner !== undefined ||
+      ![ForegroundHelperTask.definition.name, BackgroundHelperTask.definition.name].includes(
+        task.kind,
+      )
+    )
+      throw Object.assign(new Error("Worker unavailable"), { status: 404 });
+    if (!prior) intents.items.push({ requestId, taskId: item.taskId });
+    return { taskId: item.taskId as TaskId, terminal: task.state.status === "terminal" };
+  }, BACKGROUND_CONTEXT);
+  if (target.terminal) return { status: "already-settled" as const, taskId };
+  const effect = await harness.abortTask(target.taskId, BACKGROUND_CONTEXT);
+  return {
+    status:
+      effect === "marked"
+        ? ("admitted" as const)
+        : effect === "terminal"
+          ? ("already-settled" as const)
+          : ("unknown" as const),
+    taskId,
+  };
 }
 
 /** Explicitly cross background boundaries, unlike the ordinary parent Stop. */
@@ -210,7 +263,10 @@ export async function helperHasUnsettled(tx: Tx, conversationId: ConversationId)
 
 /** Conservative projection: missing task records and outcomes stay unknown. */
 export async function inspectHelpers(harness: Harness, conversation: Conversation) {
-  const doc = await harness.snapshot(HelpersDoc, conversation.id, BACKGROUND_CONTEXT);
+  const [doc, stopIntents] = await Promise.all([
+    harness.snapshot(HelpersDoc, conversation.id, BACKGROUND_CONTEXT),
+    harness.snapshot(WorkerStopIntentsDoc, conversation.id, BACKGROUND_CONTEXT),
+  ]);
   const helpers = await Promise.all(
     (doc?.items ?? []).map(async (item) => {
       const task = await harness.getTask(item.taskId as TaskId, BACKGROUND_CONTEXT);
@@ -230,6 +286,18 @@ export async function inspectHelpers(harness: Harness, conversation: Conversatio
         mode: item.request.mode,
         model: item.model ?? null,
         modelName: null,
+        stop: !stopIntents?.items.some((intent) => intent.taskId === item.taskId)
+          ? "none"
+          : !task
+            ? "unknown"
+            : task.state.status !== "terminal"
+              ? "requested"
+              : task.state.outcome.status === "aborted"
+                ? "cancelled"
+                : task.state.outcome.status === "completed" ||
+                    task.state.outcome.status === "failed"
+                  ? "settled"
+                  : "unknown",
         status,
         answerEntryId:
           status === "success" && item.receipt?.answerEntryId !== null

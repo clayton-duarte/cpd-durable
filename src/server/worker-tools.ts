@@ -12,6 +12,7 @@ import {
   collectHelperResult,
   inspectHelpers,
   launchHelper,
+  requestWorkerStop,
   type WorkerDependencies,
 } from "./helpers.ts";
 
@@ -55,6 +56,26 @@ export function createWorkerTools(deps: WorkerToolDependencies) {
           return {
             output: [{ type: "text", text: JSON.stringify({ taskId: id, status: "admitted" }) }],
           };
+        },
+      }),
+      defineTool({
+        name: "stop_worker",
+        description: "Request Stop for one owned worker. Admission is not proof it has stopped.",
+        parameters: z.toJSONSchema(taskId),
+        replay: "safe",
+        async execute(args, api, context) {
+          const admission: Pick<Conversation, "id" | "commit"> = {
+            id: api.conversationId,
+            commit: (change) => api.commit(change, context),
+          };
+          const result = await requestWorkerStop(
+            deps.harness(),
+            admission,
+            taskId.parse(args).taskId,
+            { requestId: `worker-stop-tool:${api.taskId}` },
+            deps.policy,
+          );
+          return { output: [{ type: "text", text: JSON.stringify(result) }] };
         },
       }),
       defineTool({

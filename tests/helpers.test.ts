@@ -20,7 +20,7 @@ import {
   helperHasUnsettled,
   inspectHelpers,
   launchHelper as launchHelperWithPolicy,
-  stopHelper,
+  requestWorkerStop,
   stopThreadIncludingBackground,
   type WorkerDependencies,
 } from "../src/server/helpers.ts";
@@ -311,8 +311,12 @@ describe("foreground helpers", () => {
     await parent.abort(BACKGROUND_CONTEXT);
     expect((await view()).helpers[0]?.status).toBe("running");
     expect((await view()).helpers[0]?.mode).toBe("background");
-    expect(await stopHelper(harness, parent, "999999")).toBe("not-found");
-    expect(await stopHelper(harness, parent, id)).toBe("marked");
+    await expect(
+      requestWorkerStop(harness, parent, "999999", { requestId: "missing-stop" }, dependencies()),
+    ).rejects.toThrow();
+    expect(
+      (await requestWorkerStop(harness, parent, id, { requestId: "stop" }, dependencies())).status,
+    ).toBe("admitted");
     await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
   });
 
@@ -379,8 +383,10 @@ describe("foreground helpers", () => {
       assignment: "Other parent assignment",
     });
     await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
-    expect(await stopHelper(harness, parent, second)).toBe("not-found");
-    await stopHelper(harness, parent, first);
+    await expect(
+      requestWorkerStop(harness, parent, second, { requestId: "wrong-parent" }, dependencies()),
+    ).rejects.toThrow();
+    await requestWorkerStop(harness, parent, first, { requestId: "stop" }, dependencies());
     await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
     expect((await inspectHelpers(harness, other)).helpers[0]?.status).toBe("running");
     const call = provider.calls.find((item) =>

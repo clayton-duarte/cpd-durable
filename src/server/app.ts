@@ -50,7 +50,7 @@ import { answerQuestion, questionProjection } from "./question-routes.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
-    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments">>,
+    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments" | "workers">>,
 ) {
   const app = new Hono();
   const histories = new Map<string, ReturnType<typeof createHistory>>();
@@ -93,6 +93,7 @@ export function createApp(
   );
   app.use("/api/*", limitRequests);
   if (chat.attachments) app.route("/", chat.attachments.routes);
+  if (chat.workers) app.route("/", chat.workers);
 
   app.get("/api/chats", async (c) => {
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);

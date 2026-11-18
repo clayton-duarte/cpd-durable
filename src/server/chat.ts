@@ -11,12 +11,29 @@ import { modelKey, openChats } from "./chats.ts";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
+import { createWorkerTools, type WorkerToolDependencies } from "./worker-tools.ts";
+import { createWorkerRoutes } from "./worker-routes.ts";
 
-export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
+export type WorkerHostFactory = (harness: () => Harness) => Omit<WorkerToolDependencies, "harness">;
+
+export async function openChat(
+  dataDir: string,
+  models: Models,
+  cwd = workingDirectory(),
+  options?: { workers?: WorkerHostFactory },
+) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
-  const execution = createExecution(cwd);
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
+  const getHarness = () => {
+    if (!harness) throw new Error("Worker host is not ready.");
+    return harness;
+  };
+  const workerOptions = options?.workers?.(getHarness);
+  const execution = createExecution(
+    cwd,
+    workerOptions ? createWorkerTools({ ...workerOptions, harness: getHarness }) : undefined,
+  );
   try {
     harness = await Harness.open(
       storage,
@@ -48,6 +65,19 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       maxTurns: null,
     };
     const chats = await openChats(harness, conversation, defaults, models);
+    const workers = workerOptions
+      ? createWorkerRoutes({
+          harness,
+          resolve: async (id) => {
+            const scope = await chats.resolve(id);
+            return scope
+              ? { conversation: scope.conversation, policy: workerOptions.policy }
+              : undefined;
+          },
+          assertReadable: workerOptions.assertReadable,
+          modelName: (provider, id) => models.getModel(provider, id)?.name,
+        })
+      : undefined;
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({
       harness,
@@ -82,6 +112,7 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       conversation,
       chats,
       attachments,
+      workers,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

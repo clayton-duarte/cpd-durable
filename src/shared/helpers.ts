@@ -20,6 +20,9 @@ export const HelperLaunchSchema = z.strictObject({
     .default(null),
 });
 export type HelperLaunch = z.infer<typeof HelperLaunchSchema>;
+export const WorkerStopSchema = z.strictObject({
+  requestId: z.string().min(1).max(128),
+});
 
 export const HelperViewSchema = z.strictObject({
   requestId: z.string(),
@@ -28,6 +31,7 @@ export const HelperViewSchema = z.strictObject({
   mode: z.enum(["foreground", "background"]),
   model: z.strictObject({ provider: z.string(), modelId: z.string() }).nullable(),
   modelName: z.string().nullable(),
+  stop: z.enum(["none", "requested", "cancelled", "settled", "unknown"]),
   status: z.enum(["pending", "running", "success", "failure", "cancelled", "unknown"]),
   answerEntryId: z.string().nullable(),
   delivery: z.literal("notify-only"),

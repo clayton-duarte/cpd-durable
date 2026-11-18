@@ -6,6 +6,7 @@ import {
   collectHelperResult,
   inspectHelpers,
   launchHelper,
+  requestWorkerStop,
   type WorkerDependencies,
 } from "./helpers.ts";
 
@@ -63,6 +64,20 @@ export function createWorkerRoutes(deps: WorkerRoutesDependencies) {
     const body: unknown = await c.req.json();
     const taskId = await launchHelper(found.conversation, body, found.policy);
     return c.json({ taskId, status: "admitted" }, 202);
+  });
+  routes.post("/api/chats/:chatId/workers/:taskId/stop", async (c) => {
+    const found = await scope(c.req.param("chatId"));
+    if (!found || !id.test(c.req.param("taskId")))
+      return c.json({ error: "Worker not found." }, 404);
+    const body: unknown = await c.req.json();
+    const result = await requestWorkerStop(
+      deps.harness,
+      found.conversation,
+      c.req.param("taskId"),
+      body,
+      found.policy,
+    );
+    return c.json(result, 202);
   });
   routes.get("/api/chats/:chatId/workers/:taskId/result", async (c) => {
     const found = await scope(c.req.param("chatId"));
