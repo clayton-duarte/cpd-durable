@@ -212,6 +212,7 @@ describe("single durable chat", () => {
       "update_handoff",
       "escalate_handoff",
       "report_handoff",
+      "deliver_handoff",
       "inspect_handoffs",
       "collect_handoff",
       "review_handoff",

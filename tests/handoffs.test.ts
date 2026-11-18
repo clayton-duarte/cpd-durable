@@ -6,11 +6,18 @@ import {
   createRegistry,
   defineDoc,
   Harness,
+  InboxDoc,
   type ConversationId,
+  type SubmissionId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { createHandoffService, type HandoffGuards } from "../src/server/handoffs.ts";
+import {
+  createHandoffService,
+  deliverHandoff,
+  HandoffHeadChanged,
+  type HandoffGuards,
+} from "../src/server/handoffs.ts";
 import { HelpersDoc, HelpersExtension, launchHelper } from "../src/server/helpers.ts";
 import { prepareTangent, TangentsDoc, type TangentHooks } from "../src/server/tangents/index.ts";
 import { normalizeLegacyTangent, normalizeLegacyWorker } from "../src/shared/handoffs.ts";
@@ -246,6 +253,99 @@ describe("notify-only durable handoffs", () => {
     await expect(
       service.record({ ...record("update", 2, "delivery"), delivery: "followUp" }),
     ).rejects.toThrow();
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it("places one idle delivery immediately and never queues it", async () => {
+    await createHandoffService(harness, parent, guards).record(record("delegate", 0, "one"));
+    await createHandoffService(harness, child, guards).record(record("return", 1, "two"));
+    const input = {
+      ...base(),
+      operationId: "deliver",
+      revision: 2,
+      mode: "reject",
+      expectedParentHead: null,
+      expectedChildHead: null,
+      acknowledgeRetired: false,
+    };
+    expect(provider.calls).toHaveLength(0);
+    const result = await deliverHandoff(harness, parent, guards, input);
+    const submission = await harness.submission(Number(result.submissionId) as SubmissionId, ctx);
+    const placed = await submission!.status(ctx);
+    expect(placed.status).toBe("placed");
+    expect(placed.entry).toBeDefined();
+    expect((await harness.snapshot(InboxDoc, parent.id, ctx))?.items ?? []).toHaveLength(0);
+    expect(await deliverHandoff(harness, parent, guards, input)).toEqual(result);
+    await expect(
+      deliverHandoff(harness, parent, guards, { ...input, acknowledgeRetired: true }),
+    ).rejects.toThrow("identity conflict");
+    await expect(deliverHandoff(harness, child, guards, input)).rejects.toThrow("Only the parent");
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.finish("acknowledged by model");
+    await parent.waitForIdle(ctx);
+  });
+
+  it("delivers an explicitly selected update to an idle child without cloning the parent", async () => {
+    const service = createHandoffService(harness, parent, guards);
+    await service.record(record("delegate", 0, "one"));
+    await service.record(record("update", 1, "two"));
+    const result = await deliverHandoff(harness, parent, guards, {
+      ...base(),
+      operationId: "deliver-update",
+      revision: 2,
+      mode: "reject",
+      expectedParentHead: null,
+      expectedChildHead: null,
+      acknowledgeRetired: false,
+    });
+    expect(result.destinationId).toBe(String(child.id));
+    const submission = await harness.submission(Number(result.submissionId) as SubmissionId, ctx);
+    expect((await submission!.status(ctx)).entry).toBeDefined();
+    expect((await harness.snapshot(InboxDoc, child.id, ctx))?.items ?? []).toHaveLength(0);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    expect(JSON.stringify(provider.calls[0]!.context)).toContain("Bounded outcome");
+    expect((await parent.context(ctx)).messages).toHaveLength(0);
+    provider.calls[0]!.finish("child result");
+    await child.waitForIdle(ctx);
+  });
+
+  it("rejects busy destinations without changing the inbox", async () => {
+    await createHandoffService(harness, parent, guards).record(record("delegate", 0, "one"));
+    await createHandoffService(harness, child, guards).record(record("return", 1, "two"));
+    await parent.submit({ type: "input", content: "busy" }, ctx);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    const before = (await harness.snapshot(InboxDoc, parent.id, ctx))?.items ?? [];
+    await expect(
+      deliverHandoff(harness, parent, guards, {
+        ...base(),
+        operationId: "busy",
+        revision: 2,
+        mode: "reject",
+        expectedParentHead: null,
+        expectedChildHead: null,
+        acknowledgeRetired: false,
+      }),
+    ).rejects.toThrow("idle destination");
+    expect((await harness.snapshot(InboxDoc, parent.id, ctx))?.items ?? []).toEqual(before);
+    provider.calls[0]!.finish("finished");
+    await parent.waitForIdle(ctx);
+  });
+
+  it("rejects a stale head even when an older head was explicitly acknowledged", async () => {
+    await createHandoffService(harness, parent, guards).record(record("delegate", 0, "one"));
+    await createHandoffService(harness, child, guards).record(record("return", 1, "two"));
+    await parent.reset("new context", ctx);
+    await expect(
+      deliverHandoff(harness, parent, guards, {
+        ...base(),
+        operationId: "race",
+        revision: 2,
+        mode: "reject",
+        expectedParentHead: null,
+        expectedChildHead: null,
+        acknowledgeRetired: true,
+      }),
+    ).rejects.toBeInstanceOf(HandoffHeadChanged);
     expect(provider.calls).toHaveLength(0);
   });
 

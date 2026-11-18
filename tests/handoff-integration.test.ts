@@ -118,7 +118,7 @@ describe("production handoff routes and SDK tools", () => {
         )
       ).status,
     ).toBe(409);
-    expect((await app.request(`${base}/handoffs/deliver`, post({}))).status).toBe(409);
+    expect((await app.request(`${base}/handoffs/deliver`, post({}))).status).toBe(400);
     expect(provider.calls).toHaveLength(0);
     const tangentScope = await chat.chats.resolve(String(childId));
     expect(tangentScope).toBeDefined();
@@ -227,24 +227,181 @@ describe("production handoff routes and SDK tools", () => {
     expect((await chat.conversation.context(BACKGROUND_CONTEXT)).messages).toHaveLength(0);
   });
 
-  it("does not admit delivery after reset while delivery is unsupported", async () => {
+  it("requires an explicit current-head choice before delivery after reset", async () => {
     const app = createApp(chat);
     const parentId = chat.conversation.id;
     const base = `http://localhost:3000/api/chats/${parentId}`;
-    await chat.conversation.reset("New context", BACKGROUND_CONTEXT);
-    const response = await app.request(
-      `${base}/handoffs/deliver`,
+    const tangentResponse = await app.request(
+      `${base}/tangents`,
       post({
-        operationId: "requested-delivery",
-        assignmentId: "old-assignment",
-        acknowledgeRetired: false,
+        requestId: "reset-tangent",
+        parentId,
+        sourceId: parentId,
+        sourceEntryId: null,
+        title: "Tangent",
+        start: false,
+        handoff: legacy,
       }),
     );
+    const tangent = (await tangentResponse.json()) as { tangent: { id: number } };
+    const childId = tangent.tangent.id;
+    const record = {
+      assignmentId: "old-assignment",
+      parentId,
+      childId,
+      content,
+      delivery: "notify-only",
+    };
+    expect(
+      (
+        await app.request(
+          `${base}/handoffs/record`,
+          post({
+            ...record,
+            operationId: "delegate",
+            expectedRevision: 0,
+            kind: "delegate",
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await app.request(
+          `http://localhost:3000/api/chats/${childId}/handoffs/record`,
+          post({
+            ...record,
+            operationId: "return",
+            expectedRevision: 1,
+            kind: "return",
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    await chat.conversation.reset("New context", BACKGROUND_CONTEXT);
+    const delivery = {
+      operationId: "requested-delivery",
+      assignmentId: "old-assignment",
+      parentId,
+      childId,
+      revision: 2,
+      mode: "reject",
+      expectedParentHead: null,
+      expectedChildHead: null,
+      acknowledgeRetired: false,
+    };
+    const response = await app.request(`${base}/handoffs/deliver`, post(delivery));
     expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      error: "Handoff delivery is not supported yet; nothing was submitted.",
-    });
+    const changed = (await response.json()) as {
+      currentParentHead: string;
+      currentChildHead: null;
+    };
+    expect(changed.currentParentHead).toMatch(/^\d+$/);
+    expect(changed.currentChildHead).toBeNull();
     expect(provider.calls).toHaveLength(0);
     expect((await chat.conversation.context(BACKGROUND_CONTEXT)).messages).toHaveLength(1);
+    expect(
+      (
+        await app.request(
+          `${base}/handoffs/deliver`,
+          post({
+            ...delivery,
+            expectedParentHead: changed.currentParentHead,
+          }),
+        )
+      ).status,
+    ).toBe(409);
+    const approved = {
+      ...delivery,
+      expectedParentHead: changed.currentParentHead,
+      acknowledgeRetired: true,
+    };
+    const accepted = await app.request(`${base}/handoffs/deliver`, post(approved));
+    expect(accepted.status).toBe(202);
+    const receipt = (await accepted.json()) as { submissionId: string };
+    expect(receipt.submissionId).toMatch(/^\d+$/);
+    expect((await app.request(`${base}/handoffs/deliver`, post(approved))).status).toBe(202);
+    expect(
+      (
+        await app.request(
+          `${base}/handoffs/deliver`,
+          post({ ...approved, acknowledgeRetired: false }),
+        )
+      ).status,
+    ).toBe(409);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.finish("Delivered answer");
+    await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+  });
+  it("rejects a real parent model delivery tool while its destination is busy", async () => {
+    const app = createApp(chat);
+    const parentId = chat.conversation.id;
+    const base = `http://localhost:3000/api/chats/${parentId}`;
+    const tangentResponse = await app.request(
+      `${base}/tangents`,
+      post({
+        requestId: "tool-tangent",
+        parentId,
+        sourceId: parentId,
+        sourceEntryId: null,
+        title: "Tangent",
+        start: false,
+        handoff: legacy,
+      }),
+    );
+    const childId = ((await tangentResponse.json()) as { tangent: { id: number } }).tangent.id;
+    const record = {
+      assignmentId: "tool-assignment",
+      parentId,
+      childId,
+      content,
+      delivery: "notify-only",
+    };
+    expect(
+      (
+        await app.request(
+          `${base}/handoffs/record`,
+          post({ ...record, operationId: "one", expectedRevision: 0, kind: "delegate" }),
+        )
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await app.request(
+          `http://localhost:3000/api/chats/${childId}/handoffs/record`,
+          post({ ...record, operationId: "two", expectedRevision: 1, kind: "return" }),
+        )
+      ).status,
+    ).toBe(201);
+    await chat.conversation.submit(
+      { type: "input", content: "Try to deliver" },
+      BACKGROUND_CONTEXT,
+    );
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.tools([
+      {
+        id: "deliver-call",
+        name: "deliver_handoff",
+        arguments: {
+          childId,
+          assignmentId: "tool-assignment",
+          revision: 2,
+          mode: "reject",
+          expectedParentHead: null,
+          expectedChildHead: null,
+          acknowledgeRetired: false,
+        },
+      },
+    ]);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+    expect(
+      provider.calls[1]!.context.messages.some(
+        (message) => message.role === "toolResult" && message.isError,
+      ),
+    ).toBe(true);
+    provider.calls[1]!.finish("No queued delivery");
+    await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    const messages = (await chat.conversation.context(BACKGROUND_CONTEXT)).messages;
+    expect(messages.filter((message) => message.role === "user")).toHaveLength(1);
   });
 });

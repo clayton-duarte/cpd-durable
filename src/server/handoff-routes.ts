@@ -1,8 +1,12 @@
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type Conversation, type Harness } from "@earendil-works/pi-durable";
 import { Hono } from "hono";
 import { z } from "zod";
-import { createHandoffService, type HandoffGuards } from "./handoffs.ts";
+import {
+  createHandoffService,
+  deliverHandoff,
+  HandoffHeadChanged,
+  type HandoffGuards,
+} from "./handoffs.ts";
 
 export function createHandoffRoutes(options: {
   harness: Harness;
@@ -22,6 +26,16 @@ export function createHandoffRoutes(options: {
   }
   routes.onError((error, c) => {
     if (error instanceof z.ZodError) return c.json({ error: "Invalid handoff request." }, 400);
+    if (error instanceof HandoffHeadChanged)
+      return c.json(
+        {
+          error:
+            "Context changed. Review and explicitly acknowledge the current context before delivery.",
+          currentParentHead: error.parentHead,
+          currentChildHead: error.childHead,
+        },
+        409,
+      );
     const status = "status" in error && error.status === 404 ? 404 : 409;
     return c.json(
       {
@@ -47,13 +61,10 @@ export function createHandoffRoutes(options: {
     if (action === "deliver") {
       const conversation = await options.resolve(id);
       if (!conversation) return c.json({ error: "Chat not found." }, 404);
-      await options.harness.commit(
-        (tx) => options.guards.assertAccess(tx, conversation.id, "read"),
-        BACKGROUND_CONTEXT,
-      );
+      const input: unknown = await c.req.json();
       return c.json(
-        { error: "Handoff delivery is not supported yet; nothing was submitted." },
-        409,
+        await deliverHandoff(options.harness, conversation, options.guards, input),
+        202,
       );
     }
     const input: unknown = await c.req.json();

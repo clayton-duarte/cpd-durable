@@ -6,6 +6,7 @@ import {
   createRegistry,
   defineDoc,
   Harness,
+  InboxDoc,
   type ConversationId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -402,6 +403,94 @@ describe("interactive tangents", () => {
         ).accepted,
       ).toBe(true);
       f.provider.calls[1]!.finish("reviewed");
+      await f.main.waitForIdle(context);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
+  it("guards legacy return delivery against reset and requires an explicit current head", async () => {
+    const f = await fixture();
+    try {
+      const child = await prepareTangent(f.harness, f.request, f.hooks);
+      await recordReturn(
+        f.harness,
+        child.id as ConversationId,
+        f.main.id,
+        {
+          requestId: "reset-return",
+          tangentId: child.id,
+          expectedRevision: 1,
+          handoff,
+        },
+        f.hooks,
+      );
+      await f.main.reset("New context", context);
+      await expect(
+        deliverReturn(f.harness, f.main.id, f.main.id, child.id as ConversationId, 2, f.hooks),
+      ).rejects.toThrow("Context head changed");
+      const head = String((await f.main.context(context)).head!.id);
+      const result = await deliverReturn(
+        f.harness,
+        f.main.id,
+        f.main.id,
+        child.id as ConversationId,
+        2,
+        f.hooks,
+        context,
+        { expectedHead: head, acknowledgeRetired: true },
+      );
+      expect(result.delivery).toBe("admitted");
+      const status = await returnDeliveryStatus(
+        f.harness,
+        f.main.id,
+        f.main.id,
+        child.id as ConversationId,
+        2,
+        f.hooks,
+      );
+      expect(status.placed).toBe(true);
+      await expect(
+        deliverReturn(
+          f.harness,
+          f.main.id,
+          f.main.id,
+          child.id as ConversationId,
+          2,
+          f.hooks,
+          context,
+          { expectedHead: head, acknowledgeRetired: false },
+        ),
+      ).rejects.toThrow("identity conflicts");
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      f.provider.calls[1]!.finish("done");
+      await f.main.waitForIdle(context);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
+  it("does not queue a legacy return while the parent is busy", async () => {
+    const f = await fixture();
+    try {
+      const child = await prepareTangent(f.harness, f.request, f.hooks);
+      await recordReturn(
+        f.harness,
+        child.id as ConversationId,
+        f.main.id,
+        {
+          requestId: "busy-return",
+          tangentId: child.id,
+          expectedRevision: 1,
+          handoff,
+        },
+        f.hooks,
+      );
+      await f.main.submit({ type: "input", content: "busy parent" }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      await expect(
+        deliverReturn(f.harness, f.main.id, f.main.id, child.id as ConversationId, 2, f.hooks),
+      ).rejects.toThrow("idle destination");
+      expect((await f.harness.snapshot(InboxDoc, f.main.id, context))?.items ?? []).toHaveLength(0);
+      f.provider.calls[1]!.finish("done");
       await f.main.waitForIdle(context);
     } finally {
       await f.harness.close(context);

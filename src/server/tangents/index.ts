@@ -19,6 +19,11 @@ import {
 import { z } from "zod";
 import { admissionDigest, checkAdmissionRequest } from "../attachment-catalog.ts";
 import {
+  assertIdleHandoffDestination,
+  currentHandoffHead,
+  HandoffHeadChanged,
+} from "../handoffs.ts";
+import {
   CreateTangentSchema,
   ResolvedTangentModelSchema,
   ReturnHandoffSchema,
@@ -35,6 +40,7 @@ type HandoffVersion = {
   delivery: "available" | "admitted";
   submissionId?: number;
   accepted: boolean;
+  deliveryChoice?: string;
 };
 type Tangent = {
   id: number;
@@ -47,6 +53,7 @@ type Tangent = {
   cwd: string;
   model: ResolvedTangentModel;
   initialAgent: string;
+  originParentHead?: string | null;
   lifecycle: "open" | "concluded" | "archived";
   attention: "unread" | "needs-answer" | "report-ready" | "none";
   start: boolean;
@@ -165,6 +172,7 @@ export async function prepareTangent(
     }
     const sourceAgent = await tx.doc(AgentDoc, parentId);
     await hooks.assertResolvedModel(tx, resolved);
+    const originParentHead = await currentHandoffHead(tx, parentId);
     const model = resolved.selection;
     const cwd = hooks.cwd(sourceAgent.cwd);
     if (!model.provider || !model.modelId || !isAbsolute(cwd))
@@ -187,6 +195,7 @@ export async function prepareTangent(
       cwd,
       model: resolved,
       initialAgent,
+      originParentHead,
       lifecycle: "open",
       attention: "unread",
       start: request.start,
@@ -360,6 +369,7 @@ export async function deliverReturn(
   revision: number,
   hooks: TangentHooks,
   context: Context = BACKGROUND_CONTEXT,
+  choice?: { expectedHead: string | null; acknowledgeRetired: boolean },
 ) {
   if (caller !== parentId) throw new Error("Caller is not the parent");
   const parent = await driver.conversation(parentId, context);
@@ -371,23 +381,37 @@ export async function deliverReturn(
     if (item) await hooks.assertCaller(tx, caller, parentId, tangentId, "deliver");
     const version = item?.versions.find((v) => v.revision === revision && v.kind === "return");
     if (!item || !version || item.lifecycle !== "open") throw new Error("Return unavailable");
-    if (version.submissionId !== undefined) return copy(version);
+    const choiceKey = JSON.stringify(choice ?? null);
+    if (version.submissionId !== undefined) {
+      if (version.deliveryChoice !== undefined && version.deliveryChoice !== choiceKey)
+        throw new Error("Return delivery identity conflicts");
+      return copy(version);
+    }
+    const parentHead = await currentHandoffHead(tx, parentId);
+    if (
+      (choice && choice.expectedHead !== parentHead) ||
+      ((item.originParentHead === undefined || item.originParentHead !== parentHead) &&
+        !choice?.acknowledgeRetired)
+    )
+      throw new HandoffHeadChanged(parentHead, null);
+    await assertIdleHandoffDestination(tx, parentId);
     const draft = {
       type: "input",
       requestId: `tangent-return:${tangentId}:${revision}`,
       content: handoffText("return", version.handoff),
-      whenBusy: "followUp",
+      whenBusy: "reject",
     } as const;
     const record = await checkAdmissionRequest(
       tx,
       parentId,
       draft.requestId,
-      admissionDigest(["tangent-return", draft]),
+      admissionDigest(["tangent-return", draft, choice ?? null]),
     );
     const submission = await parent.submit(tx, draft);
     record();
     version.delivery = "admitted";
     version.submissionId = submission;
+    version.deliveryChoice = choiceKey;
     return copy(version);
   }, context);
 }

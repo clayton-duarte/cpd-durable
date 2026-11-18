@@ -2,10 +2,16 @@ import { defineExtension, defineTool, type Harness } from "@earendil-works/pi-du
 import { z } from "zod";
 import {
   HandoffActionSchema,
+  DeliverHandoffSchema,
   RecordHandoffSchema,
   ReviewHandoffSchema,
 } from "../shared/handoffs.ts";
-import { createHandoffService, handoffParent, type HandoffGuards } from "./handoffs.ts";
+import {
+  createHandoffService,
+  deliverHandoff,
+  handoffParent,
+  type HandoffGuards,
+} from "./handoffs.ts";
 
 /** Tools are caller-bound: no argument can select the actor conversation. */
 export function createHandoffTools(guards: HandoffGuards) {
@@ -57,6 +63,7 @@ export function createHandoffTools(guards: HandoffGuards) {
   const collect = HandoffActionSchema.omit({ operationId: true, parentId: true });
   const review = ReviewHandoffSchema.omit({ operationId: true, parentId: true });
   const inspect = HandoffActionSchema.omit({ operationId: true, parentId: true, revision: true });
+  const deliver = DeliverHandoffSchema.omit({ operationId: true, parentId: true });
   return defineExtension({
     name: "cpd.handoff-tools",
     tools: [
@@ -64,6 +71,27 @@ export function createHandoffTools(guards: HandoffGuards) {
       recordTool("update_handoff", "update", true),
       recordTool("escalate_handoff", "escalate", false),
       recordTool("report_handoff", "return", false),
+      defineTool({
+        name: "deliver_handoff",
+        description:
+          "Explicitly place a handoff only in an idle destination with no queued work. Busy destinations are rejected; this never queues a steer or follow-up.",
+        parameters: z.toJSONSchema(deliver),
+        replay: "safe",
+        async execute(args, api, context) {
+          const driver = {
+            commit: <T>(change: (tx: import("@earendil-works/pi-durable").Tx) => T | Promise<T>) =>
+              api.commit(change, context),
+            conversation: (id: import("@earendil-works/pi-durable").ConversationId) =>
+              api.conversation(id, context),
+          };
+          const result = await deliverHandoff(driver, { id: api.conversationId }, guards, {
+            ...deliver.parse(args),
+            parentId: api.conversationId,
+            operationId: `handoff-deliver-tool:${api.taskId}`,
+          });
+          return { output: [{ type: "text", text: JSON.stringify(result) }] };
+        },
+      }),
       defineTool({
         name: "inspect_handoffs",
         description:

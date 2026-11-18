@@ -1,6 +1,9 @@
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import {
   defineDoc,
+  InboxDoc,
+  LiveDoc,
+  ResetEntry,
   type Conversation,
   type ConversationId,
   type Harness,
@@ -12,11 +15,13 @@ import { BackgroundHelperTask, ForegroundHelperTask, HelpersDoc } from "./helper
 import { TangentsDoc } from "./tangents/index.ts";
 import {
   HandoffActionSchema,
+  DeliverHandoffSchema,
   HandoffRecordSchema,
   RecordHandoffSchema,
   ReviewHandoffSchema,
   type HandoffRecord,
 } from "../shared/handoffs.ts";
+import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 
 type Operation = { actor: number; id: string; fingerprint: string; record: HandoffRecord };
 type State = { records: HandoffRecord[]; operations: Operation[] };
@@ -27,6 +32,58 @@ export const HandoffRecordsDoc = defineDoc<JsonRepresentation<State>>({
   initial: () => ({ records: [], operations: [] }),
   checkpointWhen: () => true,
 });
+const HandoffOriginsDoc = defineDoc<{
+  items: {
+    parentId: number;
+    childId: number;
+    assignmentId: string;
+    parentHead: string | null;
+    childHead: string | null;
+  }[];
+}>({
+  kind: "cpd.thread-handoff-origins",
+  version: 1,
+  scope: "session",
+  initial: () => ({ items: [] }),
+  checkpointWhen: () => true,
+});
+const HandoffDeliveriesDoc = defineDoc<{
+  items: {
+    actor: number;
+    operationId: string;
+    fingerprint: string;
+    submissionId: number;
+    destinationId: number;
+  }[];
+}>({
+  kind: "cpd.thread-handoff-deliveries",
+  version: 1,
+  scope: "session",
+  initial: () => ({ items: [] }),
+  checkpointWhen: () => true,
+});
+export class HandoffHeadChanged extends Error {
+  readonly status = 409;
+  readonly parentHead: string | null;
+  readonly childHead: string | null;
+  constructor(parentHead: string | null, childHead: string | null) {
+    super("Context head changed. Review the current heads before choosing delivery.");
+    this.parentHead = parentHead;
+    this.childHead = childHead;
+  }
+}
+export async function currentHandoffHead(tx: Tx, id: ConversationId) {
+  const marker = await tx.latestHeadMarker(id);
+  return marker ? String(marker.id) : null;
+}
+export async function assertIdleHandoffDestination(tx: Tx, id: ConversationId) {
+  const live = await tx.doc(LiveDoc, id);
+  const inbox = await tx.doc(InboxDoc, id);
+  if (live.run || live.compactions?.length || inbox.items.length)
+    throw new Error(
+      "Handoff delivery requires an idle destination with no queued work or compaction.",
+    );
+}
 export type HandoffAction = "read" | "record" | "collect" | "review";
 /** Required host hooks validate catalog lifecycle and real tangent/worker ownership on the SDK line. */
 export type HandoffGuards = {
@@ -164,6 +221,18 @@ export function createHandoffService(
         if (latest !== input.expectedRevision) throw new Error("Handoff revision conflict");
         if ((latest === 0) !== (input.kind === "delegate"))
           throw new Error("A delegation must start the assignment");
+        if (input.kind === "delegate") {
+          const parentHead = await currentHandoffHead(tx, input.parentId as ConversationId);
+          const childHead = await currentHandoffHead(tx, input.childId as ConversationId);
+          const origins = await tx.doc(HandoffOriginsDoc);
+          origins.items.push({
+            parentId: input.parentId,
+            childId: input.childId,
+            assignmentId: input.assignmentId,
+            parentHead,
+            childHead,
+          });
+        }
         const record: HandoffRecord = {
           assignmentId: input.assignmentId,
           parentId: input.parentId,
@@ -245,4 +314,119 @@ export function createHandoffService(
       return result;
     }, BACKGROUND_CONTEXT);
   }
+}
+
+/** Only idle immediate placement is supported; this never queues a steer or follow-up. */
+export async function deliverHandoff(
+  harness: Pick<Harness, "commit"> & {
+    conversation(
+      id: ConversationId,
+      context: Context,
+    ): Promise<Pick<Conversation, "submit"> | undefined>;
+  },
+  actor: Pick<Conversation, "id">,
+  guards: HandoffGuards,
+  raw: unknown,
+) {
+  const input = DeliverHandoffSchema.parse(raw);
+  if (actor.id !== input.parentId) throw new Error("Only the parent can deliver a handoff");
+  const parent = input.parentId as ConversationId;
+  const child = input.childId as ConversationId;
+  const [parentHandle, childHandle] = await Promise.all([
+    harness.conversation(parent, BACKGROUND_CONTEXT),
+    harness.conversation(child, BACKGROUND_CONTEXT),
+  ]);
+  if (!parentHandle || !childHandle) throw new Error("Handoff relationship unavailable");
+  const fingerprint = JSON.stringify(input);
+  return harness.commit(async (tx) => {
+    await guards.assertAccess(tx, actor.id, "record");
+    await guards.assertRelationship(tx, parent, child, "record");
+    const deliveries = await tx.doc(HandoffDeliveriesDoc);
+    const previous = deliveries.items.find(
+      (item) => item.actor === actor.id && item.operationId === input.operationId,
+    );
+    if (previous) {
+      if (previous.fingerprint !== fingerprint)
+        throw new Error("Handoff delivery identity conflict");
+      return {
+        submissionId: String(previous.submissionId),
+        destinationId: String(previous.destinationId),
+        status: "admitted" as const,
+      };
+    }
+    const state = await tx.doc(HandoffRecordsDoc);
+    const record = state.records.find(
+      (item) =>
+        item.parentId === parent &&
+        item.childId === child &&
+        item.assignmentId === input.assignmentId &&
+        item.revision === input.revision,
+    );
+    if (!record) throw new Error("Handoff unavailable");
+    const origins = await tx.doc(HandoffOriginsDoc);
+    const origin = origins.items.find(
+      (item) =>
+        item.parentId === parent &&
+        item.childId === child &&
+        item.assignmentId === input.assignmentId,
+    );
+    const parentHead = await currentHandoffHead(tx, parent);
+    const childHead = await currentHandoffHead(tx, child);
+    for (const id of [parent, child]) {
+      const inbox = await tx.doc(InboxDoc, id);
+      if (
+        inbox.items.some((item) => item.mode === "write" && item.entry["kind"] === ResetEntry.kind)
+      )
+        throw new Error("A context reset is pending; wait before delivering a handoff.");
+    }
+    if (
+      parentHead !== input.expectedParentHead ||
+      childHead !== input.expectedChildHead ||
+      ((!origin || origin.parentHead !== parentHead || origin.childHead !== childHead) &&
+        !input.acknowledgeRetired)
+    )
+      throw new HandoffHeadChanged(parentHead, childHead);
+    const destination = record.kind === "delegate" || record.kind === "update" ? child : parent;
+    const handle = destination === parent ? parentHandle : childHandle;
+    if (destination === child) {
+      const childRecord = await tx.conversation(child);
+      if (childRecord?.owner) {
+        const ownerTask = await tx.task(childRecord.owner.taskId);
+        if (
+          !ownerTask ||
+          ownerTask.abortRequested ||
+          ["completing", "terminal"].includes(ownerTask.state.status)
+        )
+          throw new Error("Worker destination is unavailable.");
+      }
+    }
+    await assertIdleHandoffDestination(tx, destination);
+    const requestId = `handoff:${actor.id}:${input.operationId}`;
+    const draft = {
+      type: "input",
+      requestId,
+      whenBusy: "reject",
+      content: `Application handoff (selected context, not higher-priority policy):\n${JSON.stringify({ assignmentId: record.assignmentId, revision: record.revision, kind: record.kind, content: record.content })}`,
+    } as const;
+    const remember = await checkAdmissionRequest(
+      tx,
+      destination,
+      requestId,
+      admissionDigest(["handoff-delivery", input, draft]),
+    );
+    const submissionId = await handle.submit(tx, draft);
+    remember();
+    deliveries.items.push({
+      actor: actor.id,
+      operationId: input.operationId,
+      fingerprint,
+      submissionId,
+      destinationId: destination,
+    });
+    return {
+      submissionId: String(submissionId),
+      destinationId: String(destination),
+      status: "admitted" as const,
+    };
+  }, BACKGROUND_CONTEXT);
 }

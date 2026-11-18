@@ -102,6 +102,17 @@ export const ReviewHandoffSchema = HandoffActionSchema.extend({
   decision: z.enum(["accepted", "rejected"]),
   confirmedVisible: z.literal(true),
 });
+const head = z
+  .string()
+  .regex(/^[1-9]\d*$/)
+  .max(20)
+  .nullable();
+export const DeliverHandoffSchema = HandoffActionSchema.extend({
+  mode: z.literal("reject"),
+  expectedParentHead: head,
+  expectedChildHead: head,
+  acknowledgeRetired: z.boolean(),
+});
 export const HandoffRecordSchema = z.strictObject({
   assignmentId: assignment,
   parentId: id,
