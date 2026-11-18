@@ -9,6 +9,7 @@ import {
   InboxDoc,
   type ConversationId,
   type SubmissionId,
+  type TaskId,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
@@ -392,6 +393,53 @@ describe("notify-only durable handoffs", () => {
       createHandoffService(harness, child, guards).list(parent.id, workerId, "worker-assignment"),
     ).rejects.toThrow("relationship unavailable");
     provider.calls[0]!.finish("done");
+  });
+
+  it("does not deliver an update to a stopped worker or create a replacement run", async () => {
+    const taskId = await launchHelper(
+      parent,
+      {
+        requestId: "stopped-worker",
+        mode: "background",
+        delivery: "notify-only",
+        assignment: "worker task",
+        context: "",
+      },
+      {
+        resolveModelForRole: async () => ({
+          selection: { provider: PROVIDER_ID, modelId: MODEL_ID, thinkingLevel: "off" },
+          revision: 1,
+          assignment: "worker",
+        }),
+        assertModelPolicy: async () => {},
+        assertParentWritable: async () => {},
+        assertInteractiveParent: async () => {},
+      },
+    );
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    const workerId = (await harness.snapshot(HelpersDoc, parent.id, ctx))!.items[0]!
+      .childId! as ConversationId;
+    await harness.commit(async (tx) => {
+      (await tx.doc(Catalog)).items.push({ id: workerId, state: "active" });
+    }, ctx);
+    const service = createHandoffService(harness, parent, guards);
+    const workerBase = { ...base(), childId: workerId, assignmentId: "stopped-assignment" };
+    await service.record({ ...record("delegate", 0, "stopped-delegate"), ...workerBase });
+    await service.record({ ...record("update", 1, "stopped-update"), ...workerBase });
+    await harness.abortTask(Number(taskId) as TaskId, ctx);
+    await harness.waitForTask(Number(taskId) as TaskId, ctx);
+    await expect(
+      deliverHandoff(harness, parent, guards, {
+        ...workerBase,
+        operationId: "stopped-delivery",
+        revision: 2,
+        mode: "reject",
+        expectedParentHead: null,
+        expectedChildHead: null,
+        acknowledgeRetired: false,
+      }),
+    ).rejects.toThrow("Worker destination is unavailable");
+    expect(provider.calls).toHaveLength(1);
   });
 });
 
