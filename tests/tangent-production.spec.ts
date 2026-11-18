@@ -39,6 +39,84 @@ const tangent = (id: number, title: string, activity: "running" | "idle") => ({
   },
 });
 
+test("many admitted receipts leave both split composers inside the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 1064, height: 975 });
+  await page.addInitScript(() => {
+    class Source extends EventTarget {
+      onerror = null;
+      constructor(url: string) {
+        super();
+        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: id,
+                messages: [],
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Source });
+  });
+  await page.route("**/api/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+      });
+    if (path === "/api/chats/1/tangents")
+      return route.fulfill({ json: { tangents: [tangent(2, "Child", "idle")] } });
+    return route.abort();
+  });
+  await syntheticDrafts(page);
+  await page.route("**/api/chats/1/draft/attempts", (route) =>
+    route.fulfill({
+      json: {
+        attempts: Array.from({ length: 12 }, (_, i) => ({
+          record: {
+            requestId: `${String(i + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+            draftRevision: i + 1,
+            text: `synthetic receipt ${i}`,
+            images: [],
+            mode: "reject",
+            fingerprint: "a".repeat(64),
+          },
+          admission: "admitted",
+          submissionId: String(i + 1),
+        })),
+        capped: false,
+        nextCursor: null,
+      },
+    }),
+  );
+  await page.goto("/chats/1");
+  await page.getByRole("button", { name: "Open tangent: Child" }).click();
+  for (const name of ["Main chat: Main", "Tangent chat: Child"]) {
+    const input = page
+      .getByRole("region", { name })
+      .getByRole("textbox", { name: "Message input" });
+    await expect(input).toBeVisible();
+    const bounds = await input.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(975);
+  }
+  const recovery = page
+    .getByRole("region", { name: "Main chat: Main" })
+    .getByRole("region", { name: "Draft recovery" });
+  await recovery.focus();
+  await page.keyboard.press("End");
+  await expect(recovery.getByText("synthetic receipt 11")).toBeInViewport();
+  await expect(recovery.getByRole("button", { name: "Retry original" })).toHaveCount(0);
+});
+
 test("private feedback stays scoped to each pane and stale ownership blocks held saves", async ({
   page,
 }) => {
