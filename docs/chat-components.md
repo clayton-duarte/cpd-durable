@@ -181,7 +181,7 @@ The supplied standalone MessageBranches stepper navigates actual catalog convers
 
 `src/client/chat.tsx` exports `Chat` and `ChatProps`. Supply title, optional description, validated presentation state (`null` during initial load), connection and pending/error/notice state. The parent supplies a bounded height. `src/client/chat-page.tsx` owns per-chat integration; `src/client/use-chat.ts` owns the immutable conversation-scoped API connection. Optional `active` closes transient reset UI when the containing workspace hides the chat.
 
-Omit `onSend` for read-only mode. Otherwise it receives text, optional send mode and image reference IDs, returning true only for confirmed admission. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
+Omit `onSend` for read-only mode. Otherwise it receives text, optional send mode, image reference IDs and, for persisted input, the original request ID and draft snapshot, returning true only for confirmed admission. The optional clear-revision callback reports the server's transactional draft clear. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
 
 Optional `onLoadEarlier`/`onFillGap` bind history reads, with separate `historyLoading`, `historyGap`, `historyError` and `onRetryHistory`. Read-only embeddings may still page if their host supplies these callbacks. Without a paging adapter, the earlier-history notice remains informational.
 
@@ -197,7 +197,7 @@ PNG/JPEG uploads are limited to four per input, 5 MiB each, 8,192 pixels per dim
 
 After uncertain input/control delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` or `retryAction`. Retain the original operation/payload/request ID. Other mutations stay blocked while a new draft remains editable. Continue/reset/withdraw do not consume the composer draft. Reset handoff text survives a failed attempt.
 
-The transport serializes mutations and keeps retry identity only until refresh. Inspect restored state before repeating an uncertain action after refresh. Model Stop is a current-scope abort; shell Stop targets its identified task. An uncertain Stop asks for state inspection before explicitly stopping again.
+The transport serializes mutations. Input attempts retain their identity in the SDK application document across refresh; other action retry identities remain in the browser session. Inspect restored state before repeating an uncertain action. Model Stop is a current-scope abort; shell Stop targets its identified task. An uncertain Stop asks for state inspection before explicitly stopping again.
 
 ## Remaining work
 
