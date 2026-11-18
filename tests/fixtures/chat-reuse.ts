@@ -28,6 +28,7 @@ createRoot(root).render(
           state,
           connected: true,
           onSend: () => Promise.resolve(true),
+          onReset: () => Promise.resolve(true),
         }),
       ),
     ),

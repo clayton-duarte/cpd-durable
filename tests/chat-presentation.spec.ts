@@ -1,4 +1,4 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page, type Locator } from "@playwright/test";
 import type { ChatState } from "../src/shared/chat.ts";
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
@@ -30,14 +30,192 @@ async function update(page: Page, state: ChatState) {
     state,
   );
 }
-async function actions(page: Page) {
-  await page.getByRole("button", { name: /^Conversation actions/ }).click();
-  return page.getByRole("dialog", { name: "Conversation actions", exact: true });
+async function actions(page: Page, scope?: Locator) {
+  const root = scope ?? page;
+  const draft = root.getByRole("textbox", { name: "Message input", exact: true });
+  const text = await draft.inputValue();
+  // Invoke the real slash picker before an existing draft; selecting strips only
+  // the command and separator, leaving the draft unchanged.
+  await draft.fill(`/ ${text}`);
+  await draft.evaluate((input: HTMLTextAreaElement) => input.setSelectionRange(1, 1));
+  await draft.press("ArrowLeft");
+  await draft.press("ArrowRight");
+  return root.locator('[data-slot="composer-trigger-popover"]');
 }
 
 test.beforeEach(async ({ page }) => {
   // Never let synthetic tests reach the user's live conversation.
   await page.route("**/api/**", (route) => route.abort());
+});
+
+test("idle composer is one surface with discoverable commands and no inert controls", async ({
+  page,
+}) => {
+  await connect(page);
+  await page.goto("/");
+  await expect(page.getByRole("textbox", { name: "Message input" })).toHaveAttribute(
+    "placeholder",
+    /Type \/ for commands/,
+  );
+  await expect(page.getByText("Ready", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: /Conversation actions|Add Attachment|Refresh/ }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('[data-slot="command-palette"], [data-slot="composer-menu"]'),
+  ).toHaveCount(0);
+  await expect(page.locator('[data-slot="aui_composer-shell"]')).toHaveCount(1);
+  const picker = await actions(page);
+  await expect(picker.getByRole("option", { name: /\/reset/ })).toBeVisible();
+  await expect(
+    picker.getByRole("option", { name: /\/queue|\/steer|\/continue|Close/ }),
+  ).toHaveCount(0);
+});
+
+test("keyboard slash selection strips command text and steers only the actual draft", async ({
+  page,
+}) => {
+  await connect(page, { ...empty, busy: true, controls });
+  const requests: unknown[] = [];
+  await page.route("**/api/input", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "keyboard-steer" } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Change direction\n  preserve indentation");
+  await actions(page);
+  await draft.pressSequentially("steer");
+  await expect(page.getByRole("option", { name: /\/steer/ })).toBeVisible();
+  await draft.press("Enter");
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).toMatchObject({
+    mode: "steer",
+    text: "Change direction\n  preserve indentation",
+  });
+  await expect(draft).toHaveValue("");
+});
+
+test("stale or escaped reserved commands never become ordinary user messages", async ({ page }) => {
+  await connect(page, { ...empty, busy: true, controls });
+  const requests: unknown[] = [];
+  await page.route("**/api/input", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "must-not-send" } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("/steer");
+  await expect(page.getByRole("option", { name: /\/steer/ })).toBeVisible();
+  await update(page, { ...empty, controls });
+  await draft.press("Escape");
+  await draft.press("Enter");
+  await expect(page.getByRole("alert")).toContainText("command text was not sent");
+  await expect(draft).toHaveValue("/steer");
+  expect(requests).toEqual([]);
+  await draft.fill("/cont");
+  await draft.press("Escape");
+  await draft.press("Enter");
+  await expect(draft).toHaveValue("/cont");
+  expect(requests).toEqual([]);
+});
+
+test("reset keyboard focus, Escape and field Enter preserve the unsent draft", async ({ page }) => {
+  await connect(page);
+  const requests: string[] = [];
+  const controlsSent: unknown[] = [];
+  await page.route("**/api/control", async (route) => {
+    controlsSent.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "keyboard-reset" } });
+  });
+  await page.route("**/api/input", (route) => {
+    requests.push(route.request().url());
+    return route.abort();
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep this draft");
+  await actions(page);
+  await draft.pressSequentially("reset");
+  await draft.press("Enter");
+  const form = page.getByRole("dialog", { name: "Reset model context", exact: true });
+  const handoff = form.getByRole("textbox", { name: "Handoff instructions (optional)" });
+  await expect(handoff).toBeFocused();
+  await handoff.fill("Keep this handoff");
+  await handoff.press("Enter");
+  await expect(form).toBeVisible();
+  await expect(draft).toHaveValue("Keep this draft");
+  expect(requests).toEqual([]);
+  await handoff.press("Escape");
+  await expect(form).toHaveCount(0);
+  await expect(draft).toBeFocused();
+  await expect(draft).toHaveValue("Keep this draft");
+  await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
+  await expect(handoff).toHaveValue("Keep this handoff");
+  await handoff.press("Tab");
+  const confirm = form.getByRole("button", { name: "Reset model context", exact: true });
+  await expect(confirm).toBeFocused();
+  await confirm.press("Enter");
+  await expect(confirm).toHaveAttribute("aria-pressed", "true");
+  await form.getByRole("button", { name: "Send", exact: true }).focus();
+  await form.getByRole("button", { name: "Send", exact: true }).press("Enter");
+  await expect(form).toHaveCount(0);
+  expect(controlsSent).toHaveLength(1);
+  expect(controlsSent[0]).toMatchObject({ type: "reset", handoff: "Keep this handoff" });
+  expect(requests).toEqual([]);
+  await expect(draft).toHaveValue("Keep this draft");
+});
+
+test("IME Enter does not submit and Shift Enter preserves multiline input", async ({ page }) => {
+  await connect(page);
+  const requests: unknown[] = [];
+  await page.route("**/api/input", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "ime-input" } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("入力中");
+  await draft.dispatchEvent("compositionstart");
+  await draft.dispatchEvent("keydown", {
+    key: "Enter",
+    code: "Enter",
+    isComposing: true,
+    keyCode: 229,
+  });
+  expect(requests).toEqual([]);
+  await draft.dispatchEvent("compositionend", { data: "入力中" });
+  await draft.press("Shift+Enter");
+  await draft.pressSequentially("Second line");
+  await expect(draft).toHaveValue("入力中\nSecond line");
+  await draft.press("Enter");
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).toMatchObject({ text: "入力中\nSecond line", mode: "reject" });
+});
+
+test("mobile durable queue is visible, honest after failure, and bounded to the viewport", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await connect(page, {
+    ...empty,
+    controls: {
+      ...controls,
+      queue: [
+        { id: "steering", mode: "steer", text: "A long pending direction ".repeat(8) },
+        { id: "follow-up", mode: "followUp", text: "Next response" },
+      ],
+    },
+  });
+  await page.goto("/");
+  const queue = page.locator('[data-slot="message-queue"]');
+  await expect(queue).toContainText("2 queued");
+  await expect(queue).toContainText("Pending placement; not yet delivered");
+  await expect(queue).not.toContainText("sends when this finishes");
+  await expect(queue.getByRole("button", { name: /Remove/ })).toHaveCount(2);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await actions(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test("official Thread distinguishes history loading from its welcome", async ({ page }) => {
@@ -110,9 +288,7 @@ test("official ErrorState retries the original identity without consuming a newe
   expect(requests[0]).toEqual(requests[1]);
 });
 
-test("official action palette queues a draft while busy without erasing newer edits", async ({
-  page,
-}) => {
+test("slash command queues a draft while busy without erasing newer edits", async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await connect(page, { ...empty, busy: true, controls });
   let release!: () => void;
@@ -130,9 +306,7 @@ test("official action palette queues a draft while busy without erasing newer ed
   await draft.fill("Follow-up\n  with indentation");
   const palette = await actions(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await palette
-    .getByRole("option", { name: "Queue current draft after this response", exact: true })
-    .click();
+  await palette.getByRole("option", { name: /\/queue/ }).click();
   await expect.poll(() => requests.length).toBe(1);
   await expect(draft).toHaveValue("Follow-up\n  with indentation");
   await draft.fill("Another draft");
@@ -150,11 +324,11 @@ test("steering disappears rather than silently becoming ordinary input after a r
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Change direction");
   const palette = await actions(page);
-  await expect(palette.getByRole("option", { name: /Steer current work/ })).toBeVisible();
+  await expect(palette.getByRole("option", { name: /\/steer/ })).toBeVisible();
   await update(page, { ...empty, controls });
-  await expect(palette.getByRole("option", { name: /Steer current work/ })).toHaveCount(0);
-  await expect(draft).toHaveValue("Change direction");
-  await palette.getByRole("option", { name: "Close conversation actions", exact: true }).click();
+  await expect(palette.getByRole("option", { name: /\/steer/ })).toHaveCount(0);
+  await expect(draft).toHaveValue("/ Change direction");
+  await draft.press("Escape");
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
 });
 
@@ -173,15 +347,14 @@ test("queued input stays separate from messages and withdrawal reports a placeme
     route.fulfill({ json: { status: "already_placed" } }),
   );
   await page.goto("/");
-  const palette = await actions(page);
   await expect(
     page.locator('[data-slot="aui_assistant-message-root"]', {
       hasText: "Queued synthetic direction",
     }),
   ).toHaveCount(0);
-  await palette
-    .getByRole("option", {
-      name: "Withdraw steering request: Queued synthetic direction",
+  await page
+    .getByRole("button", {
+      name: 'Remove "Steer at boundary: Queued synthetic direction" from the queue',
       exact: true,
     })
     .click();
@@ -201,7 +374,7 @@ test("Continue retries the same control without consuming the composer draft", a
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Unsent draft");
-  await (await actions(page)).getByRole("option", { name: /Continue response without/ }).click();
+  await (await actions(page)).getByRole("option", { name: /\/continue/ }).click();
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("note")).toContainText("Continue admitted;");
   expect(requests).toHaveLength(2);
@@ -238,21 +411,13 @@ test("official ElicitationForm confirms reset, preserves drafts and retries the 
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Keep this draft");
-  await (
-    await actions(page)
-  )
-    .getByRole("option", { name: "Reset model context…", exact: true })
-    .click();
+  await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
   let form = page.getByRole("dialog", { name: "Reset model context", exact: true });
   await expect(form).toContainText("Stored history is retained.");
   await expect(form.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await form.getByRole("button", { name: "Decline", exact: true }).click();
   expect(requests).toHaveLength(0);
-  await (
-    await actions(page)
-  )
-    .getByRole("option", { name: "Reset model context…", exact: true })
-    .click();
+  await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
   form = page.getByRole("dialog", { name: "Reset model context", exact: true });
   await form
     .getByRole("textbox", { name: "Handoff instructions (optional)", exact: true })
@@ -315,8 +480,8 @@ test("official messages render safe Markdown, code copy and native export", asyn
   const download = page.waitForEvent("download");
   await page.getByRole("menuitem", { name: "Export as Markdown" }).click();
   expect((await download).suggestedFilename()).toMatch(/\.md$/);
-  await expect(page.getByRole("button", { name: "Add Attachment", exact: true })).toBeDisabled();
-  await expect(footer.getByRole("button", { name: "Refresh", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Add Attachment", exact: true })).toHaveCount(0);
+  await expect(footer.getByRole("button", { name: "Refresh", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Voice|Helpful/ })).toHaveCount(0);
 });
 
@@ -366,9 +531,9 @@ test("two official Threads keep their native drafts and action panels independen
   await second
     .getByRole("textbox", { name: "Message input", exact: true })
     .fill("Independent second draft");
-  await first.getByRole("button", { name: "Conversation actions", exact: true }).click();
+  await (await actions(page, first)).getByRole("option", { name: /\/reset/ }).click();
   await expect(second.getByRole("dialog")).toHaveCount(0);
-  await first.getByRole("option", { name: "Close conversation actions", exact: true }).click();
+  await first.getByRole("button", { name: "Decline", exact: true }).click();
   await first.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(first.getByRole("textbox", { name: "Message input", exact: true })).toHaveValue("");
   await expect(second.getByRole("textbox", { name: "Message input", exact: true })).toHaveValue(

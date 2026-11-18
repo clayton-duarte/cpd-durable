@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalMessageConverter,
@@ -10,44 +10,15 @@ import {
 } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
-import type { ChatState, SendMode } from "../shared/chat.ts";
+import type { SendMode } from "../shared/chat.ts";
 import { assistantMessages } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
-
-export interface ChatProps {
-  title: string;
-  description?: string;
-  state: ChatState | null;
-  connected: boolean;
-  pending?: boolean;
-  error?: string | null;
-  retryText?: string | null;
-  retryAction?: boolean;
-  onRetry?: () => Promise<boolean>;
-  uncertain?: boolean;
-  notice?: string | null;
-  onSend?: (text: string, mode?: SendMode) => Promise<boolean>;
-  onStop?: () => Promise<void>;
-  onContinue?: () => Promise<boolean>;
-  onReset?: (handoff: string) => Promise<boolean>;
-  onWithdraw?: (id: string) => Promise<void>;
-}
-
-type ChatHost = ChatProps & {
-  available: boolean;
-  localError: string | null;
-  clearLocalError: () => void;
-  submitDraft: (mode: SendMode) => Promise<boolean>;
-};
-const HostContext = createContext<ChatHost | null>(null);
-export function useChatHost() {
-  const host = useContext(HostContext);
-  if (!host) throw new Error("Missing durable chat host");
-  return host;
-}
+import { ChatHostContext, type ChatProps } from "./chat-host.ts";
+export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
-const threadComponents = { ComposerExtra: DurableControls };
+const durableCommandNames = ["queue", "steer", "continue", "reset"];
+const threadComponents = { ComposerFooter: DurableControls };
 const interruptionUI = {
   name: "interruption",
   render: () => <AgentStatus state="waiting" label="Response interrupted." />,
@@ -85,6 +56,15 @@ export function Chat(props: ChatProps) {
       // while admission is pending, unless the user has already written a new one.
       if (nativeSend && composer?.getState().text === "") composer.setText(draft);
       setLocalError(null);
+      if (
+        nativeSend &&
+        Array.from(draft.matchAll(/(?:^|\s)\/([a-z]*)(?=\s|$)/giu)).some((match) =>
+          durableCommandNames.some((name) => name.startsWith(match[1]?.toLowerCase() ?? "")),
+        )
+      ) {
+        setLocalError("Choose an available / command from the list; command text was not sent.");
+        return false;
+      }
       if (
         !available ||
         !props.onSend ||
@@ -142,7 +122,7 @@ export function Chat(props: ChatProps) {
   runtimeRef.current = runtime;
 
   return (
-    <HostContext.Provider
+    <ChatHostContext.Provider
       value={{
         ...props,
         available,
@@ -154,6 +134,6 @@ export function Chat(props: ChatProps) {
       <AssistantRuntimeProvider runtime={runtime}>
         <OfficialThread />
       </AssistantRuntimeProvider>
-    </HostContext.Provider>
+    </ChatHostContext.Provider>
   );
 }
