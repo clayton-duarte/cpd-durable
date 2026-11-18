@@ -15,6 +15,7 @@ import {
 } from "../shared/attachments.ts";
 
 export class AttachmentError extends Error {}
+export class AttachmentNotFound extends AttachmentError {}
 const invalid = (): never => {
   throw new AttachmentError("Invalid or unsupported image.");
 };
@@ -140,8 +141,15 @@ export function createAttachmentService(
     },
     async readPending(id: string): Promise<Buffer> {
       AttachmentIdSchema.parse(id);
-      if (!(await authorization.canReadPending(id))) throw new AttachmentError("Image not found.");
-      return readFile(pathFor(id));
+      if (!(await authorization.canReadPending(id)))
+        throw new AttachmentNotFound("Image not found.");
+      try {
+        return await readFile(pathFor(id));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+          throw new AttachmentNotFound("Image not found.");
+        throw error;
+      }
     },
     async input(
       value: unknown,

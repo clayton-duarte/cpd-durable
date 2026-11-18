@@ -197,8 +197,8 @@ export function createAttachmentBackend(options: AttachmentBackendOptions) {
     /** Called from the host input route; no separate draft authority or retry log. */
     async admit(chatId: string, raw: unknown) {
       const scope = await resolve(chatId);
-      if (!scope) throw new AttachmentError("Chat not found.");
-      if (scope.archived) throw new AttachmentError("Chat is archived.");
+      if (!scope) throw new AttachmentAccessError(404);
+      if (scope.archived) throw new AttachmentAccessError(409);
       const input = RequestSchema.parse(raw);
       const valid = ImageInputSchema.parse({ text: input.text, images: input.images });
       const model = await options.model(scope);

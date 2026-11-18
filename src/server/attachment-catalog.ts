@@ -36,6 +36,10 @@ const AdmissionRequestsDoc = defineDoc<{ requests: { id: string; digest: string 
   initial: () => ({ requests: [] }),
   checkpointWhen: () => true,
 });
+export class AdmissionIdentityError extends Error {}
+export function admissionDigest(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
 
 /** Check all host input and control kinds against one request-ID namespace.
  * A legacy SDK submission without matching host metadata is rejected rather than
@@ -50,7 +54,7 @@ export async function checkAdmissionRequest(
   const doc = await tx.doc(AdmissionRequestsDoc, conversationId);
   const previous = doc.requests.find((request) => request.id === id);
   if (previous ? previous.digest !== digest : await tx.submissionByRequest(conversationId, id))
-    throw new Error("Request ID does not match its original action.");
+    throw new AdmissionIdentityError("Request ID does not match its original action.");
   return () => {
     if (!previous) doc.requests.push({ id, digest });
   };
@@ -60,9 +64,7 @@ export function imageRequestDigest(input: {
   images: readonly string[];
   mode: string;
 }): string {
-  return createHash("sha256")
-    .update(JSON.stringify([input.text, input.images, input.mode]))
-    .digest("hex");
+  return admissionDigest(["input", input.text, input.images, input.mode]);
 }
 /** Call inside the host admission transaction BEFORE submit; invoke returned function only AFTER
  * submit succeeds. Never read Session state inside this callback. Existing non-image request IDs

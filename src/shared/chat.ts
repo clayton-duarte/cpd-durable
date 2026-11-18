@@ -1,15 +1,23 @@
 import { z } from "zod";
+import { AttachmentIdSchema } from "./attachments.ts";
 
 export const PROVIDER_ID = "opencode-go";
 export const MODEL_ID = "deepseek-v4.1-flash";
 
 export const SendModeSchema = z.enum(["reject", "followUp", "steer"]);
 export type SendMode = z.infer<typeof SendModeSchema>;
-export const InputSchema = z.strictObject({
-  requestId: z.uuid(),
-  text: z.string().trim().min(1).max(32_000),
-  mode: SendModeSchema.optional(),
-});
+export const InputSchema = z
+  .strictObject({
+    requestId: z.uuid(),
+    text: z.string().trim().max(32_000),
+    images: z.array(AttachmentIdSchema).max(4).optional(),
+    mode: SendModeSchema.optional(),
+  })
+  .refine(
+    (input) =>
+      (!!input.text || !!input.images?.length) &&
+      new Set(input.images).size === (input.images?.length ?? 0),
+  );
 export type ChatInput = z.infer<typeof InputSchema>;
 
 export const ControlSchema = z.discriminatedUnion("type", [
