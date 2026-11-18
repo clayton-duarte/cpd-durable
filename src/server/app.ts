@@ -47,6 +47,11 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
+import { BranchOperationError } from "./branch-operations.ts";
+import {
+  EditBranchRequestSchema,
+  RecentEditOperationsSchema,
+} from "../shared/branch-operations.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -203,6 +208,32 @@ export function createApp(
     if (!id.success || !result.success) return c.json({ error: "Invalid fork." }, 400);
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
     return c.json(await chat.chats.fork(id.data, result.data.requestId, result.data.at), 201);
+  });
+  app.get("/api/chats/:chatId/edit-eligibility/:entryId", async (c) => {
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const at = ChatIdSchema.safeParse(c.req.param("entryId"));
+    if (!id.success || !at.success || !chat.chats)
+      return c.json({ error: "Chat unavailable." }, 404);
+    return c.json({ eligible: await chat.chats.canEdit(id.data, at.data) });
+  });
+  app.get("/api/chats/:chatId/edit-operations/:entryId", async (c) => {
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const at = ChatIdSchema.safeParse(c.req.param("entryId"));
+    if (!id.success || !at.success || !chat.chats)
+      return c.json({ error: "Chat unavailable." }, 404);
+    return c.json(
+      RecentEditOperationsSchema.parse(await chat.chats.recentEditOperations(id.data, at.data)),
+    );
+  });
+  app.post("/api/chats/:chatId/edit-branch", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const id = ChatIdSchema.safeParse(c.req.param("chatId"));
+    const result = EditBranchRequestSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!id.success || !result.success || result.data.sourceId !== id.data)
+      return c.json({ error: "Invalid edit request." }, 400);
+    if (!chat.chats) return c.json({ error: "Chat unavailable." }, 503);
+    return c.json(await chat.chats.editBranch(result.data), 202);
   });
   routes.use("*", async (c, next) => {
     const id = c.req.param("chatId");
@@ -448,7 +479,9 @@ export function createApp(
   app.route("/api/chats/:chatId", routes);
   app.route("/api", routes);
   app.onError((error, c) =>
-    error instanceof ChatLifecycleError || error instanceof AttachmentAccessError
+    error instanceof ChatLifecycleError ||
+    error instanceof AttachmentAccessError ||
+    error instanceof BranchOperationError
       ? c.json({ error: error.message }, error.status)
       : error instanceof AdmissionIdentityError
         ? c.json({ error: "Request ID does not match its original action." }, 409)

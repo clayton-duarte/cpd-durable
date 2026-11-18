@@ -46,9 +46,34 @@ Use **Add Attachment** or paste to attach PNG/JPEG images, alone or with text, w
 
 Use **New chat** in the supplied assistant-ui sidebar. It reuses the existing empty chat rather than creating duplicates. TanStack Router gives each chat a `/chats/<id>` deep link, back/forward navigation and mobile sidebar navigation. Existing history appears as **Original chat**; new chats receive a title from their first admitted input. Switching retains visited chats' native drafts and retry state until refresh and never stops background work. Each chat's context menu (ellipsis, right-click or Shift+F10) offers **Rename**, **Archive** and **Delete**; archived chats can be viewed/restored under **Archived chats**. Delete removes a chat from the app, not its underlying SDK records. Committed-message **Fork from saved entry** creates an independent durable branch at that inclusive cutoff; header branch controls and Open source chat navigate saved conversations without sharing drafts or replaying work. See [chat navigation semantics](docs/chat-components.md#chat-navigation-and-creation).
 
+**Edit in new chat** is available for committed single-message plain-text user entries. It creates a separate conversation before the original entry and sends the replacement after confirmation; the original chat and its draft are unchanged. Image-bearing and ambiguous entries cannot be edited this way. See [durable edit semantics](docs/chat-components.md#editing-in-a-new-chat).
+
 **Execution defaults to your home directory (`~/`)**, independently of the repository and session-data location. `CPD_CWD` overrides it and expands `~`/`~/…`. This is not a sandbox: tools can access absolute paths, parent directories, network programs and the server account's inherited environment with normal OS permissions. There are no cpd approval prompts, path/command restrictions, forced shell timeouts or tool-round caps. Commands can modify/delete files and expose account secrets in tool output; protect the local host and conversation data accordingly. Shell `cd` affects that invocation, not the default directory of later calls. See [pi TUI parity and remaining work](docs/pi-durable-features.md#pi-tui-parity); native tools alone are not full TUI parity.
 
-The SDK's `codemode` tool can call installed native tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled; MCP is not yet integrated.
+The SDK's `codemode` tool can call installed native tools and explicitly configured MCP tools through journaled nested calls. Its QuickJS execution does not sandbox those tools' host permissions. Model and image generation globals are disabled.
+
+### Optional MCP stdio tools
+
+MCP is disabled by default. To opt in, set `CPD_MCP_CONFIG` **only in the server environment** to a JSON file, for example:
+
+```json
+{
+  "servers": [
+    {
+      "id": "example",
+      "transport": "stdio",
+      "command": "example-server",
+      "args": [],
+      "cwd": ".",
+      "env": {}
+    }
+  ]
+}
+```
+
+The configuration path is relative to the server process directory; each required `cwd` is absolute or relative to the configuration file's directory, fixed for all chats. IDs contain only letters, digits, underscores or hyphens and must be unique. `args` is an array of strings; optional `env` supplies string overrides to the inherited server environment. Unknown fields are rejected. Protect this file and any credentials in it; never commit it. Configured commands run with the host's normal authority and can access inherited credentials. Tool descriptions, arguments and outputs can themselves contain private data and enter model context or conversation history; trust the configured servers accordingly.
+
+Startup connects explicitly configured processes once and fails if discovery fails; there is no automatic installation, reconnection, request deadline or hidden retry. Only MCP 2025-03-26 stdio tool discovery and calls are supported. Tool schemas using integers, unsupported constraints or structured output schemas are rejected rather than weakened; non-text results are omission receipts. HTTP, OAuth, resources, prompts, sampling, elicitation and MCP tasks are not supported. Changing configuration requires restarting the host. See [tool semantics](docs/chat-components.md#3-agent-activity-tools-and-tasks).
 
 ### Project guidance and skills
 
@@ -72,7 +97,7 @@ Each explicitly named module must already exist; the server does not install pac
 
 Each module's default export is a public pi-durable `Extension` object; an optional named `dispose()` is called during host cleanup. The host rejects duplicate extension, tool and task names rather than replacing existing registrations. SDK validation and these checks are not a safety proof: configured extension code has the server account's full authority, including access to inherited credentials and network, and can perform irreversible external effects. Configure only code you trust. The registry is prepared before the Harness opens; shutdown closes the Harness before extension disposal and execution resources. Startup failures clean up acquired resources, but cannot undo effects already performed during imports. Module imports are cached by Node; reopening does not promise module reinitialization. Changes require an explicit host restart; there is no live reload of configuration. No image-generation globals or other deferred features are enabled by the host merely by configuring this loader.
 
-The `openChat` factory takes an optional fourth argument `{ extensionsConfig: absolutePath }`; it does not read this environment variable itself. The server entrypoint passes `CPD_EXTENSIONS_CONFIG` to that option, so a direct factory caller controls the option independently of the environment.
+The `openChat` factory takes an optional fourth argument `{ extensionsConfigPath: absolutePath, mcpConfigPath?: path }`; it does not read these environment variables itself. The server entrypoint passes `CPD_EXTENSIONS_CONFIG` and `CPD_MCP_CONFIG` to those options, so a direct factory caller controls each option independently of the environment.
 
 The official assistant-ui Thread supplies the runtime composer, messages and actions. Native **Send** submits while idle. **Type `/` in the composer** for available commands: `/queue` sends the current draft after the response, `/steer` applies it at an eligible boundary, and `/continue` requests an answer from unresolved active context without sending the draft. For queue/steer, write the draft first, append the command and select it from the list; this is an action picker, not a `/command arguments` parser. Commands disappear when unavailable; reserved command text/prefixes are never silently sent as ordinary input. Queued inputs are visible below the composer with individual withdrawal buttons. Native **Stop** aborts foreground work and withdraws queued inputs.
 

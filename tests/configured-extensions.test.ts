@@ -1,5 +1,6 @@
 import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -48,6 +49,69 @@ export default defineExtension({name: ${JSON.stringify(extensionName)}, tasks: [
 `;
 }
 describe("configured extension foundation", () => {
+  it("combines configured MCP and extensions, closing the extension before the MCP process", async () => {
+    const dir = await fixture();
+    const pidFile = join(dir, "mcp.pid");
+    const log = join(dir, "cleanup.txt");
+    const server = join(dir, "server.mjs");
+    await writeFile(
+      server,
+      `
+import readline from "node:readline"; import {writeFileSync} from "node:fs";
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+readline.createInterface({input:process.stdin}).on("line",s=>{const m=JSON.parse(s);
+if(m.method==="initialize") console.log(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}}));
+if(m.method==="tools/list") console.log(JSON.stringify({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"example",inputSchema:{type:"object"}}]}}));});
+`,
+    );
+    const mcpPath = join(dir, "mcp.json");
+    await writeFile(
+      mcpPath,
+      JSON.stringify({
+        servers: [
+          {
+            id: "fixture",
+            transport: "stdio",
+            command: process.execPath,
+            args: [server],
+            cwd: ".",
+          },
+        ],
+      }),
+    );
+    await writeFile(
+      join(dir, "coexist.mjs"),
+      `
+import {readFile, appendFile} from "node:fs/promises";
+export default {name:"coexist"};
+export async function dispose(){const pid=Number(await readFile(${JSON.stringify(pidFile)},"utf8")); process.kill(pid,0); await appendFile(${JSON.stringify(log)},"extension-before-mcp\\n");}
+`,
+    );
+    const extPath = join(dir, "extensions.json");
+    await writeFile(extPath, JSON.stringify({ modules: ["./coexist.mjs"] }));
+    const provider = testModels();
+    const chat = await openChat(join(dir, "state"), provider.models, dir, {
+      mcpConfigPath: mcpPath,
+      extensionsConfigPath: extPath,
+    });
+    await chat.close();
+    expect(await readFile(log, "utf8")).toBe("extension-before-mcp\n");
+    const pid = Number(await readFile(pidFile, "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
+
+    const hash = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 24);
+    const name = `mcp_${hash("fixture")}__${hash('example\0{"type":"object"}')}`;
+    await writeFile(join(dir, "collision.mjs"), moduleSource("external-collision", name, log));
+    await writeFile(extPath, JSON.stringify({ modules: ["./collision.mjs"] }));
+    await expect(
+      openChat(join(dir, "collision"), provider.models, dir, {
+        mcpConfigPath: mcpPath,
+        extensionsConfigPath: extPath,
+      }),
+    ).rejects.toThrow("could not be loaded");
+    const collisionPid = Number(await readFile(pidFile, "utf8"));
+    expect(() => process.kill(collisionPid, 0)).toThrow();
+  });
   it("loads a configured tool in production openChat, and closes it only after the SDK harness", async () => {
     const dir = await fixture();
     const log = join(dir, "cleanup.txt");
@@ -67,6 +131,8 @@ export async function dispose(){ await access(${JSON.stringify(marker)}); await 
     );
     const path = join(dir, "extensions.json");
     await writeFile(path, JSON.stringify({ modules: ["./production.mjs"] }));
+    const mcpPath = join(dir, "mcp.json");
+    await writeFile(mcpPath, JSON.stringify({ servers: [] }));
     const originalOpen = Harness.open.bind(Harness);
     const spy = vi.spyOn(Harness, "open").mockImplementation(async (storage, options, context) => {
       const harness = await originalOpen(storage, options, context);
@@ -79,7 +145,8 @@ export async function dispose(){ await access(${JSON.stringify(marker)}); await 
     });
     const provider = testModels();
     const chat = await openChat(join(dir, "data"), provider.models, dir, {
-      extensionsConfig: path,
+      extensionsConfigPath: path,
+      mcpConfigPath: mcpPath,
     });
     try {
       const app = createApp(chat);
@@ -125,17 +192,17 @@ export async function dispose(){ await access(${JSON.stringify(marker)}); await 
     const blocked = join(dir, "not-a-directory");
     await writeFile(blocked, "file");
     await expect(
-      openChat(blocked, provider.models, dir, { extensionsConfig: path }),
+      openChat(blocked, provider.models, dir, { extensionsConfigPath: path }),
     ).rejects.toThrow();
     expect(await readFile(log, "utf8")).toBe("failure-fixture\n");
     await mkdir(join(dir, "fail-storage", "session.sqlite"), { recursive: true });
     await expect(
-      openChat(join(dir, "fail-storage"), provider.models, dir, { extensionsConfig: path }),
+      openChat(join(dir, "fail-storage"), provider.models, dir, { extensionsConfigPath: path }),
     ).rejects.toThrow();
     expect(await readFile(log, "utf8")).toBe("failure-fixture\nfailure-fixture\n");
     vi.spyOn(Harness, "open").mockRejectedValueOnce(new Error("synthetic internal error"));
     await expect(
-      openChat(join(dir, "fail-harness"), provider.models, dir, { extensionsConfig: path }),
+      openChat(join(dir, "fail-harness"), provider.models, dir, { extensionsConfigPath: path }),
     ).rejects.toThrow();
     expect(await readFile(log, "utf8")).toBe("failure-fixture\nfailure-fixture\nfailure-fixture\n");
   });
@@ -186,7 +253,7 @@ export async function dispose(){ await appendFile(${JSON.stringify(log)}, "inval
     const path = join(dir, "extensions.json");
     await writeFile(path, JSON.stringify({ modules: ["./first.mjs", "./invalid.mjs"] }));
     const result = await openChat(join(dir, "data"), testModels().models, dir, {
-      extensionsConfig: path,
+      extensionsConfigPath: path,
     }).catch((error: unknown) => error);
     expect(result).toBeInstanceOf(Error);
     expect(String(result)).toContain("Configured extensions could not be loaded.");

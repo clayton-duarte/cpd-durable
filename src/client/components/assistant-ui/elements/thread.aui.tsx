@@ -31,6 +31,7 @@ import { ThreadNavigation } from "@/thread-navigation";
 import { ChatDetails } from "@/chat-details";
 import { AgentQuestions } from "@/agent-questions";
 import { ForkMessageAction } from "@/fork-message-action";
+import { EditMessageAction } from "@/edit-message-action";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -61,7 +62,6 @@ import {
   DownloadIcon,
   MicIcon,
   MoreHorizontalIcon,
-  PencilIcon,
   PhoneIcon,
   RefreshCwIcon,
   TriangleAlertIcon,
@@ -933,11 +933,7 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex flex-col items-end"
     >
       <ForkMessageAction />
-      <ActionBarPrimitive.Edit
-        render={<TooltipIconButton tooltip="Edit" className="aui-user-action-edit" />}
-      >
-        <PencilIcon />
-      </ActionBarPrimitive.Edit>
+      <EditMessageAction />
     </ActionBarPrimitive.Root>
   );
 };
@@ -957,7 +953,7 @@ const EditComposer: FC = () => {
             Cancel
           </ComposerPrimitive.Cancel>
           <ComposerPrimitive.Send render={<Button size="sm" className="h-8 px-3" />}>
-            Update
+            Continue to new chat
           </ComposerPrimitive.Send>
         </div>
       </ComposerPrimitive.Root>

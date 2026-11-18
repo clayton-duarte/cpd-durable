@@ -13,21 +13,26 @@ import { createAttachmentBackend, AttachmentAccessError } from "./attachment-rou
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
 import { readConfiguredExtensions } from "./extensions/config.ts";
 import { loadConfiguredExtensions } from "./extensions/loader.ts";
+import { openConfiguredMcp } from "./mcp/config.ts";
 
 export async function openChat(
   dataDir: string,
   models: Models,
   cwd = workingDirectory(),
-  options: { extensionsConfig?: string } = {},
+  options: { extensionsConfigPath?: string; mcpConfigPath?: string } = {},
 ) {
-  const execution = createExecution(cwd);
+  const mcp = await openConfiguredMcp(
+    options.mcpConfigPath !== undefined ? { path: options.mcpConfigPath } : {},
+  );
+  let execution: ReturnType<typeof createExecution> | undefined;
   let configured: Awaited<ReturnType<typeof loadConfiguredExtensions>> | undefined;
   let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   try {
+    execution = createExecution(cwd, mcp);
     configured = await loadConfiguredExtensions(
       execution.registry,
-      await readConfiguredExtensions(options.extensionsConfig),
+      await readConfiguredExtensions(options.extensionsConfigPath),
     );
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
@@ -106,7 +111,11 @@ export async function openChat(
           try {
             await configured!.close();
           } finally {
-            await execution.close();
+            try {
+              await execution!.close();
+            } finally {
+              await mcp.close();
+            }
           }
         }
       },
@@ -119,7 +128,11 @@ export async function openChat(
       try {
         await configured?.close();
       } finally {
-        await execution.close();
+        try {
+          await execution?.close();
+        } finally {
+          await mcp.close();
+        }
       }
     }
     throw error;
