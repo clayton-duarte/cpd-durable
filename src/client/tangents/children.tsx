@@ -3,9 +3,9 @@ import { TaskCard, type TaskCardState } from "@/components/assistant-ui/elements
 import { Button } from "@/components/ui/button";
 
 // Presentation data only: the integration adapter maps durable records into these views.
-export type ChildActivity = "running" | "idle" | "waiting" | "failed";
-export type ChildAttention = "none" | "needs-input";
-export type ChildLifecycle = "open" | "concluded";
+export type ChildActivity = "running" | "idle" | "waiting" | "failed" | "interrupted" | "unknown";
+export type ChildAttention = "none" | "needs-input" | "unread" | "report-ready";
+export type ChildLifecycle = "open" | "concluded" | "archived";
 
 export interface TangentChildView {
   id: string;
@@ -38,15 +38,29 @@ export interface TangentChildrenProps {
 function description(item: TangentChildView | WorkerChildView): string {
   return [
     item.model,
-    item.lifecycle === "concluded" ? "Concluded" : "Open",
+    item.lifecycle === "concluded"
+      ? "Concluded"
+      : item.lifecycle === "archived"
+        ? "Archived"
+        : "Open",
     item.activity === "running"
       ? "Running"
       : item.activity === "idle"
         ? "Idle"
         : item.activity === "waiting"
           ? "Waiting"
-          : "Failed",
-    ...(item.attention === "needs-input" ? ["Needs input"] : []),
+          : item.activity === "failed"
+            ? "Failed"
+            : item.activity === "interrupted"
+              ? "Interrupted"
+              : "Activity unknown",
+    ...(item.attention === "needs-input"
+      ? ["Needs input"]
+      : item.attention === "unread"
+        ? ["Unread"]
+        : item.attention === "report-ready"
+          ? ["Report ready"]
+          : []),
   ].join(" · ");
 }
 
