@@ -9,6 +9,72 @@ import { TangentViewSchema } from "../src/shared/tangents.ts";
 import { testModels } from "./models.ts";
 
 describe("production tangent integration", () => {
+  it("rejects HTTP reuse of a failed model reservation with a changed boundary", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "production-tangent-reservation-"));
+    const provider = testModels();
+    const host = await openChat(dir, provider.models, dir);
+    try {
+      const app = createApp(host);
+      const handoff = {
+        goal: "Synthetic goal",
+        decisions: [],
+        constraints: [],
+        exclusions: [],
+        references: [],
+        suggestedSkills: [],
+        discretion: "",
+        deliverable: "",
+        evidence: "",
+        limits: "",
+      };
+      const args = { requestId: "reservation-http", title: "Child", start: false, handoff };
+      await host.conversation.submit(
+        { type: "input", content: "Create a tangent" },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([
+        {
+          id: "code",
+          name: "codemode",
+          arguments: { code: `text(await tools.create_tangent(${JSON.stringify(args)}));` },
+        },
+      ]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      provider.calls[1]!.finish("Not created");
+      await host.conversation.waitForIdle(BACKGROUND_CONTEXT);
+      const entries = await host.conversation.entries(
+        { order: "ascending" },
+        50,
+        undefined,
+        BACKGROUND_CONTEXT,
+      );
+      const response = await app.request(
+        `http://localhost/api/chats/${host.conversation.id}/tangents`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", host: "localhost:3000" },
+          body: JSON.stringify({
+            ...args,
+            parentId: host.conversation.id,
+            sourceId: host.conversation.id,
+            sourceEntryId: entries.items.at(-1)!.id,
+          }),
+        },
+      );
+      expect(response.status).toBe(409);
+      expect(await response.text()).not.toContain("PRIVATE_PROVIDER_DIAGNOSTIC");
+      const list = await app.request(
+        `http://localhost/api/chats/${host.conversation.id}/tangents`,
+        { headers: { host: "localhost:3000" } },
+      );
+      expect(((await list.json()) as { tangents: unknown[] }).tangents).toHaveLength(0);
+      expect(provider.calls).toHaveLength(2);
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("uses configured policy for the registered model tool and isolates the child", async () => {
     const dir = await mkdtemp(join(tmpdir(), "production-tangent-"));
     const provider = testModels();
@@ -32,34 +98,29 @@ describe("production tangent integration", () => {
         BACKGROUND_CONTEXT,
       );
       await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
-      const entries = await host.conversation.entries(
-        { order: "ascending" },
-        20,
-        undefined,
-        BACKGROUND_CONTEXT,
-      );
-      const sourceEntryId = entries.items.at(-1)!.id;
       provider.calls[0]!.tools([
         {
           id: "tangent-tool",
-          name: "create_tangent",
+          name: "codemode",
           arguments: {
-            requestId: "production-tool",
-            sourceEntryId,
-            title: "Independent",
-            start: true,
-            handoff: {
-              goal: "Investigate",
-              decisions: [],
-              constraints: [],
-              exclusions: [],
-              references: [],
-              suggestedSkills: [],
-              discretion: "",
-              deliverable: "",
-              evidence: "",
-              limits: "",
-            },
+            code: `text(await tools.create_tangent(${JSON.stringify({
+              requestId: "production-tool",
+              sourceEntryId: null,
+              title: "Independent",
+              start: true,
+              handoff: {
+                goal: "Investigate",
+                decisions: [],
+                constraints: [],
+                exclusions: [],
+                references: [],
+                suggestedSkills: [],
+                discretion: "",
+                deliverable: "",
+                evidence: "",
+                limits: "",
+              },
+            })}));`,
           },
         },
       ]);

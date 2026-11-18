@@ -232,6 +232,130 @@ describe("interactive tangents", () => {
       await f.harness.close(context);
     }
   });
+  it("binds the model's omitted boundary once across later tool calls", async () => {
+    const f = await fixture();
+    try {
+      const { parentId: _parent, sourceId: _source, sourceEntryId: _entry, ...args } = f.request;
+      await f.main.submit({ type: "input", content: "Create a tangent" }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      f.provider.calls[1]!.tools([{ id: "first", name: "create_tangent", arguments: args }]);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(3));
+      const first = (await listTangents(f.harness, f.main.id, f.hooks))[0]!.tangent;
+      expect(first.sourceEntryId).not.toBeNull();
+      f.provider.calls[2]!.finish("created");
+      await f.main.waitForIdle(context);
+      await f.main.submit({ type: "input", content: "Retry the same request" }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(4));
+      f.provider.calls[3]!.tools([{ id: "retry", name: "create_tangent", arguments: args }]);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(5));
+      const list = await listTangents(f.harness, f.main.id, f.hooks);
+      expect(list).toHaveLength(1);
+      expect(list[0]!.tangent.sourceEntryId).toBe(first.sourceEntryId);
+      expect(JSON.stringify(f.provider.calls[4]!.context.messages)).toContain(String(first.id));
+      f.provider.calls[4]!.finish("retried");
+      await f.main.waitForIdle(context);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
+  for (const firstNull of [false, true])
+    it(`preserves a failed ${firstNull ? "null" : "omitted"} model binding across reopen and rejects changed identity before concurrent retry`, async () => {
+      const f = await fixture();
+      let harness = f.harness;
+      const resolveModel = f.hooks.resolveModel.bind(f.hooks);
+      let boundary: number | undefined;
+      try {
+        f.hooks.resolveModel = async () => {
+          boundary =
+            (await harness.commit((tx) => tx.latestEntryId(f.main.id), context)) ?? undefined;
+          throw new Error("synthetic policy unavailable");
+        };
+        const { parentId: _parent, sourceId: _source, sourceEntryId: _entry, ...args } = f.request;
+        await f.main.submit({ type: "input", content: "Create a tangent" }, context);
+        await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+        f.provider.calls[1]!.tools([
+          {
+            id: "failed",
+            name: "create_tangent",
+            arguments: firstNull ? { ...args, sourceEntryId: null } : args,
+          },
+        ]);
+        await vi.waitFor(() => expect(f.provider.calls).toHaveLength(3));
+        expect(boundary).toBeDefined();
+        expect(await listTangents(harness, f.main.id, f.hooks)).toHaveLength(0);
+        f.provider.calls[2]!.finish("not created");
+        await f.main.waitForIdle(context);
+        await harness.close(context);
+        f.hooks.resolveModel = resolveModel;
+        harness = await f.open();
+        const main = (await harness.conversation(f.main.id, context))!;
+        await main.submit({ type: "input", content: "Retry after reopening" }, context);
+        await vi.waitFor(() => expect(f.provider.calls).toHaveLength(4));
+        const latest = await harness.commit((tx) => tx.latestEntryId(main.id), context);
+        expect(latest).not.toBe(boundary);
+        if (latest === undefined || boundary === undefined)
+          throw new Error("Missing synthetic boundary");
+        await expect(
+          prepareTangent(harness, { ...f.request, sourceEntryId: latest }, f.hooks),
+        ).rejects.toThrow("conflicts");
+        await expect(
+          prepareTangent(harness, { ...f.request, sourceEntryId: null }, f.hooks),
+        ).rejects.toThrow("conflicts");
+        await expect(
+          prepareTangent(harness, { ...f.request, sourceEntryId: boundary, start: true }, f.hooks),
+        ).rejects.toThrow("conflicts");
+        const other = await harness.createConversation(
+          { ownership: { kind: "ownerless" } },
+          context,
+        );
+        await harness.commit(async (tx) => {
+          (await tx.doc(Catalog)).items.push({ id: other.id, status: "active" });
+        }, context);
+        await expect(
+          prepareTangent(
+            harness,
+            { ...f.request, parentId: other.id, sourceId: other.id, sourceEntryId: null },
+            f.hooks,
+          ),
+        ).rejects.toThrow("conflicts");
+        f.provider.calls[3]!.tools([
+          {
+            id: "explicit-changed",
+            name: "create_tangent",
+            arguments: { ...args, sourceEntryId: latest },
+          },
+          {
+            id: "handoff-changed",
+            name: "create_tangent",
+            arguments: { ...args, handoff: { ...args.handoff, goal: "Different" } },
+          },
+        ]);
+        await vi.waitFor(() => expect(f.provider.calls).toHaveLength(5));
+        expect(await listTangents(harness, main.id, f.hooks)).toHaveLength(0);
+        const results = f.provider.calls[4]!.context.messages.filter(
+          (m) => m.role === "toolResult",
+        ).slice(-2);
+        expect(results).toHaveLength(2);
+        expect(results.every((result) => result.isError)).toBe(true);
+        f.provider.calls[4]!.tools([
+          { id: "retry-a", name: "create_tangent", arguments: args },
+          { id: "retry-b", name: "create_tangent", arguments: { ...args, sourceEntryId: null } },
+        ]);
+        await vi.waitFor(() => expect(f.provider.calls).toHaveLength(6));
+        const list = await listTangents(harness, main.id, f.hooks);
+        expect(list).toHaveLength(1);
+        expect(list[0]!.tangent.sourceEntryId).toBe(boundary);
+        expect(
+          f.provider.calls[5]!.context.messages.filter((m) => m.role === "toolResult")
+            .slice(-2)
+            .every((result) => !result.isError),
+        ).toBe(true);
+        f.provider.calls[5]!.finish("created once");
+        await main.waitForIdle(context);
+      } finally {
+        await harness.close(context);
+      }
+    });
   it("creates ownerless fresh context once, without provider requests or hidden hierarchy", async () => {
     const f = await fixture();
     try {

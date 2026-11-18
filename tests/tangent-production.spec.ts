@@ -39,6 +39,158 @@ const tangent = (id: number, title: string, activity: "running" | "idle") => ({
   },
 });
 
+test("many admitted receipts leave both split composers inside the viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 1064, height: 975 });
+  const title = `Long child title ${"investigation ".repeat(4)}end`;
+  let writes = 0;
+  await page.addInitScript(() => {
+    class Source extends EventTarget {
+      onerror = null;
+      constructor(url: string) {
+        super();
+        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: id,
+                messages: Array.from({ length: 15 }, (_, i) => ({
+                  id: `${id}:${i}`,
+                  role: "user",
+                  text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
+                  interrupted: false,
+                })),
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Source });
+  });
+  await page.route("**/api/**", async (route) => {
+    if (route.request().method() !== "GET") writes++;
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+      });
+    if (path === "/api/chats/1/tangents")
+      return route.fulfill({
+        json: {
+          tangents: [
+            {
+              ...tangent(2, title, "idle"),
+              latestHandoff: {
+                ...tangent(2, "Child", "idle").latestHandoff,
+                handoff: { ...handoff, goal: "Long synthetic handoff ".repeat(50) },
+              },
+            },
+          ],
+        },
+      });
+    if (path.endsWith("/workers"))
+      return route.fulfill({
+        json: {
+          hasUnsettled: true,
+          helpers: [
+            {
+              requestId: "worker-request",
+              taskId: "worker-task",
+              childId: null,
+              mode: "background",
+              model: { provider: "test", modelId: "synthetic" },
+              modelName: "Synthetic worker",
+              stop: "none",
+              status: "running",
+              answerEntryId: null,
+              delivery: "notify-only",
+            },
+          ],
+        },
+      });
+    return route.abort();
+  });
+  await syntheticDrafts(page);
+  await page.route("**/api/chats/1/draft/attempts", (route) =>
+    route.fulfill({
+      json: {
+        attempts: Array.from({ length: 13 }, (_, i) => ({
+          record: {
+            requestId: `${String(i + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+            draftRevision: i + 1,
+            text: `synthetic receipt ${i}`,
+            images: [],
+            mode: "reject",
+            fingerprint: "a".repeat(64),
+          },
+          ...(i === 12
+            ? { admission: "unknown" }
+            : { admission: "admitted", submissionId: String(i + 1) }),
+        })),
+        capped: false,
+        nextCursor: null,
+      },
+    }),
+  );
+  await page.goto("/chats/1");
+  await page.getByRole("button", { name: `Open tangent: ${title}` }).click();
+  for (const name of ["Main chat: Main", `Tangent chat: ${title}`]) {
+    const input = page
+      .getByRole("region", { name })
+      .getByRole("textbox", { name: "Message input" });
+    await expect(input).toBeVisible();
+    const bounds = await input.boundingBox();
+    expect(bounds).not.toBeNull();
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(975);
+    await input.focus();
+    await expect(input).toBeFocused();
+  }
+  const recovery = page
+    .getByRole("region", { name: "Main chat: Main" })
+    .getByRole("region", { name: "Draft recovery" });
+  await recovery.focus();
+  await page.keyboard.press("End");
+  await expect(recovery.getByText("synthetic receipt 12")).toBeInViewport();
+  await expect(recovery.getByRole("button", { name: "Retry original" })).toHaveCount(1);
+  expect(writes).toBe(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+  // CSS viewport emulation, not browser zoom: 532×487 approximates 200% of 1064×975.
+  for (const viewport of [
+    { width: 532, height: 487 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    for (const tab of ["Main", title]) {
+      await page.getByRole("tab", { name: tab, exact: true }).focus();
+      await page.keyboard.press("Enter");
+      const input = page
+        .getByRole("tabpanel", { name: tab })
+        .getByRole("textbox", { name: "Message input" });
+      await expect(input).toBeVisible();
+      const bounds = await input.boundingBox();
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+      await input.focus();
+      await expect(input).toBeFocused();
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+  }
+  expect(writes).toBe(0);
+});
+
 test("private feedback stays scoped to each pane and stale ownership blocks held saves", async ({
   page,
 }) => {
@@ -176,6 +328,114 @@ async function addFile(page: Page, scope: ReturnType<Page["locator"]>, name: str
   await scope.getByRole("button", { name: "Add Attachment" }).click();
   await (await chooser).setFiles({ name, mimeType: "image/png", buffer: png });
   await expect(scope.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
+}
+
+for (const prefix of ["!", "!!"]) {
+  test(`stale parent relationship blocks ${prefix} shell admission with child still connected`, async ({
+    page,
+  }) => {
+    let stale = false;
+    let runningShell = false;
+    const writes: string[] = [];
+    await page.addInitScript(() => {
+      class Source extends EventTarget {
+        onerror = null;
+        constructor(url: string) {
+          super();
+          const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+          queueMicrotask(() =>
+            this.dispatchEvent(
+              new MessageEvent("state", {
+                data: JSON.stringify({
+                  conversationId: id,
+                  messages: [],
+                  partial: "",
+                  busy: false,
+                  hasEarlier: false,
+                  failure: null,
+                  controls: { canContinue: false, resetPending: false, queue: [] },
+                }),
+              }),
+            ),
+          );
+        }
+        close() {}
+      }
+      Object.defineProperty(window, "EventSource", { value: Source });
+    });
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() !== "GET" && !path.endsWith("/attachments"))
+        writes.push(`${request.method()} ${path}`);
+      if (path === "/api/chats")
+        return route.fulfill({
+          json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+        });
+      if (path === "/api/chats/1/tangents")
+        return stale
+          ? route.fulfill({ status: 503 })
+          : route.fulfill({ json: { tangents: [tangent(2, "Child", "idle")] } });
+      if (path === "/api/chats/2/shell" && request.method() === "GET")
+        return route.fulfill({
+          json: runningShell
+            ? {
+                requestId: "11111111-1111-4111-8111-111111111111",
+                command: "synthetic",
+                includeInContext: true,
+                conversationId: "2",
+                taskId: "7",
+                status: "running",
+                output: "synthetic",
+                truncated: false,
+              }
+            : null,
+        });
+      if (path.endsWith("/attachments") && request.method() === "POST")
+        return route.fulfill({
+          status: 201,
+          json: {
+            id: ids[0],
+            mimeType: "image/png",
+            size: png.length,
+            prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+          },
+        });
+      if (path.includes("/attachments/"))
+        return route.fulfill({ contentType: "image/png", body: png });
+      return route.abort();
+    });
+    await syntheticDrafts(page);
+    await page.goto("/chats/1");
+    await page.getByRole("button", { name: "Open tangent: Child" }).click();
+    const side = page.getByRole("region", { name: "Tangent chat: Child" });
+    const input = side.getByRole("textbox", { name: "Message input" });
+    await input.fill(`${prefix} synthetic-command`);
+    stale = true;
+    await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
+      timeout: 15000,
+    });
+    await input.dispatchEvent("keydown", { key: "Enter", code: "Enter" });
+    await side.getByRole("button", { name: "Send message", exact: true }).dispatchEvent("click");
+    expect(writes).toEqual([]);
+    await expect(input).toHaveValue(`${prefix} synthetic-command`);
+    stale = false;
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(side.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+    await expect(input).toHaveValue(`${prefix} synthetic-command`);
+    expect(writes).toEqual([]);
+    runningShell = true;
+    await expect(side.getByRole("button", { name: "Stop generating" })).toBeVisible({
+      timeout: 15000,
+    });
+    stale = true;
+    await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
+      timeout: 15000,
+    });
+    const stop = side.getByRole("button", { name: "Stop generating" });
+    await expect(stop).toHaveCount(0);
+    expect(writes).toEqual([]);
+  });
 }
 
 test("saved prompts use each native composer and respect stale parent scope", async ({ page }) => {
@@ -345,6 +605,8 @@ test("saved prompts use each native composer and respect stale parent scope", as
   await expect(draft(side)).toHaveValue("side before navigation");
   const beforeStale = mutations;
   await choose(side, "retained side");
+  await page.getByRole("textbox", { name: "Edit prompt text" }).fill("Held unsaved edit");
+  await page.getByRole("textbox", { name: "Prompt title", exact: true }).fill("Held title");
   parentUnavailable = true;
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
     timeout: 15000,
@@ -357,8 +619,22 @@ test("saved prompts use each native composer and respect stale parent scope", as
     "Save prompt",
   ])
     await page.getByRole("button", { name, exact: true }).dispatchEvent("click");
+  expect(mutations).toBe(beforeStale);
+  expect(inputs).toBe(0);
+  await expect(page.getByRole("textbox", { name: "Edit prompt text" })).toHaveValue(
+    "Held unsaved edit",
+  );
+  await expect(page.getByRole("textbox", { name: "Prompt title", exact: true })).toHaveValue(
+    "Held title",
+  );
+  parentUnavailable = false;
+  await expect(page.getByRole("button", { name: "Save edit" })).toBeEnabled({ timeout: 15000 });
+  await expect(page.getByRole("textbox", { name: "Edit prompt text" })).toHaveValue(
+    "Held unsaved edit",
+  );
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect(draft(side)).toHaveValue("retained side");
+  await expect(side.getByRole("button", { name: "Remove side.png" })).toBeVisible();
   expect(upload).toBe(2);
   expect(inputs).toBe(0);
   expect(mutations).toBe(beforeStale);
@@ -571,6 +847,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     idleSide.getByText("Choose an available / command from the list; command text was not sent."),
   ).toBeVisible();
   expect(requests.filter((r) => /^POST \/api\/chats\/\d+\/(input|stop)$/.test(r))).toEqual([]);
+  await idleSide.getByLabel("Answer").fill("held answer");
   await page.route("**/api/chats/1/tangents", (route) => route.fulfill({ status: 503 }));
   await expect(idleSide.getByText("Child question")).toBeVisible();
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible();
@@ -580,13 +857,19 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(idleSide.getByRole("button", { name: "Stop worker task-3" })).toBeDisabled();
   await expect(idleSide.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await expect(idleSide.getByRole("button", { name: "Decline" })).toBeDisabled();
+  await expect(idleSide.getByText("held answer")).toBeVisible();
   await expect(idleSide.getByRole("button", { name: "Conclude tangent" })).toBeDisabled();
   const childMutationsBefore = requests.filter((r) => r.startsWith("POST /api/chats/3/")).length;
+  await input(idleSide)
+    .press("Enter")
+    .catch(() => {});
+  await expect(input(idleSide)).toHaveValue("/tangent secret");
   await page.unroute("**/api/chats/1/tangents");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("button", { name: "Open tangent: Running child" })).toBeEnabled();
   await expect(idleSide.getByRole("button", { name: "Stop worker task-3" })).toBeEnabled();
   await expect(idleSide.getByLabel("Answer")).toBeEnabled();
+  await expect(idleSide.getByLabel("Answer")).toHaveValue("held answer");
   await expect(input(idleSide)).toHaveValue("/tangent secret");
   expect(requests.filter((r) => r.startsWith("POST /api/chats/3/"))).toHaveLength(
     childMutationsBefore,

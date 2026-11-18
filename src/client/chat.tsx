@@ -313,7 +313,12 @@ function PersistenceBridge({
     [chatId, enabled, hasPendingUploads, localRevision, onReady, readOnly, runtime, writer],
   );
   return (
-    <>
+    <div
+      className="max-h-[35%] shrink-0 overflow-y-auto"
+      role="region"
+      aria-label="Draft recovery"
+      tabIndex={recovery.attempts.length ? 0 : undefined}
+    >
       {restoration.conflict && (
         <div role="alert">
           Draft changed in another session.
@@ -379,7 +384,7 @@ function PersistenceBridge({
           Load older attempts
         </Button>
       )}
-    </>
+    </div>
   );
 }
 
@@ -862,66 +867,69 @@ export function Chat(props: ChatProps) {
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>
-        {props.chatId && (
-          <PersistenceBridge
-            key={props.chatId}
-            runtime={runtime}
-            chatId={props.chatId}
-            enabled
-            readOnly={!props.onSend}
-            writer={persistence}
-            localRevision={localRevision}
-            hasPendingUploads={hasPendingUploads}
-            onReady={setPersistenceReady}
-            {...(props.onUnsavedDraft ? { onUnsavedDraft: props.onUnsavedDraft } : {})}
-            onRetry={async (record) => {
-              if (!props.connected || props.pending || !props.onSend || !persistence.current)
-                return false;
-              const state = runtime.thread.composer.getState();
-              const original =
-                !hasPendingUploads() &&
-                state.text === record.text &&
-                JSON.stringify(state.attachments.map((item) => item.id)) ===
-                  JSON.stringify(record.images)
-                  ? { text: record.text, ids: [...record.images], revision: revision.current }
-                  : null;
-              const writer = persistence.current;
-              const draft = {
-                revision: record.draftRevision,
-                text: record.text,
-                images: [...record.images],
-                attempt: true as const,
-              };
-              let confirmedClear = false;
-              const recoveredText = draftInputText(record.text, record.intent);
-              if (recoveredText === undefined || props.mutationAllowed?.() === false) return false;
-              const admitted = await props.onSend(recoveredText, record.mode, record.images, {
-                requestId: record.requestId,
-                draft,
-                onClear: (nextRevision) => {
-                  if (nextRevision !== draft.revision + 1) return;
-                  confirmedClear = writer?.acknowledgeClear(draft, nextRevision) ?? false;
-                },
-              });
-              if (admitted && confirmedClear && original && !hasPendingUploads()) {
-                writer?.beginSend();
-                submitted.current = original;
-                clearSubmitted();
-                writer?.endSend();
-              }
-              // The native snapshot may have been retained without emitting a
-              // composer event (for example, a pending upload can fail). Save
-              // it against the adopted clear revision, after any native clear.
-              if (confirmedClear) writer.reconcile();
-              return admitted;
-            }}
-          />
-        )}
-        <div
-          className="h-full min-h-0"
-          inert={!props.onSend && !!props.chatId && !persistenceReady}
-        >
-          <OfficialThread />
+        <div className="flex h-full min-h-0 flex-col">
+          {props.chatId && (
+            <PersistenceBridge
+              key={props.chatId}
+              runtime={runtime}
+              chatId={props.chatId}
+              enabled
+              readOnly={!props.onSend}
+              writer={persistence}
+              localRevision={localRevision}
+              hasPendingUploads={hasPendingUploads}
+              onReady={setPersistenceReady}
+              {...(props.onUnsavedDraft ? { onUnsavedDraft: props.onUnsavedDraft } : {})}
+              onRetry={async (record) => {
+                if (!props.connected || props.pending || !props.onSend || !persistence.current)
+                  return false;
+                const state = runtime.thread.composer.getState();
+                const original =
+                  !hasPendingUploads() &&
+                  state.text === record.text &&
+                  JSON.stringify(state.attachments.map((item) => item.id)) ===
+                    JSON.stringify(record.images)
+                    ? { text: record.text, ids: [...record.images], revision: revision.current }
+                    : null;
+                const writer = persistence.current;
+                const draft = {
+                  revision: record.draftRevision,
+                  text: record.text,
+                  images: [...record.images],
+                  attempt: true as const,
+                };
+                let confirmedClear = false;
+                const recoveredText = draftInputText(record.text, record.intent);
+                if (recoveredText === undefined || props.mutationAllowed?.() === false)
+                  return false;
+                const admitted = await props.onSend(recoveredText, record.mode, record.images, {
+                  requestId: record.requestId,
+                  draft,
+                  onClear: (nextRevision) => {
+                    if (nextRevision !== draft.revision + 1) return;
+                    confirmedClear = writer?.acknowledgeClear(draft, nextRevision) ?? false;
+                  },
+                });
+                if (admitted && confirmedClear && original && !hasPendingUploads()) {
+                  writer?.beginSend();
+                  submitted.current = original;
+                  clearSubmitted();
+                  writer?.endSend();
+                }
+                // The native snapshot may have been retained without emitting a
+                // composer event (for example, a pending upload can fail). Save
+                // it against the adopted clear revision, after any native clear.
+                if (confirmedClear) writer.reconcile();
+                return admitted;
+              }}
+            />
+          )}
+          <div
+            className="min-h-0 flex-1"
+            inert={!props.onSend && !!props.chatId && !persistenceReady}
+          >
+            <OfficialThread />
+          </div>
         </div>
       </AssistantRuntimeProvider>
     </ChatHostContext.Provider>
