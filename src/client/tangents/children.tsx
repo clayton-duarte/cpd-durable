@@ -1,6 +1,5 @@
 import { AgentStatus, type AgentState } from "@/components/assistant-ui/elements/agent-status";
 import { TaskCard, type TaskCardState } from "@/components/assistant-ui/elements/task-card";
-import { Button } from "@/components/ui/button";
 
 // Presentation data only: the integration adapter maps durable records into these views.
 export type ChildActivity = "running" | "idle" | "waiting" | "failed" | "interrupted" | "unknown";
@@ -96,20 +95,13 @@ export function TangentChildren({
               key={item.id}
               label={item.title}
               state={visualState(item)}
-              stateLabel={item.activity}
-              result={description(item)}
-              actions={
-                <Button
-                  type="button"
-                  variant="outline"
-                  aria-label={`${selectedTangentId === item.id ? "Selected tangent" : "Open tangent"}: ${item.title}`}
-                  aria-pressed={selectedTangentId === item.id}
-                  disabled={selectionDisabled}
-                  onClick={() => onSelectTangent(item.id)}
-                >
-                  {selectedTangentId === item.id ? "Selected tangent" : "Open tangent"}
-                </Button>
-              }
+              stateLabel={description(item)}
+              meta={`${item.attention === "none" ? item.activity : item.attention} · ${item.model}`}
+              title={`${item.title} · ${description(item)}`}
+              className={selectedTangentId === item.id ? "ring-1 ring-ring" : undefined}
+              selected={selectedTangentId === item.id}
+              selectionDisabled={selectionDisabled}
+              onSelect={() => onSelectTangent(item.id)}
             />
           ))}
         </div>

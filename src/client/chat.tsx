@@ -35,6 +35,7 @@ import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
 import { EditDiffSchema, parseEditPatch } from "../shared/edit-diff.ts";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   CollapsibleRoot,
   CollapsibleContent,
@@ -312,6 +313,9 @@ function PersistenceBridge({
     },
     [chatId, enabled, hasPendingUploads, localRevision, onReady, readOnly, runtime, writer],
   );
+  const unconfirmedCount = recovery.attempts.filter(
+    (attempt) => attempt.admission !== "admitted" && !confirmed.includes(attempt.record.requestId),
+  ).length;
   return (
     <div
       className="max-h-[35%] shrink-0 overflow-y-auto"
@@ -338,47 +342,104 @@ function PersistenceBridge({
           Retry saving draft
         </Button>
       )}
-      {recovery.attempts.map((attempt) => {
-        const { record } = attempt;
-        const admitted = attempt.admission === "admitted" || confirmed.includes(record.requestId);
-        return (
-          <div role="status" key={record.requestId}>
-            <p>
-              {admitted ? "Admitted" : "Delivery unconfirmed"} — request {record.requestId}
-            </p>
-            <p>
-              Draft revision {record.draftRevision}; mode {record.mode}.
-            </p>
-            <p>
-              {record.text.slice(0, 160)}
-              {record.text.length > 160 ? "…" : ""}
-            </p>
-            {record.text.length > 160 && (
+      {unconfirmedCount > 0 && (
+        <p className="px-3 pt-2 text-sm font-medium">
+          {unconfirmedCount} {unconfirmedCount === 1 ? "send" : "sends"} not confirmed (loaded)
+        </p>
+      )}
+      {recovery.attempts
+        .filter(
+          (attempt) =>
+            attempt.admission !== "admitted" && !confirmed.includes(attempt.record.requestId),
+        )
+        .map((attempt) => {
+          const { record } = attempt;
+          const admitted = attempt.admission === "admitted" || confirmed.includes(record.requestId);
+          return (
+            <div role="status" key={record.requestId} className="px-3 py-2 text-sm">
+              <p>
+                Send not confirmed. It may already have been admitted; check the conversation before
+                retrying.
+              </p>
+              <p>
+                {record.text.slice(0, 160)}
+                {record.text.length > 160 ? "…" : ""}
+              </p>
               <CollapsibleRoot>
-                <CollapsibleTrigger>View full original text</CollapsibleTrigger>
+                <CollapsibleTrigger render={<Button variant="ghost" size="sm" />}>
+                  Review original
+                </CollapsibleTrigger>
                 <CollapsibleContent>
-                  <pre className="whitespace-pre-wrap break-words">{record.text}</pre>
+                  <Textarea readOnly aria-label="Full original text" value={record.text} />
+                  <p>
+                    Mode: {record.mode}. Draft revision: {record.draftRevision}.
+                  </p>
+                  <p>Request: {record.requestId}</p>
+                  <p>
+                    {record.images.length ? `Images: ${record.images.join(", ")}` : "No images"}
+                  </p>
                 </CollapsibleContent>
               </CollapsibleRoot>
-            )}
-            <p>{record.images.length ? `Images: ${record.images.join(", ")}` : "No images"}</p>
-            {attempt.admission === "admitted" && <p>Submission {attempt.submissionId}</p>}
-            {!admitted && !readOnly && (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  void onRetry(record).then((admitted) => {
-                    if (admitted) setConfirmed((previous) => [...previous, record.requestId]);
-                  });
-                }}
-              >
-                Retry original
-              </Button>
-            )}
-          </div>
-        );
-      })}
+              {!admitted && !readOnly && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    void onRetry(record).then((admitted) => {
+                      if (admitted) setConfirmed((previous) => [...previous, record.requestId]);
+                    });
+                  }}
+                >
+                  Retry original
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      {recovery.attempts.some(
+        (attempt) =>
+          attempt.admission === "admitted" || confirmed.includes(attempt.record.requestId),
+      ) && (
+        <CollapsibleRoot>
+          <CollapsibleTrigger render={<Button variant="ghost" size="sm" />}>
+            View admitted sends
+          </CollapsibleTrigger>
+          <CollapsibleContent className="px-3 text-sm">
+            <p>Admitted means accepted for processing, not that a response completed.</p>
+            {recovery.attempts
+              .filter(
+                (attempt) =>
+                  attempt.admission === "admitted" || confirmed.includes(attempt.record.requestId),
+              )
+              .map((attempt) => (
+                <CollapsibleRoot key={attempt.record.requestId}>
+                  <CollapsibleTrigger
+                    render={<Button variant="ghost" size="sm" className="max-w-full truncate" />}
+                  >
+                    {attempt.record.text.slice(0, 100) || "Image send"}
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <Textarea
+                      readOnly
+                      aria-label="Full original text"
+                      value={attempt.record.text}
+                    />
+                    <p>
+                      Mode: {attempt.record.mode}. Draft revision: {attempt.record.draftRevision}.
+                    </p>
+                    <p>Request: {attempt.record.requestId}</p>
+                    <p>
+                      {attempt.record.images.length
+                        ? `Images: ${attempt.record.images.join(", ")}`
+                        : "No images"}
+                    </p>
+                    {attempt.admission === "admitted" && <p>Submission: {attempt.submissionId}</p>}
+                  </CollapsibleContent>
+                </CollapsibleRoot>
+              ))}
+          </CollapsibleContent>
+        </CollapsibleRoot>
+      )}
       {recovery.capped && (
         <Button type="button" variant="outline" onClick={() => void recovery.loadMore()}>
           Load older attempts

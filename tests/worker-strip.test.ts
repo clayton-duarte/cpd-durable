@@ -21,10 +21,12 @@ it("renders supplied status and an inspect action without inventing progress", (
         },
       ],
       onInspect: () => {},
+      onStop: () => {},
+      stopDisabled: false,
     }),
   );
   expect(html).toContain('data-slot="agent-status"');
-  expect(html).toContain("unknown · Actual model");
+  expect(html).toContain("Actual model · unknown");
   expect(html).toContain("Inspect worker 42");
   expect(html).not.toContain("%");
 });

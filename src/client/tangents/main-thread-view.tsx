@@ -9,6 +9,12 @@ import { WorkerPanel } from "../workers/panel.tsx";
 import { ModelPolicyViewSchema } from "../../shared/model-policy.ts";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { ReturnReview } from "./return-review.tsx";
 import {
   CollapsibleRoot,
@@ -333,96 +339,104 @@ export function MainThreadView({
               .filter((item) => String(item.id) === tangent.id)
               .map((item) => (
                 <div key={`lifecycle-${item.id}`}>
-                  <span>Lifecycle: {item.lifecycle}</span>
-                  {(item.lifecycle === "open"
-                    ? (["concluded", "archived"] as const)
-                    : item.lifecycle === "concluded"
-                      ? (["open", "archived"] as const)
-                      : (["open"] as const)
-                  ).map((next) => (
-                    <Button
-                      key={next}
-                      variant="outline"
-                      disabled={
-                        readOnly ||
-                        (item.lifecycle === "open" && item.readOnly) ||
-                        error ||
-                        changing
-                      }
-                      onClick={() => {
-                        if (
-                          mutationPending.current ||
-                          stale.current ||
-                          parentReadOnly.current ||
-                          (item.lifecycle === "open" && !childMutationAllowed(tangent.id))
-                        )
-                          return;
-                        mutationPending.current = true;
-                        mutationVersion.current++;
-                        setChanging(true);
-                        setLifecycleError(null);
-                        void (async () => {
-                          try {
+                  <span className="text-muted-foreground text-xs">Tangent · {item.lifecycle}</span>
+                  <DropdownMenu modal={false}>
+                    <DropdownMenuTrigger render={<Button variant="ghost" size="sm" />}>
+                      Tangent actions
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      {(item.lifecycle === "open"
+                        ? (["concluded", "archived"] as const)
+                        : item.lifecycle === "concluded"
+                          ? (["open", "archived"] as const)
+                          : (["open"] as const)
+                      ).map((next) => (
+                        <DropdownMenuItem
+                          key={next}
+                          disabled={
+                            readOnly ||
+                            (item.lifecycle === "open" && item.readOnly) ||
+                            error ||
+                            changing
+                          }
+                          onClick={() => {
                             if (
-                              next !== "open" &&
-                              !((await draftGuards.current.get(tangent.id)?.()) ?? true)
-                            ) {
-                              onUnsavedDraft(tangent.id);
-                              return;
-                            }
-                            if (
+                              mutationPending.current ||
                               stale.current ||
                               parentReadOnly.current ||
                               (item.lifecycle === "open" && !childMutationAllowed(tangent.id))
                             )
                               return;
-                            const response = await fetch(
-                              `/api/chats/${mainId}/tangents/${item.id}/lifecycle`,
-                              {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ expected: item.lifecycle, next }),
-                              },
-                            );
-                            if (!response.ok)
-                              throw new Error(
-                                response.status === 409
-                                  ? "Tangent lifecycle changed or work is still active. Refresh and try again explicitly."
-                                  : "Lifecycle change could not be confirmed.",
-                              );
-                            const result = StartResponseSchema.parse(await response.json()).tangent;
-                            if (
-                              result.id !== item.id ||
-                              String(result.parentId) !== mainId ||
-                              result.lifecycle !== next
-                            )
-                              throw new Error("Lifecycle response could not be confirmed.");
-                            childWritable.current.set(String(result.id), !result.readOnly);
-                            setItems((current) =>
-                              current.map((entry) => (entry.id === result.id ? result : entry)),
-                            );
-                          } catch (err) {
-                            setLifecycleError(
-                              err instanceof Error
-                                ? err.message
-                                : "Lifecycle change could not be confirmed.",
-                            );
-                          } finally {
+                            mutationPending.current = true;
                             mutationVersion.current++;
-                            mutationPending.current = false;
-                            setChanging(false);
-                            setRetry((value) => value + 1);
-                          }
-                        })();
-                      }}
-                    >
-                      {next === "concluded"
-                        ? "Conclude tangent"
-                        : next === "archived"
-                          ? "Archive tangent"
-                          : "Reopen tangent"}
-                    </Button>
-                  ))}
+                            setChanging(true);
+                            setLifecycleError(null);
+                            void (async () => {
+                              try {
+                                if (
+                                  next !== "open" &&
+                                  !((await draftGuards.current.get(tangent.id)?.()) ?? true)
+                                ) {
+                                  onUnsavedDraft(tangent.id);
+                                  return;
+                                }
+                                if (
+                                  stale.current ||
+                                  parentReadOnly.current ||
+                                  (item.lifecycle === "open" && !childMutationAllowed(tangent.id))
+                                )
+                                  return;
+                                const response = await fetch(
+                                  `/api/chats/${mainId}/tangents/${item.id}/lifecycle`,
+                                  {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ expected: item.lifecycle, next }),
+                                  },
+                                );
+                                if (!response.ok)
+                                  throw new Error(
+                                    response.status === 409
+                                      ? "Tangent lifecycle changed or work is still active. Refresh and try again explicitly."
+                                      : "Lifecycle change could not be confirmed.",
+                                  );
+                                const result = StartResponseSchema.parse(
+                                  await response.json(),
+                                ).tangent;
+                                if (
+                                  result.id !== item.id ||
+                                  String(result.parentId) !== mainId ||
+                                  result.lifecycle !== next
+                                )
+                                  throw new Error("Lifecycle response could not be confirmed.");
+                                childWritable.current.set(String(result.id), !result.readOnly);
+                                setItems((current) =>
+                                  current.map((entry) => (entry.id === result.id ? result : entry)),
+                                );
+                              } catch (err) {
+                                setLifecycleError(
+                                  err instanceof Error
+                                    ? err.message
+                                    : "Lifecycle change could not be confirmed.",
+                                );
+                              } finally {
+                                mutationVersion.current++;
+                                mutationPending.current = false;
+                                setChanging(false);
+                                setRetry((value) => value + 1);
+                              }
+                            })();
+                          }}
+                        >
+                          {next === "concluded"
+                            ? "Conclude tangent"
+                            : next === "archived"
+                              ? "Archive tangent"
+                              : "Reopen tangent"}
+                        </DropdownMenuItem>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               ))}
             <WorkerPanel

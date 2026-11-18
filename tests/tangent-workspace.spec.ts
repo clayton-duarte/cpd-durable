@@ -9,15 +9,18 @@ test("immediate open tangents remain selectable, including running", async ({ pa
     await expect(main.getByRole("button", { name: `Open tangent: ${name} task` })).toBeEnabled();
   }
   const running = cards.filter({ hasText: "Running task" });
-  await expect(running).toContainText("Model Alpha · Open · Running · Needs input");
+  await expect(running.getByRole("button")).toHaveAttribute(
+    "aria-description",
+    "Model Alpha · Open · Running · Needs input",
+  );
   await expect(main).not.toContainText("Other task");
   await expect(main).not.toContainText("Concluded task");
   await expect(main.locator('[data-slot="task-card-transcript"]')).toHaveCount(0);
   await expect(main.locator("button button")).toHaveCount(0);
-  await expect(running.locator(":scope > button")).toBeDisabled();
+  await expect(running.locator(":scope > button")).toBeEnabled();
   await expect(
-    cards.filter({ hasText: "Idle task" }).getByRole("button", { name: "idle Idle task" }),
-  ).toBeDisabled();
+    cards.filter({ hasText: "Idle task" }).getByRole("button", { name: "Open tangent: Idle task" }),
+  ).toBeEnabled();
   await main.getByRole("button", { name: "Open tangent: Running task" }).click();
   await expect(page.getByTestId("selected")).toHaveText("running");
   await expect(

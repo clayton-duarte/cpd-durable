@@ -258,8 +258,10 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
           >
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
-            <ThreadNavigation />
-            <ChatDetails />
+            <div className="flex flex-wrap items-center gap-1">
+              <ThreadNavigation />
+              <ChatDetails />
+            </div>
             <AgentQuestions />
             <Composer autoFocus={autoFocus} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>

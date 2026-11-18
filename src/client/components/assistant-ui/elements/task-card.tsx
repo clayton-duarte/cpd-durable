@@ -1,7 +1,7 @@
 "use client";
 
 // assistant-ui task-card.tsx at 03c06506107f55a7bc11bed616a2fed06af8a8ba;
-// locally formatted, with stateLabel added for truthful accessible status text.
+// locally formatted, with stateLabel and a mutually exclusive selection action added.
 import { Children, type ComponentProps, type ReactNode, useState } from "react";
 import { Ban, CheckIcon, ChevronRightIcon, Loader2Icon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -53,6 +53,9 @@ export function TaskCard({
   result,
   open,
   onOpenChange,
+  onSelect,
+  selected,
+  selectionDisabled,
   children,
   className,
   ...props
@@ -69,6 +72,9 @@ export function TaskCard({
   result?: ReactNode | undefined;
   open?: boolean | undefined;
   onOpenChange?: ((open: boolean) => void) | undefined;
+  onSelect?: (() => void) | undefined;
+  selected?: boolean | undefined;
+  selectionDisabled?: boolean | undefined;
   children?: ReactNode | undefined;
 }) {
   const hasTranscript = Children.toArray(children).length > 0;
@@ -90,9 +96,14 @@ export function TaskCard({
     >
       <button
         type="button"
-        aria-expanded={hasTranscript ? isOpen : undefined}
-        disabled={!hasTranscript || inert}
-        onClick={toggle}
+        aria-expanded={!onSelect && hasTranscript ? isOpen : undefined}
+        aria-pressed={onSelect ? selected : undefined}
+        aria-label={
+          onSelect ? `${selected ? "Selected tangent" : "Open tangent"}: ${label}` : undefined
+        }
+        aria-description={onSelect ? stateLabel : undefined}
+        disabled={onSelect ? selectionDisabled : !hasTranscript || inert}
+        onClick={onSelect ?? toggle}
         className="hover:enabled:bg-foreground/[0.03] flex items-center gap-2.5 px-3.5 py-2.5 text-start transition-colors disabled:cursor-default"
       >
         <TaskStateIcon state={state} />

@@ -140,6 +140,9 @@ test("many admitted receipts leave both split composers inside the viewport", as
   );
   await page.goto("/chats/1");
   await page.getByRole("button", { name: `Open tangent: ${title}` }).click();
+  if (process.env["CPD_SYNTHETIC_SCREENSHOT"]) {
+    await page.screenshot({ path: process.env["CPD_SYNTHETIC_SCREENSHOT"] });
+  }
   for (const name of ["Main chat: Main", `Tangent chat: ${title}`]) {
     const input = page
       .getByRole("region", { name })
@@ -158,6 +161,16 @@ test("many admitted receipts leave both split composers inside the viewport", as
   await page.keyboard.press("End");
   await expect(recovery.getByText("synthetic receipt 12")).toBeInViewport();
   await expect(recovery.getByRole("button", { name: "Retry original" })).toHaveCount(1);
+  await expect(recovery.getByText("1 send not confirmed")).toBeVisible();
+  await expect(recovery.getByText("synthetic receipt 0", { exact: true })).toHaveCount(0);
+  await recovery.getByRole("button", { name: "Review original" }).click();
+  await expect(recovery.getByRole("textbox", { name: "Full original text" })).toHaveValue(
+    "synthetic receipt 12",
+  );
+  await recovery.getByRole("button", { name: "Review original" }).click();
+  await recovery.getByRole("button", { name: "View admitted sends" }).click();
+  await expect(recovery.getByRole("button", { name: "synthetic receipt 0" })).toBeVisible();
+  await recovery.getByRole("button", { name: "View admitted sends" }).click();
   expect(writes).toBe(0);
   expect(
     await page.evaluate(
@@ -818,8 +831,8 @@ test("production route keeps native chats and drafts through tangent navigation"
   await input(side).fill("child draft");
   await addFile(page, side, "child.png");
   await expect.poll(() => requests.includes("GET /api/chats/2/questions")).toBe(true);
-  await expect(main.getByText(/unknown · Worker model 1/)).toBeVisible();
-  await expect(side.getByText(/running · Worker model 2/)).toBeVisible();
+  await expect(main.getByText(/Worker model 1 · unknown/)).toBeVisible();
+  await expect(side.getByText(/Worker model 2 · running/)).toBeVisible();
   await side.getByRole("button", { name: "Inspect worker task-2" }).click();
   await expect(side.getByRole("textbox", { name: "Worker result for review" })).toHaveValue(
     "Review this result",
@@ -858,7 +871,10 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(idleSide.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await expect(idleSide.getByRole("button", { name: "Decline" })).toBeDisabled();
   await expect(idleSide.getByText("held answer")).toBeVisible();
-  await expect(idleSide.getByRole("button", { name: "Conclude tangent" })).toBeDisabled();
+  await idleSide.getByRole("button", { name: "Tangent actions" }).click();
+  await expect(page.getByRole("menuitem", { name: "Conclude tangent" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toBeHidden();
   const childMutationsBefore = requests.filter((r) => r.startsWith("POST /api/chats/3/")).length;
   await input(idleSide)
     .press("Enter")
@@ -945,20 +961,24 @@ test("production route keeps native chats and drafts through tangent navigation"
     unstarted = { ...unstarted, lifecycle: body.next, readOnly: body.next !== "open" };
     return route.fulfill({ json: { tangent: unstarted } });
   });
-  await unstartedPane.getByRole("button", { name: "Conclude tangent" }).click();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Conclude tangent" }).click();
   await expect(page.getByRole("alert")).toContainText("work is still active");
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
-  await unstartedPane.getByRole("button", { name: "Conclude tangent" }).click();
-  await expect(unstartedPane.getByText("Lifecycle: concluded")).toBeVisible();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Conclude tangent" }).click();
+  await expect(unstartedPane.getByText("Tangent · concluded")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open tangent: Idle child" })).toHaveCount(0);
   await unstartedPane.getByRole("button", { name: "Close tangent" }).click();
   expect(lifecycleRequests).toHaveLength(2);
   await page.getByRole("button", { name: "Completed and archived tangents" }).click();
   await page.getByRole("button", { name: /Idle child · Concluded/ }).click();
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
-  await unstartedPane.getByRole("button", { name: "Reopen tangent" }).click();
-  await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();
-  await unstartedPane.getByRole("button", { name: "Archive tangent" }).click();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Reopen tangent" }).click();
+  await expect(unstartedPane.getByText("Tangent · open")).toBeVisible();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Archive tangent" }).click();
   await expect(page.getByRole("alert")).toContainText("work is still active");
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
   let placed = false;
@@ -1050,7 +1070,7 @@ test("production route keeps native chats and drafts through tangent navigation"
   expect(deliveries[3]).toEqual({ revision: 2, expectedHead: "22", acknowledgeRetired: true });
   await expect(report.getByText("Admitted; not yet placed")).toBeVisible();
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
-  await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();
+  await expect(unstartedPane.getByText("Tangent · open")).toBeVisible();
   placed = true;
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeEnabled();
   await report.getByRole("button", { name: "Accept reviewed return" }).click();

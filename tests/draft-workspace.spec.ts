@@ -429,7 +429,7 @@ test("recovery retry clears only the unchanged original and adopts the confirmed
   await page.goto("/chats/1");
   const input = page.getByRole("textbox", { name: "Message input" });
   await expect(input).toHaveValue("original");
-  await expect(page.getByText(/Delivery unconfirmed/)).toBeVisible();
+  await expect(page.getByText(/Send not confirmed/)).toBeVisible();
   expect(inputCalls).toBe(0);
   await page.getByRole("button", { name: "Retry original" }).click();
   await expect(input).toHaveValue("");
@@ -493,7 +493,7 @@ test("retry without a clear receipt retains an equal-content newer revision and 
   const input = page.getByRole("textbox", { name: "Message input" });
   await expect(input).toHaveValue("same");
   await page.getByRole("button", { name: "Retry original" }).click();
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
   await expect(input).toHaveValue("same");
   await expect(page.getByText("saved.png").first()).toBeVisible();
   await input.fill("subsequent edit");
@@ -616,7 +616,7 @@ for (const { uploadFirst, fails } of [
       await expect.poll(() => inputStarted).toBe(true);
     }
     releaseInput();
-    await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+    await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
     await expect(input).toHaveValue("original");
     releaseUpload();
     if (fails) {
@@ -735,11 +735,17 @@ test("recovery identifies each unknown attempt and displays admitted receipts wi
   await page.goto("/chats/1");
   await expect(page.getByText("first payload")).toBeVisible();
   await expect(page.getByText(/second payload/).first()).toBeVisible();
-  await page.getByText("View full original text").click();
-  await expect(page.getByText(fullText, { exact: true })).toBeVisible();
+  await page
+    .getByRole("status")
+    .filter({ hasText: "second payload" })
+    .getByRole("button", { name: "Review original" })
+    .click();
+  await expect(page.getByRole("textbox", { name: "Full original text" })).toHaveValue(fullText);
   await expect(page.getByText(/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/)).toBeVisible();
+  await page.getByRole("button", { name: "View admitted sends" }).click();
   await expect(page.getByText("admitted payload")).toBeVisible();
-  await expect(page.getByText("Submission 7")).toBeVisible();
+  await page.getByRole("button", { name: "admitted payload" }).click();
+  await expect(page.getByText("Submission: 7")).toBeVisible();
   await expect(page.getByRole("button", { name: "Retry original" })).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Load older attempts" })).toBeVisible();
   expect(inputs).toBe(0);
@@ -885,12 +891,12 @@ test("production composer saves, records original intent, and recovers an uncert
   await expect(input).toHaveValue("newer");
   await expect(page.getByText("new.png").first()).toBeVisible();
   expect(uploads).toBe(1);
-  await expect(page.getByText(/Delivery unconfirmed/)).toBeVisible();
+  await expect(page.getByText(/Send not confirmed/)).toBeVisible();
   expect(inputs).toHaveLength(1);
   await page.getByRole("button", { name: "Retry original" }).click();
   await expect.poll(() => inputs.length).toBe(2);
   expect(inputs[1]).toEqual(inputs[0]);
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
   await expect(input).toHaveValue("newer");
 });
 
@@ -1057,13 +1063,13 @@ test("production tangent command recovery retries the original immutable intent"
   await expect(input).toHaveValue("newer");
   await expect(page.getByText("new.png").first()).toBeVisible();
   expect(uploads).toBe(1);
-  await expect(page.getByText(/Delivery unconfirmed/)).toBeVisible();
+  await expect(page.getByText(/Send not confirmed/)).toBeVisible();
   expect(inputs).toHaveLength(1);
   await expect(page.getByRole("button", { name: /Open tangent:/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Retry original" }).click();
   await expect.poll(() => inputs.length).toBe(2);
   expect(inputs[1]).toEqual(inputs[0]);
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
   await expect(input).toHaveValue("newer");
 });
 
@@ -1228,13 +1234,13 @@ test("production side mouse selection retries the original immutable intent", as
   await expect(input).toHaveValue("newer");
   await expect(page.getByText("new.png").first()).toBeVisible();
   expect(uploads).toBe(1);
-  await expect(page.getByText(/Delivery unconfirmed/)).toBeVisible();
+  await expect(page.getByText(/Send not confirmed/)).toBeVisible();
   expect(inputs).toHaveLength(1);
   await expect(page.getByRole("button", { name: /Open tangent:/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Retry original" }).click();
   await expect.poll(() => inputs.length).toBe(2);
   expect(inputs[1]).toEqual(inputs[0]);
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
   await expect(input).toHaveValue("newer");
 });
 
@@ -1402,13 +1408,13 @@ test("production side keyboard selection retries the original immutable intent",
   await expect(input).toHaveValue("newer");
   await expect(page.getByText("new.png").first()).toBeVisible();
   expect(uploads).toBe(1);
-  await expect(page.getByText(/Delivery unconfirmed/)).toBeVisible();
+  await expect(page.getByText(/Send not confirmed/)).toBeVisible();
   expect(inputs).toHaveLength(1);
   await expect(page.getByRole("button", { name: /Open tangent:/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Retry original" }).click();
   await expect.poll(() => inputs.length).toBe(2);
   expect(inputs[1]).toEqual(inputs[0]);
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
   await expect(input).toHaveValue("newer");
 });
 
@@ -1480,7 +1486,7 @@ test("an admitted receipt is not presented as unsent, and archived drafts are re
   await page.goto("/chats/1");
   await expect(page.getByRole("textbox", { name: "Message input" })).toHaveValue("saved later");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeDisabled();
-  await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
+  await expect(page.getByText(/Send not confirmed/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry original" })).toHaveCount(0);
   expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
 });

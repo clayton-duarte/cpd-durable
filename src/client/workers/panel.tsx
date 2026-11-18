@@ -100,7 +100,10 @@ export function WorkerPanel({
   }
   if (!view?.helpers.length && !error) return null;
   return (
-    <section aria-label={`Workers for chat ${chatId}`}>
+    <section
+      aria-label={`Workers for chat ${chatId}`}
+      className="flex flex-wrap items-center gap-1"
+    >
       {error && <p role="status">{error}</p>}
       {view && (
         <WorkerStrip
@@ -108,24 +111,12 @@ export function WorkerPanel({
           onInspect={(id) => {
             void inspect(id);
           }}
+          onStop={(id) => {
+            void stop(id);
+          }}
+          stopDisabled={readOnly || !!error?.startsWith("Worker status unavailable")}
         />
       )}
-      {view?.helpers
-        .filter((worker) => worker.status === "pending" || worker.status === "running")
-        .map((worker) => (
-          <Button
-            key={worker.taskId}
-            variant="outline"
-            disabled={
-              readOnly || !!error?.startsWith("Worker status unavailable") || worker.stop !== "none"
-            }
-            onClick={() => {
-              void stop(worker.taskId);
-            }}
-          >
-            Stop worker {worker.taskId}
-          </Button>
-        ))}
       {result !== null && (
         <div>
           <Textarea readOnly aria-label="Worker result for review" value={result} />
