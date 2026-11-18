@@ -7,11 +7,17 @@ import {
   defineTask,
   type Conversation,
   type ConversationId,
+  type EntryId,
   type Harness,
   type TaskId,
   type Tx,
 } from "@earendil-works/pi-durable";
-import { HelperLaunchSchema, HelpersViewSchema, type HelperLaunch } from "../shared/helpers.ts";
+import {
+  HelperLaunchSchema,
+  HelperResultSchema,
+  HelpersViewSchema,
+  type HelperLaunch,
+} from "../shared/helpers.ts";
 
 type Item = {
   request: HelperLaunch;
@@ -214,5 +220,45 @@ export async function inspectHelpers(harness: Harness, conversation: Conversatio
   return HelpersViewSchema.parse({
     helpers,
     hasUnsettled: helpers.some((item) => ["pending", "running", "unknown"].includes(item.status)),
+  });
+}
+
+/** Explicit, read-only collection; never submits a parent request or marks review accepted. */
+export async function collectHelperResult(
+  harness: Harness,
+  conversation: Conversation,
+  taskId: string,
+) {
+  const helper = (await inspectHelpers(harness, conversation)).helpers.find(
+    (candidate) => candidate.taskId === taskId,
+  );
+  if (helper?.status !== "success" || !helper.childId || !helper.answerEntryId) return null;
+  const child = await harness.conversation(
+    Number(helper.childId) as ConversationId,
+    BACKGROUND_CONTEXT,
+  );
+  if (!child) return null;
+  const id = Number(helper.answerEntryId) as EntryId;
+  const page = await child.entries(
+    { minEntryId: id, maxEntryId: id },
+    1,
+    undefined,
+    BACKGROUND_CONTEXT,
+  );
+  const entry = page.items.find((candidate) => candidate.id === id);
+  if (!entry) return null;
+  const text = (entry.model ?? [])
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) =>
+      message.content.filter((part) => part.type === "text").map((part) => part.text),
+    )
+    .join("\n");
+  return HelperResultSchema.parse({
+    taskId,
+    childId: helper.childId,
+    answerEntryId: helper.answerEntryId,
+    text: text.slice(0, 32_000),
+    truncated: text.length > 32_000,
+    review: "unreviewed",
   });
 }

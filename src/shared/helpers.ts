@@ -36,3 +36,12 @@ export const HelpersViewSchema = z.strictObject({
   hasUnsettled: z.boolean(),
 });
 export type HelpersView = z.infer<typeof HelpersViewSchema>;
+
+export const HelperResultSchema = z.strictObject({
+  taskId: z.string(),
+  childId: z.string(),
+  answerEntryId: z.string(),
+  text: z.string(),
+  truncated: z.boolean(),
+  review: z.literal("unreviewed"),
+});

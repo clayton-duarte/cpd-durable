@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 import {
   HelpersDoc,
   HelpersExtension,
+  collectHelperResult,
   helperHasUnsettled,
   inspectHelpers,
   launchHelper as launchHelperWithPolicy,
@@ -170,6 +171,76 @@ describe("foreground helpers", () => {
     await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
   });
 
+  it("keeps results attached to their assignment after reset and out-of-order completion", async () => {
+    await launchHelper(parent, { ...request, mode: "background", requestId: "first" });
+    await launchHelper(parent, {
+      ...request,
+      mode: "background",
+      requestId: "second",
+      assignment: "A second independent assignment",
+    });
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+    await parent.reset("New parent context", BACKGROUND_CONTEXT);
+    const second = provider.calls.find((call) =>
+      JSON.stringify(call.context).includes("A second independent assignment"),
+    );
+    const first = provider.calls.find((call) =>
+      JSON.stringify(call.context).includes(request.assignment),
+    );
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    second!.finish("second result");
+    await vi.waitFor(async () => {
+      const items = (await view()).helpers;
+      expect(items.find((item) => item.requestId === "second")?.status).toBe("success");
+      expect(items.find((item) => item.requestId === "first")?.status).toBe("running");
+    });
+    first!.finish("first result");
+    await vi.waitFor(async () =>
+      expect((await view()).helpers.every((item) => item.status === "success")).toBe(true),
+    );
+    const parentContext = JSON.stringify((await parent.context(BACKGROUND_CONTEXT)).messages);
+    expect(parentContext).toContain("New parent context");
+    expect(parentContext).not.toContain("first result");
+    expect(parentContext).not.toContain("second result");
+    expect(provider.calls).toHaveLength(2);
+    const firstId = (await view()).helpers.find((item) => item.requestId === "first")!.taskId;
+    expect(await collectHelperResult(harness, parent, firstId)).toMatchObject({
+      text: "first result",
+      review: "unreviewed",
+    });
+    expect((await parent.context(BACKGROUND_CONTEXT)).messages).toHaveLength(1);
+  });
+
+  it("isolates workers under independent parent conversations", async () => {
+    const other = await harness.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        agent: { model: { provider: PROVIDER_ID, modelId: MODEL_ID } },
+      },
+      BACKGROUND_CONTEXT,
+    );
+    const first = await launchHelper(parent, { ...request, mode: "background" });
+    const second = await launchHelper(other, {
+      ...request,
+      mode: "background",
+      assignment: "Other parent assignment",
+    });
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+    expect(await stopHelper(harness, parent, second)).toBe("not-found");
+    await stopHelper(harness, parent, first);
+    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("cancelled"));
+    expect((await inspectHelpers(harness, other)).helpers[0]?.status).toBe("running");
+    const call = provider.calls.find((item) =>
+      JSON.stringify(item.context).includes("Other parent assignment"),
+    );
+    expect(call).toBeDefined();
+    call!.finish("independent result");
+    await vi.waitFor(async () =>
+      expect((await inspectHelpers(harness, other)).helpers[0]?.status).toBe("success"),
+    );
+  });
+
   it("launches one owned child, deduplicates concurrent requests, and records a separate receipt", async () => {
     await parent.submit(
       {
@@ -260,23 +331,24 @@ describe("foreground helpers", () => {
     expect((await view()).helpers[0]?.answerEntryId).toBeNull();
   });
 
-  it("reopens an in-flight helper without creating another child or submission", async () => {
-    const taskId = await launchHelper(parent, request);
-    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
-    const id = (await helperChild()).id;
-    await harness.close(BACKGROUND_CONTEXT);
-    harness = await open();
-    parent = await harness.root(BACKGROUND_CONTEXT);
-    harness.resume();
-    await vi.waitFor(() => expect(provider.calls.length).toBeGreaterThanOrEqual(2));
-    expect(await launchHelper(parent, request)).toBe(taskId);
-    expect((await helperChild()).id).toBe(id);
-    provider.calls.at(-1)!.finish("After reopen");
-    await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("success"));
-    const child = await helperChild();
-    const entries = await child.entries({}, 100, undefined, BACKGROUND_CONTEXT);
-    expect(entries.items.filter((entry) => entry.kind === "pi.user")).toHaveLength(1);
-  });
+  for (const mode of ["foreground", "background"] as const)
+    it(`reopens an in-flight ${mode} helper without creating another child or submission`, async () => {
+      const taskId = await launchHelper(parent, { ...request, mode });
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      const id = (await helperChild()).id;
+      await harness.close(BACKGROUND_CONTEXT);
+      harness = await open();
+      parent = await harness.root(BACKGROUND_CONTEXT);
+      harness.resume();
+      await vi.waitFor(() => expect(provider.calls.length).toBeGreaterThanOrEqual(2));
+      expect(await launchHelper(parent, { ...request, mode })).toBe(taskId);
+      expect((await helperChild()).id).toBe(id);
+      provider.calls.at(-1)!.finish("After reopen");
+      await vi.waitFor(async () => expect((await view()).helpers[0]?.status).toBe("success"));
+      const child = await helperChild();
+      const entries = await child.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+      expect(entries.items.filter((entry) => entry.kind === "pi.user")).toHaveLength(1);
+    });
 
   it("uses the launch-time saved model and cwd even if the parent changes before scheduling", async () => {
     await harness.close(BACKGROUND_CONTEXT);
