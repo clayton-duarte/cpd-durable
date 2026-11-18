@@ -9,6 +9,7 @@ import {
 import { SavedImageReferenceSchema, ImageMimeSchema } from "../shared/attachments.ts";
 import { DirectShellResultSchema } from "../shared/direct-shell.ts";
 import { TableDetailsSchema } from "../shared/structured-table.ts";
+import { presentEditDiff } from "./edit-diff-presentation.ts";
 
 // Allowlist presentation fields; unknown payloads and provider diagnostics never cross the wire.
 const RecordIdSchema = z.number().int().positive().safe();
@@ -297,6 +298,7 @@ export function present(
             const details = z.looseObject({ details: TableDetailsSchema }).safeParse(raw);
             if (details.success) call.table = details.data.details;
           }
+          if (call.name === "edit" && state === "complete") call.editDiff = presentEditDiff(raw);
           pending.delete(result.toolCallId);
         } else {
           // Window may start after the originating call. Keep its result visible,

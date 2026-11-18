@@ -86,6 +86,11 @@ function committedMessage(
             .filter((part) => part.type === "tool-call" && part.table)
             .map((part) => [part.id, part.type === "tool-call" ? part.table : undefined]),
         ),
+        editDiffs: Object.fromEntries(
+          parts
+            .filter((part) => part.type === "tool-call" && part.editDiff)
+            .map((part) => [part.id, part.type === "tool-call" ? part.editDiff : undefined]),
+        ),
       },
     },
     ...(message.role === "assistant"

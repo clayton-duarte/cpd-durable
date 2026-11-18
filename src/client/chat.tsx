@@ -20,6 +20,7 @@ import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { Image } from "@/components/assistant-ui/elements/image";
 import { DataTable } from "@/components/assistant-ui/elements/data-table";
 import { TableDetailsSchema } from "../shared/structured-table.ts";
+import { CodeDiff } from "@/components/assistant-ui/elements/code-diff";
 import {
   ToolResultPartSchema,
   ToolStateSchema,
@@ -32,6 +33,7 @@ import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachmen
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
+import { EditDiffSchema, parseEditPatch } from "../shared/edit-diff.ts";
 import { Button } from "@/components/ui/button";
 import {
   CollapsibleRoot,
@@ -59,6 +61,12 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
       ? Reflect.get(tables, props.toolCallId)
       : undefined,
   );
+  const editDiffs = useAuiState((state) => state.message.metadata.custom["editDiffs"]);
+  const editDiff = EditDiffSchema.safeParse(
+    props.toolName === "edit" && editDiffs && typeof editDiffs === "object"
+      ? Reflect.get(editDiffs, props.toolCallId)
+      : undefined,
+  );
   const output = z
     .array(ToolResultPartSchema)
     .safeParse(
@@ -83,7 +91,13 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
               }
             : { type: "complete" as const };
   const showTable = table.success && parsed.success && parsed.data === "complete";
-  if (!output.success && !showTable) return <ToolFallback {...props} status={status} />;
+  const showEditDiff = editDiff.success && parsed.success && parsed.data === "complete";
+  if (!output.success && !showTable && !showEditDiff)
+    return <ToolFallback {...props} status={status} />;
+  const lines =
+    editDiff.success && editDiff.data.kind === "patch"
+      ? parseEditPatch(editDiff.data.patch)
+      : undefined;
   return (
     <ToolFallbackWithResult
       {...props}
@@ -129,6 +143,19 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
               />
             </>
           )}
+          {showEditDiff &&
+            (lines ? (
+              <CodeDiff
+                className="max-w-full border-0 bg-transparent"
+                filename="Applied edit (receipt)"
+                additions={lines.filter((line) => line.kind === "added").length}
+                deletions={lines.filter((line) => line.kind === "removed").length}
+                lines={lines}
+                cycle={0}
+              />
+            ) : (
+              <ToolFallback.Result result="Edit diff unavailable." />
+            ))}
         </>
       )}
     />

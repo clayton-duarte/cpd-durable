@@ -48,6 +48,19 @@ test("caller table stays in its disclosure and sorts only supplied rows", async 
                           },
                         },
                       },
+                      {
+                        id: "1:0:1",
+                        type: "tool-call",
+                        callId: "edit",
+                        name: "edit",
+                        arguments: {},
+                        state: "complete",
+                        output: "Edit completed.",
+                        editDiff: {
+                          kind: "patch",
+                          patch: "--- a\n+++ b\n@@ -1,1 +1,1 @@\n-before\n+after\n",
+                        },
+                      },
                     ],
                   },
                 ],
@@ -66,13 +79,26 @@ test("caller table stays in its disclosure and sorts only supplied rows", async 
   });
   await page.goto("/");
   await expect(page.locator('[data-slot="data-table"]')).not.toBeVisible();
-  await page.getByRole("button", { name: "1 tool call" }).click();
+  await page.locator('[data-slot="tool-group-trigger"]').click();
   const trigger = page.getByRole("button", { name: /Used tool.*display_table/ });
   await trigger.click();
   const result = page.locator('[data-slot="data-table"]');
   await expect(result).toBeVisible();
   await expect(result).toContainText("Zulu");
   await expect(result).toContainText("Alpha");
+  await expect(
+    page.getByText("Caller-provided table: 2 rows, 2 columns.", { exact: true }),
+  ).toHaveCount(1);
+  const editTrigger = page.getByRole("button", { name: /Used tool.*edit/ });
+  await editTrigger.click();
+  const diff = page.locator('[data-slot="code-diff"]');
+  await expect(diff).toBeVisible();
+  await expect(diff).toContainText("before");
+  await expect(diff).toContainText("after");
+  await expect(page.getByText("Edit completed.", { exact: true })).toHaveCount(1);
+  await editTrigger.click();
+  await expect(diff).not.toBeVisible();
+  await expect(result).toBeVisible();
   const sort = page.getByRole("button", { name: "Sort by Name" });
   if (await sort.isVisible()) {
     await sort.click();
