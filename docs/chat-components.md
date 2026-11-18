@@ -34,7 +34,9 @@ Markdown does not enable raw HTML or code execution. Markdown image elements are
 
 ### Transcript identity and projection (Batch 2)
 
-Batch 2 added optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. The native-tools increment now projects validated tool calls, arguments and textual output alongside ordered text. Unsupported parts retain coarse omission receipts; reasoning, media, arbitrary custom entry data and provider diagnostics are not dumped into the browser.
+Batch 2 added optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. The native-tools increment projects validated tool calls, arguments and textual output alongside ordered text. Provider-supplied `thinking` text is now a native `reasoning` part; signatures/encrypted metadata, media, arbitrary custom entry data and provider diagnostics are not forwarded.
+
+Reasoning uses the official [assistant-ui runtime composition](https://www.assistant-ui.com/elements/reasoning): Thread's GroupedParts, ReasoningRoot/Trigger/Content/Text and Markdown renderer, with the supplied default outline appearance. It opens during reasoning streaming and collapses afterward unless the reader chose otherwise. Only actual provider text is rendered; empty reasoning produces no disclosure. No synthetic step titles, elapsed-time estimates or hidden-reasoning reconstruction is added. Older omission-only reasoning receipts render nothing, not a paused AgentStatus bar. ThinkingIndicator, loaders and typing indicators are transient activity feedback, ReasoningEffort is configuration, and GuardrailNotice requires an actual guardrail event; none substitutes for the reasoning trace.
 
 SDK `aborted` is an interruption, `error` an error and `length` an incomplete output limit. Unknown/missing assistant stop reasons remain incomplete. A busy run is not necessarily a streaming assistant message: explicit `live: null` suppresses stale partial replay and false streaming on settled answers. Generic busy feedback says Working.
 
@@ -107,7 +109,7 @@ The transport serializes mutations and keeps retry identity only until refresh. 
 
 ## Remaining work
 
-Source-backed live/committed identity and ordered text/tool/omission projection retain the fallback limits above. History paging/gap recovery, reasoning/media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
+Source-backed live/committed identity and ordered text/reasoning/tool/omission projection retain the fallback limits above. History paging/gap recovery, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
 
 ## shadcn gap decisions
 

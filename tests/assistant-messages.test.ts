@@ -90,6 +90,18 @@ const settled = (initial: ChatState, text = "Final"): ChatState => ({
 });
 
 describe("source-proven live-to-committed identity", () => {
+  it("maps provider reasoning to the native reasoning part without adding it to answer text", () => {
+    const initial = settled(streamed());
+    initial.messages[1]!.parts = [
+      { id: "2:0:0", type: "reasoning", text: "Provider reasoning" },
+      { id: "2:0:1", type: "text", text: "Final answer" },
+    ];
+    expect(assistantMessages(initial).at(-1)?.content).toEqual([
+      { type: "reasoning", text: "Provider reasoning" },
+      { type: "text", text: "Final answer" },
+    ]);
+  });
+
   it("maps tool invocations to native assistant-ui parts without inventing browser actions", () => {
     const initial = settled(streamed());
     initial.messages[1]!.parts = [

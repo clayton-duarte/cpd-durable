@@ -18,6 +18,20 @@ const entry = (id: number, content: unknown, stopReason = "stop", kind = "pi.ass
 });
 
 describe("validated ordered SDK presentation", () => {
+  it("omits empty reasoning and never treats signatures as display text", () => {
+    const state = present(
+      view([
+        entry(1, [
+          { type: "thinking", thinking: "", thinkingSignature: "PRIVATE_SIGNATURE" },
+          { type: "text", text: "Answer" },
+        ]),
+      ]),
+    );
+    expect(state.messages[0]?.parts).toEqual([{ id: "1:0:1", type: "text", text: "Answer" }]);
+    expect(state.messages[0]?.text).toBe("Answer");
+    expect(JSON.stringify(state)).not.toContain("PRIVATE_SIGNATURE");
+  });
+
   it("pairs reused call IDs in transcript order and retains orphan results without leaking details", () => {
     const call = (id: number) =>
       entry(
@@ -90,7 +104,11 @@ describe("validated ordered SDK presentation", () => {
         view([
           entry(4, [
             { type: "text", text: "Before\n  indentation" },
-            { type: "thinking", thinking: "PRIVATE_REASONING" },
+            {
+              type: "thinking",
+              thinking: "Provider reasoning",
+              thinkingSignature: "PRIVATE_SIGNATURE",
+            },
             { type: "text", text: "After" },
             {
               type: "toolCall",
@@ -113,7 +131,7 @@ describe("validated ordered SDK presentation", () => {
       interrupted: false,
       parts: [
         { id: "4:0:0", type: "text", text: "Before\n  indentation" },
-        { id: "4:0:1", type: "omitted", kind: "reasoning" },
+        { id: "4:0:1", type: "reasoning", text: "Provider reasoning" },
         { id: "4:0:2", type: "text", text: "After" },
         {
           id: "4:0:3",
@@ -197,7 +215,11 @@ describe("validated ordered SDK presentation", () => {
               role: "assistant",
               content: [
                 { type: "text", text: "Partial" },
-                { type: "thinking", thinking: "PRIVATE_THINKING" },
+                {
+                  type: "thinking",
+                  thinking: "Provider reasoning",
+                  thinkingSignature: "PRIVATE_SIGNATURE",
+                },
               ],
               provider: "PRIVATE_PROVIDER",
             },
@@ -213,7 +235,7 @@ describe("validated ordered SDK presentation", () => {
       text: "Partial",
       parts: [
         { id: "generation:1:9:2:0", type: "text", text: "Partial" },
-        { id: "generation:1:9:2:1", type: "omitted", kind: "reasoning" },
+        { id: "generation:1:9:2:1", type: "reasoning", text: "Provider reasoning" },
       ],
     });
     expect(result.partial).toBe("Partial");

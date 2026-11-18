@@ -42,6 +42,7 @@ export const ToolStateSchema = z.enum([
 ]);
 export const ChatPartSchema = z.discriminatedUnion("type", [
   z.strictObject({ id: z.string(), type: z.literal("text"), text: z.string() }),
+  z.strictObject({ id: z.string(), type: z.literal("reasoning"), text: z.string() }),
   z.strictObject({
     id: z.string(),
     type: z.literal("tool-call"),

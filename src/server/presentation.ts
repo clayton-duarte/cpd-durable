@@ -16,6 +16,10 @@ const ToolCallSchema = z.looseObject({
   name: z.string(),
   arguments: z.record(z.string(), z.json()),
 });
+const ReasoningSchema = z.looseObject({
+  type: z.literal("thinking"),
+  thinking: z.string(),
+});
 const ToolResultSchema = z.looseObject({
   role: z.literal("toolResult"),
   toolCallId: z.string(),
@@ -67,14 +71,19 @@ const InboxSchema = z.looseObject({
 function partsOf(
   content: z.infer<typeof MessageSchema>["content"],
   prefix: string,
-  tools = false,
+  assistant = false,
 ): ChatPart[] {
   if (typeof content === "string")
     return content ? [{ id: `${prefix}:0`, type: "text", text: content }] : [];
   return content.flatMap((raw, index): ChatPart[] => {
     const part = PartSchema.safeParse(raw);
     const id = `${prefix}:${index}`;
-    const call = tools ? ToolCallSchema.safeParse(raw) : null;
+    const reasoning = assistant ? ReasoningSchema.safeParse(raw) : null;
+    if (reasoning?.success)
+      return reasoning.data.thinking
+        ? [{ id, type: "reasoning", text: reasoning.data.thinking }]
+        : [];
+    const call = assistant ? ToolCallSchema.safeParse(raw) : null;
     if (call?.success)
       return [
         {
@@ -88,8 +97,8 @@ function partsOf(
       ];
     if (part.success && part.data.type === "text" && part.data.text !== undefined)
       return part.data.text ? [{ id, type: "text", text: part.data.text }] : [];
-    // Preserve the position of omitted content without exposing its arguments,
-    // private reasoning, URLs, arbitrary type names or unvalidated custom data.
+    // Unsupported payloads stay omitted. Provider signatures/encrypted metadata
+    // are never inferred as reasoning text or forwarded as arbitrary UI data.
     const kind = !part.success
       ? "other"
       : part.data.type === "thinking"

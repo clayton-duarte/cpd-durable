@@ -57,13 +57,14 @@ const omittedLabels = {
 };
 const omittedUI = {
   name: "omitted",
-  render: ({ data }: { data: { kind: keyof typeof omittedLabels } }) => (
-    <AgentStatus
-      state="waiting"
-      label={omittedLabels[data.kind]}
-      title={omittedLabels[data.kind]}
-    />
-  ),
+  render: ({ data }: { data: { kind: keyof typeof omittedLabels } }) =>
+    data.kind === "reasoning" ? null : (
+      <AgentStatus
+        state="waiting"
+        label={omittedLabels[data.kind]}
+        title={omittedLabels[data.kind]}
+      />
+    ),
 };
 
 function OfficialThread() {

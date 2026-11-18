@@ -11,8 +11,8 @@ export interface AssistantProjection {
 
 function contentOf(parts: readonly ChatPart[]): Exclude<ThreadMessageLike["content"], string> {
   return parts.map((part) =>
-    part.type === "text"
-      ? { type: "text" as const, text: part.text }
+    part.type === "text" || part.type === "reasoning"
+      ? { type: part.type, text: part.text }
       : part.type === "tool-call"
         ? {
             type: "tool-call" as const,

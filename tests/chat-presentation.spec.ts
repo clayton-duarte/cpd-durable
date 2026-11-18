@@ -775,6 +775,102 @@ test("invalid identity frames preserve history and draft, then recover without s
   await expect(draft).toHaveValue("Retained draft");
 });
 
+test("native Reasoning follows live streaming and collapses when reasoning completes", async ({
+  page,
+}) => {
+  const streaming: ChatState = {
+    ...empty,
+    controls,
+    conversationId: 1,
+    window: { entryIds: [] },
+    busy: true,
+    live: {
+      id: "generation:1:9:1",
+      taskId: 9,
+      afterEntryId: null,
+      text: "",
+      parts: [{ id: "generation:1:9:1:0", type: "reasoning", text: "Provider reasoning stream" }],
+    },
+  };
+  await connect(page, streaming);
+  await page.goto("/");
+  const root = page.locator('[data-slot="reasoning-root"]');
+  const trigger = root.getByRole("button", { name: "Reasoning", exact: true });
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(root).toContainText("Provider reasoning stream");
+  await expect(root.locator('[data-slot="reasoning-content"]')).toHaveAttribute(
+    "aria-busy",
+    "true",
+  );
+  await update(page, {
+    ...empty,
+    controls,
+    conversationId: 1,
+    window: { entryIds: [1] },
+    live: null,
+    messages: [
+      {
+        id: "1:0",
+        role: "assistant",
+        text: "Answer",
+        interrupted: false,
+        outcome: "complete",
+        source: { entryId: 1, taskId: 9 },
+        parts: [
+          { id: "1:0:0", type: "reasoning", text: "Provider reasoning stream" },
+          { id: "1:0:1", type: "text", text: "Answer" },
+        ],
+      },
+    ],
+  });
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("Answer", { exact: true })).toBeVisible();
+  await trigger.click();
+  await expect(root.getByText("Provider reasoning stream", { exact: true })).toBeVisible();
+});
+
+test("provider reasoning uses the supplied Reasoning disclosure, not a paused status notice", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    controls,
+    live: null,
+    messages: [
+      {
+        id: "1:0",
+        role: "assistant",
+        text: "Final answer",
+        interrupted: false,
+        outcome: "complete",
+        parts: [
+          { id: "1:0:0", type: "reasoning", text: "Actual provider reasoning" },
+          { id: "1:0:1", type: "text", text: "Final answer" },
+        ],
+      },
+      {
+        id: "2:0",
+        role: "assistant",
+        text: "Legacy answer",
+        interrupted: false,
+        parts: [
+          { id: "2:0:0", type: "omitted", kind: "reasoning" },
+          { id: "2:0:1", type: "text", text: "Legacy answer" },
+        ],
+      },
+    ],
+  });
+  await page.goto("/");
+  const reasoning = page.locator('[data-slot="reasoning-root"]');
+  await expect(reasoning).toHaveCount(1);
+  await reasoning.getByRole("button", { name: "Reasoning", exact: true }).click();
+  await expect(reasoning).toContainText("Actual provider reasoning");
+  await expect(page.getByText("Final answer", { exact: true })).toBeVisible();
+  await expect(page.getByText("Legacy answer", { exact: true })).toBeVisible();
+  await expect(page.getByText(/Reasoning content is not shown/)).toHaveCount(0);
+  await expect(page.locator('[data-slot="agent-status"]')).toHaveCount(0);
+});
+
 for (const finalState of ["complete", "error", "cancelled"] as const) {
   test(`native tool output stays disclosed through ${finalState} without approval or retry actions`, async ({
     page,
