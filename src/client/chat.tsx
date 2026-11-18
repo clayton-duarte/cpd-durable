@@ -203,6 +203,7 @@ export function Chat(props: ChatProps) {
   });
   const available =
     !!props.onSend &&
+    !props.readOnly &&
     props.connected &&
     props.state !== null &&
     !props.pending &&
