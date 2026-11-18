@@ -2,13 +2,50 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { openChat } from "../src/server/chat.ts";
 import { createApp } from "../src/server/app.ts";
 import { TemplateContentSchema, TemplateListSchema } from "../src/shared/templates.ts";
 import { testModels } from "./models.ts";
 
 describe("conversation prompt templates", () => {
+  it("rechecks catalog access after reading: archive remains readable and deletion does not", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cpd-template-race-"));
+    const cwd = join(dir, "project");
+    await mkdir(join(cwd, ".pi", "prompts"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "prompts", "sample.md"), "private template");
+    const chat = await openChat(join(dir, "data"), testModels().models, cwd);
+    try {
+      const app = createApp(chat);
+      const id = String(chat.conversation.id);
+      const url = `http://localhost:3000/api/chats/${id}/templates`;
+      const initial = TemplateListSchema.parse(await (await app.request(url)).json());
+      const item = initial.templates.find((entry) => entry.name === "sample")!;
+      const originalResolve = chat.chats.resolve;
+      let calls = 0;
+      const spy = vi.spyOn(chat.chats, "resolve").mockImplementation(async (value) => {
+        calls++;
+        if (calls === 2) await chat.chats.change(id, "archive");
+        return originalResolve(value);
+      });
+      expect((await app.request(url)).status).toBe(200);
+      spy.mockRestore();
+      await chat.chats.change(id, "unarchive");
+      calls = 0;
+      const deletion = vi.spyOn(chat.chats, "resolve").mockImplementation(async (value) => {
+        calls++;
+        if (calls === 2) await chat.chats.change(id, "delete");
+        return originalResolve(value);
+      });
+      const response = await app.request(`${url}/${item.id}?fingerprint=${item.fingerprint}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain("private template");
+      deletion.mockRestore();
+    } finally {
+      await chat.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("scopes discovery to SDK cwd, reads no prompts, and rejects stale content and deleted chats", async () => {
     const dir = await mkdtemp(join(tmpdir(), "cpd-template-test-"));
     const cwd = join(dir, "project");

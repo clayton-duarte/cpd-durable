@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAui } from "@assistant-ui/react";
 import { CommandPalette } from "@/components/assistant-ui/elements/command-palette";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -29,6 +30,7 @@ export function PromptTemplates({
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState("");
   const [content, setContent] = useState<ReturnType<typeof TemplateContentSchema.parse>>();
+  const [contentEpoch, setContentEpoch] = useState<number>();
   const [draftAtReview, setDraftAtReview] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -95,6 +97,7 @@ export function PromptTemplates({
       if (requestId !== generation.current) return;
       setDraftAtReview(aui.thread.composer().getState().text);
       setContent(result);
+      setContentEpoch(requestId);
     } catch {
       if (requestId === generation.current)
         setError("Template changed or could not be read. Refresh the list.");
@@ -102,8 +105,19 @@ export function PromptTemplates({
       if (requestId === generation.current) setLoading(false);
     }
   }
+  const canInsert =
+    !!content &&
+    !!id &&
+    content.conversationId === id &&
+    contentEpoch === generation.current &&
+    host.state?.conversationId !== undefined &&
+    String(host.state.conversationId) === id &&
+    !!host.onSend &&
+    !host.readOnly &&
+    host.connected &&
+    host.active !== false;
   function insert(mode: "append" | "replace") {
-    if (!content || !host.onSend || host.active === false) return;
+    if (!canInsert || !content) return;
     const composer = aui.thread.composer();
     const current = composer.getState().text;
     if (current !== draftAtReview) {
@@ -170,18 +184,18 @@ export function PromptTemplates({
               Fingerprint: {content.template.fingerprint}
               {content.template.truncated ? " · truncated" : ""}
             </p>
-            <pre className="max-h-48 overflow-auto whitespace-pre-wrap">{content.text}</pre>
+            <Textarea aria-label="Template preview" readOnly value={content.text} rows={8} />
             {draftAtReview ? (
               <>
-                <Button variant="outline" onClick={() => insert("append")}>
+                <Button variant="outline" disabled={!canInsert} onClick={() => insert("append")}>
                   Append to draft
                 </Button>
-                <Button variant="outline" onClick={() => insert("replace")}>
+                <Button variant="outline" disabled={!canInsert} onClick={() => insert("replace")}>
                   Replace draft text
                 </Button>
               </>
             ) : (
-              <Button variant="outline" onClick={() => insert("replace")}>
+              <Button variant="outline" disabled={!canInsert} onClick={() => insert("replace")}>
                 Insert into draft
               </Button>
             )}

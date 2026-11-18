@@ -312,6 +312,8 @@ export function createApp(
     if (!c.req.param("chatId") || !chat.chats) return c.json({ error: "Chat not found." }, 404);
     const scope = c.get("scope");
     const result = await listTemplates(scope);
+    // Catalog membership is rechecked after filesystem reads. A later change
+    // can still race the response; filesystem and SDK state are not atomic.
     if (!(await chat.chats.resolve(String(scope.conversation.id))))
       return c.json({ error: "Chat not found." }, 404);
     return c.json(result);
@@ -324,6 +326,7 @@ export function createApp(
       return c.json({ error: "Invalid template request." }, 400);
     const scope = c.get("scope");
     const result = await readTemplate(scope, id, fingerprint);
+    // Archived chats remain readable; deleted chats do not.
     if (!(await chat.chats.resolve(String(scope.conversation.id))))
       return c.json({ error: "Chat not found." }, 404);
     if (!result)

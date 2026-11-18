@@ -118,7 +118,9 @@ test("templates insert into native drafts only after explicit append or replace"
       element.dispatchEvent(new Event("input", { bubbles: true }));
     });
   releaseTemplate!();
-  await expect(page.getByText("Literal $1 <b>text</b>")).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Template preview" })).toHaveValue(
+    "Literal $1 <b>text</b>",
+  );
   await expect(
     page.getByText("/project/.pi/prompts/queue.md", { exact: false }).first(),
   ).toBeVisible();
@@ -206,4 +208,61 @@ test("a delayed template read cannot cross navigation into an archived chat", as
   await expect(page.getByRole("dialog", { name: "Prompt templates" })).toHaveCount(0);
   await expect(page.getByText("STALE TEMPLATE")).toHaveCount(0);
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeDisabled();
+});
+
+test("preview cannot insert when read-only, disconnected, or the retained chat changes", async ({
+  page,
+}) => {
+  const id = "a".repeat(64);
+  const fingerprint = "b".repeat(64);
+  const template = {
+    id,
+    fingerprint,
+    name: "example",
+    path: "/example/.pi/prompts/example.md",
+    truncated: false,
+  };
+  await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats/1/templates", (route) =>
+    route.fulfill({
+      json: { conversationId: "1", templates: [template], issues: [], omitted: 0 },
+    }),
+  );
+  await page.route(`**/api/chats/1/templates/${id}*`, (route) =>
+    route.fulfill({
+      json: { conversationId: "1", template, text: "<img src='https://invalid.example/x'> $1" },
+    }),
+  );
+  await page.goto("/tests/fixtures/template-guard.html");
+  const draft = page.getByRole("textbox", { name: "Message input" });
+  await draft.fill("Keep /");
+  await page.getByRole("option", { name: /templates/i }).click();
+  await page.getByRole("option", { name: /example.*prompts/ }).click();
+  await expect(page.getByRole("textbox", { name: "Template preview" })).toHaveValue(
+    "<img src='https://invalid.example/x'> $1",
+  );
+  await expect(page.locator("img[src^='https://invalid.example']")).toHaveCount(0);
+  const insert = page.getByRole("button", { name: "Replace draft text" });
+  await expect(insert).toBeDisabled();
+  async function setHost(chatId: string, readOnly: boolean, connected: boolean) {
+    await page.evaluate(
+      (value) => {
+        const setter = Reflect.get(window, "__setTemplateFixture") as (value: unknown) => void;
+        setter(value);
+      },
+      { chatId, readOnly, connected },
+    );
+  }
+  await setHost("1", false, true);
+  await expect(insert).toBeEnabled();
+  await setHost("1", true, true);
+  await expect(insert).toBeDisabled();
+  await setHost("1", false, false);
+  await expect(insert).toBeDisabled();
+  await setHost("1", false, true);
+  await expect(insert).toBeEnabled();
+  await setHost("2", false, true);
+  await expect(insert).toHaveCount(0);
+  await expect(page.locator('textarea[aria-label="Message input"]')).toHaveValue("Keep ");
+  expect(await page.evaluate(() => Reflect.has(window, "__templateSent"))).toBe(false);
 });
