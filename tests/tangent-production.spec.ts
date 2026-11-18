@@ -41,6 +41,7 @@ const tangent = (id: number, title: string, activity: "running" | "idle") => ({
 
 test("many admitted receipts leave both split composers inside the viewport", async ({ page }) => {
   await page.setViewportSize({ width: 1064, height: 975 });
+  let writes = 0;
   await page.addInitScript(() => {
     class Source extends EventTarget {
       onerror = null;
@@ -52,7 +53,12 @@ test("many admitted receipts leave both split composers inside the viewport", as
             new MessageEvent("state", {
               data: JSON.stringify({
                 conversationId: id,
-                messages: [],
+                messages: Array.from({ length: 15 }, (_, i) => ({
+                  id: `${id}:${i}`,
+                  role: "user",
+                  text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
+                  interrupted: false,
+                })),
                 partial: "",
                 busy: false,
                 hasEarlier: false,
@@ -67,20 +73,53 @@ test("many admitted receipts leave both split composers inside the viewport", as
     Object.defineProperty(window, "EventSource", { value: Source });
   });
   await page.route("**/api/**", async (route) => {
+    if (route.request().method() !== "GET") writes++;
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/chats")
       return route.fulfill({
         json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
       });
     if (path === "/api/chats/1/tangents")
-      return route.fulfill({ json: { tangents: [tangent(2, "Child", "idle")] } });
+      return route.fulfill({
+        json: {
+          tangents: [
+            {
+              ...tangent(2, "Child", "idle"),
+              latestHandoff: {
+                ...tangent(2, "Child", "idle").latestHandoff,
+                handoff: { ...handoff, goal: "Long synthetic handoff ".repeat(50) },
+              },
+            },
+          ],
+        },
+      });
+    if (path.endsWith("/workers"))
+      return route.fulfill({
+        json: {
+          hasUnsettled: true,
+          helpers: [
+            {
+              requestId: "worker-request",
+              taskId: "worker-task",
+              childId: null,
+              mode: "background",
+              model: { provider: "test", modelId: "synthetic" },
+              modelName: "Synthetic worker",
+              stop: "none",
+              status: "running",
+              answerEntryId: null,
+              delivery: "notify-only",
+            },
+          ],
+        },
+      });
     return route.abort();
   });
   await syntheticDrafts(page);
   await page.route("**/api/chats/1/draft/attempts", (route) =>
     route.fulfill({
       json: {
-        attempts: Array.from({ length: 12 }, (_, i) => ({
+        attempts: Array.from({ length: 13 }, (_, i) => ({
           record: {
             requestId: `${String(i + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
             draftRevision: i + 1,
@@ -89,8 +128,9 @@ test("many admitted receipts leave both split composers inside the viewport", as
             mode: "reject",
             fingerprint: "a".repeat(64),
           },
-          admission: "admitted",
-          submissionId: String(i + 1),
+          ...(i === 12
+            ? { admission: "unknown" }
+            : { admission: "admitted", submissionId: String(i + 1) }),
         })),
         capped: false,
         nextCursor: null,
@@ -107,14 +147,47 @@ test("many admitted receipts leave both split composers inside the viewport", as
     const bounds = await input.boundingBox();
     expect(bounds).not.toBeNull();
     expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(975);
+    await input.focus();
+    await expect(input).toBeFocused();
   }
   const recovery = page
     .getByRole("region", { name: "Main chat: Main" })
     .getByRole("region", { name: "Draft recovery" });
   await recovery.focus();
   await page.keyboard.press("End");
-  await expect(recovery.getByText("synthetic receipt 11")).toBeInViewport();
-  await expect(recovery.getByRole("button", { name: "Retry original" })).toHaveCount(0);
+  await expect(recovery.getByText("synthetic receipt 12")).toBeInViewport();
+  await expect(recovery.getByRole("button", { name: "Retry original" })).toHaveCount(1);
+  expect(writes).toBe(0);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    ),
+  ).toBe(true);
+  // CSS viewport emulation, not browser zoom: 532×487 approximates 200% of 1064×975.
+  for (const viewport of [
+    { width: 532, height: 487 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    for (const tab of ["Main", "Child"]) {
+      await page.getByRole("tab", { name: tab, exact: true }).focus();
+      await page.keyboard.press("Enter");
+      const input = page
+        .getByRole("tabpanel", { name: tab })
+        .getByRole("textbox", { name: "Message input" });
+      await expect(input).toBeVisible();
+      const bounds = await input.boundingBox();
+      expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(viewport.height);
+      await input.focus();
+      await expect(input).toBeFocused();
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+  }
+  expect(writes).toBe(0);
 });
 
 test("private feedback stays scoped to each pane and stale ownership blocks held saves", async ({
@@ -649,6 +722,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     idleSide.getByText("Choose an available / command from the list; command text was not sent."),
   ).toBeVisible();
   expect(requests.filter((r) => /^POST \/api\/chats\/\d+\/(input|stop)$/.test(r))).toEqual([]);
+  await idleSide.getByLabel("Answer").fill("held answer");
   await page.route("**/api/chats/1/tangents", (route) => route.fulfill({ status: 503 }));
   await expect(idleSide.getByText("Child question")).toBeVisible();
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible();
@@ -658,13 +732,19 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(idleSide.getByRole("button", { name: "Stop worker task-3" })).toBeDisabled();
   await expect(idleSide.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await expect(idleSide.getByRole("button", { name: "Decline" })).toBeDisabled();
+  await expect(idleSide.getByText("held answer")).toBeVisible();
   await expect(idleSide.getByRole("button", { name: "Conclude tangent" })).toBeDisabled();
   const childMutationsBefore = requests.filter((r) => r.startsWith("POST /api/chats/3/")).length;
+  await input(idleSide)
+    .press("Enter")
+    .catch(() => {});
+  await expect(input(idleSide)).toHaveValue("/tangent secret");
   await page.unroute("**/api/chats/1/tangents");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("button", { name: "Open tangent: Running child" })).toBeEnabled();
   await expect(idleSide.getByRole("button", { name: "Stop worker task-3" })).toBeEnabled();
   await expect(idleSide.getByLabel("Answer")).toBeEnabled();
+  await expect(idleSide.getByLabel("Answer")).toHaveValue("held answer");
   await expect(input(idleSide)).toHaveValue("/tangent secret");
   expect(requests.filter((r) => r.startsWith("POST /api/chats/3/"))).toHaveLength(
     childMutationsBefore,

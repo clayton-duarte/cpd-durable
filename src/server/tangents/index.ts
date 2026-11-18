@@ -145,6 +145,11 @@ export async function prepareTangent(
   const fingerprint = JSON.stringify(request);
   const previous = await driver.commit(async (tx) => {
     await hooks.assertMain(tx, request.parentId as ConversationId);
+    const reservation = (await tx.doc(ToolBoundariesDoc)).requests.find(
+      (item) => item.requestId === request.requestId,
+    );
+    if (reservation && reservation.fingerprint !== fingerprint)
+      throw new Error("Request identity conflicts with prior tangent");
     const state = await tx.doc(TangentsDoc);
     const existing = state.tangents.find((item) => item.requestId === request.requestId);
     if (!existing) return undefined;
@@ -159,6 +164,11 @@ export async function prepareTangent(
   return driver.commit(async (tx) => {
     const parentId = request.parentId as ConversationId;
     await hooks.assertMain(tx, parentId);
+    const reservation = (await tx.doc(ToolBoundariesDoc)).requests.find(
+      (item) => item.requestId === request.requestId,
+    );
+    if (reservation && reservation.fingerprint !== fingerprint)
+      throw new Error("Request identity conflicts with prior tangent");
     const state = await tx.doc(TangentsDoc);
     if (state.tangents.some((item) => item.id === parentId))
       throw new Error("Nested tangents are unsupported");
@@ -572,30 +582,42 @@ export function createTangentExtension(hooks: TangentHooks | (() => TangentHooks
         async execute(args, api, context) {
           const input = toolSchema.parse(args);
           const resolvedHooks = typeof hooks === "function" ? hooks() : hooks;
-          const sourceEntryId =
-            input.sourceEntryId ??
-            (await api.commit(async (tx) => {
-              await resolvedHooks.assertMain(tx, api.conversationId);
-              const state = await tx.doc(ToolBoundariesDoc);
-              const fingerprint = JSON.stringify({
+          const sourceEntryId = await api.commit(async (tx) => {
+            await resolvedHooks.assertMain(tx, api.conversationId);
+            const state = await tx.doc(ToolBoundariesDoc);
+            const previous = state.requests.find((item) => item.requestId === input.requestId);
+            const existing = (await tx.doc(TangentsDoc)).tangents.find(
+              (item) => item.requestId === input.requestId,
+            );
+            const at =
+              input.sourceEntryId ??
+              (previous
+                ? previous.sourceEntryId
+                : existing
+                  ? existing.sourceEntryId
+                  : ((await tx.latestEntryId(api.conversationId)) ?? null));
+            const fingerprint = JSON.stringify(
+              CreateTangentSchema.parse({
                 ...input,
-                sourceEntryId: null,
+                sourceEntryId: at,
                 parentId: api.conversationId,
-              });
-              const previous = state.requests.find((item) => item.requestId === input.requestId);
-              if (previous) {
-                if (previous.fingerprint !== fingerprint)
-                  throw new Error("Request identity conflicts with prior tangent");
-                return previous.sourceEntryId;
-              }
-              const at = await tx.latestEntryId(api.conversationId);
-              state.requests.push({
-                requestId: input.requestId,
-                fingerprint,
-                sourceEntryId: at ?? null,
-              });
-              return at ?? null;
-            }, context));
+                sourceId: api.conversationId,
+              }),
+            );
+            if (existing && existing.fingerprint !== fingerprint)
+              throw new Error("Request identity conflicts with prior tangent");
+            if (previous) {
+              if (previous.fingerprint !== fingerprint)
+                throw new Error("Request identity conflicts with prior tangent");
+              return previous.sourceEntryId;
+            }
+            state.requests.push({
+              requestId: input.requestId,
+              fingerprint,
+              sourceEntryId: at ?? null,
+            });
+            return at ?? null;
+          }, context);
           const request = {
             ...input,
             sourceEntryId,
