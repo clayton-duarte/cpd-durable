@@ -453,6 +453,23 @@ export function Chat(props: ChatProps) {
       value={{
         ...props,
         readDraft: () => runtimeRef.current?.thread.composer.getState().text ?? "",
+        draftVersion: () => revision.current,
+        applyPrompt: (version, text, mode) => {
+          const composer = runtimeRef.current?.thread.composer;
+          if (
+            !composer ||
+            !available ||
+            !props.connected ||
+            !props.onSend ||
+            props.active === false ||
+            props.readOnly ||
+            revision.current !== version
+          )
+            return false;
+          const current = composer.getState().text;
+          composer.setText(mode === "append" && current ? `${current}\n${text}` : text);
+          return true;
+        },
         ...(props.onRetry
           ? {
               onRetry: async () => {
