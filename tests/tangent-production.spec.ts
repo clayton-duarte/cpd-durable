@@ -51,6 +51,11 @@ test("production route keeps native chats and drafts through tangent navigation"
   const requests: string[] = [];
   let upload = 0;
   let stopRequested = false;
+  const inputs: unknown[] = [];
+  let releaseInput!: () => void;
+  const inputGate = new Promise<void>((resolve) => {
+    releaseInput = resolve;
+  });
   await page.addInitScript(() => {
     class Synthetic extends EventTarget {
       onerror: (() => void) | null = null;
@@ -85,6 +90,23 @@ test("production route keeps native chats and drafts through tangent navigation"
     const request = route.request();
     const path = new URL(request.url()).pathname;
     requests.push(`${request.method()} ${path}`);
+    if (path === "/api/model-policy")
+      return route.fulfill({
+        json: {
+          revision: 1,
+          assignments: {
+            main: null,
+            tangent: { provider: "test", modelId: "mid", thinkingLevel: "off" },
+            worker: null,
+          },
+          choices: [],
+        },
+      });
+    if (path === "/api/chats/1/input" && request.method() === "POST") {
+      inputs.push(request.postDataJSON());
+      await inputGate;
+      return route.fulfill({ status: 202, json: { id: "admitted" } });
+    }
     if (path === "/api/chats")
       return route.fulfill({
         json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
@@ -182,6 +204,12 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(input(side)).toHaveValue("child draft");
   await page.goForward();
   await expect(page).toHaveURL(/tangent=3/);
+  const idleSide = page.getByRole("region", { name: "Tangent chat: Idle child" });
+  await input(idleSide).fill("/tangent secret");
+  await input(idleSide).press("Enter");
+  await expect(
+    idleSide.getByText("Choose an available / command from the list; command text was not sent."),
+  ).toBeVisible();
   expect(requests.filter((r) => /^POST \/api\/chats\/\d+\/(input|stop)$/.test(r))).toEqual([]);
   await page.route("**/api/chats/1/tangents", (route) => route.fulfill({ status: 503 }));
   await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible();
@@ -190,6 +218,26 @@ test("production route keeps native chats and drafts through tangent navigation"
   await page.unroute("**/api/chats/1/tangents");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("button", { name: "Open tangent: Running child" })).toBeEnabled();
+  await expect.poll(() => requests.includes("GET /api/model-policy")).toBe(true);
+  await input(main).fill("/ Explore the architecture");
+  await input(main).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(1, 1));
+  await input(main).press("ArrowLeft");
+  await input(main).press("ArrowRight");
+  const palette = main.locator('[data-slot="composer-trigger-popover"]');
+  await expect(palette.getByRole("option", { name: /\/tangent/ })).toBeVisible();
+  await expect(palette.getByRole("option", { name: /\/side/ })).toBeVisible();
+  await palette.getByRole("option", { name: /\/tangent/ }).click();
+  await expect.poll(() => inputs.length).toBe(1);
+  expect(inputs[0]).toMatchObject({
+    mode: "reject",
+    text: expect.stringContaining("Explore the architecture"),
+  });
+  expect(inputs[0]).toMatchObject({ text: expect.stringContaining("create_tangent") });
+  expect(inputs[0]).toMatchObject({ images: [ids[0]] });
+  await input(main).fill("newer draft");
+  releaseInput();
+  await expect(input(main)).toHaveValue("newer draft");
+  await expect(page.locator('[data-slot="task-card"]')).toHaveCount(2);
   await page.goto("/chats/1?tangent=999");
   await expect(page.getByText("Tangent not found", { exact: true })).toBeVisible();
   await expect(page.getByRole("region", { name: /Tangent chat:/ })).toHaveCount(0);

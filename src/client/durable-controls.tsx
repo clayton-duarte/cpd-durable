@@ -42,6 +42,17 @@ export function DurableControls() {
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
+    if (host.canRequestTangent && !busy) {
+      for (const id of ["tangent", "side"]) {
+        commands.push({
+          id,
+          description: "Request tangent: ask the main agent to prepare a handoff",
+          execute: () => {
+            void host.requestTangent();
+          },
+        });
+      }
+    }
     if (busy) {
       commands.push(
         {

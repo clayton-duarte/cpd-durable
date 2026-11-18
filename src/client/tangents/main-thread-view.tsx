@@ -6,6 +6,7 @@ import { ChatPage } from "../chat-page.tsx";
 import { tangentChildView } from "./adapter.ts";
 import { TangentWorkspace } from "./workspace.tsx";
 import { WorkerPanel } from "../workers/panel.tsx";
+import { ModelPolicyViewSchema } from "../../shared/model-policy.ts";
 
 const ResponseSchema = z.strictObject({ tangents: z.array(TangentViewSchema) });
 
@@ -32,6 +33,37 @@ export function MainThreadView({
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
+  const [configured, setConfigured] = useState(false);
+  useEffect(() => {
+    if (!active || readOnly) {
+      setConfigured(false);
+      return;
+    }
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let alive = true;
+    async function refreshPolicy() {
+      try {
+        const response = await fetch("/api/model-policy", { signal: controller.signal });
+        if (!response.ok) throw new Error();
+        const policy = ModelPolicyViewSchema.parse(await response.json());
+        if (alive) setConfigured(policy.assignments.tangent !== null);
+      } catch {
+        if (alive) setConfigured(false);
+      } finally {
+        if (alive)
+          timer = setTimeout(() => {
+            void refreshPolicy();
+          }, 2000);
+      }
+    }
+    void refreshPolicy();
+    return () => {
+      alive = false;
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [active, readOnly]);
   useEffect(() => {
     if (!active) return;
     let alive = true;
@@ -114,6 +146,7 @@ export function MainThreadView({
               chatId={mainId}
               active={active && visible}
               readOnly={readOnly}
+              canRequestTangent={configured}
               onFork={onFork}
             />
           </div>

@@ -33,7 +33,7 @@ import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
-const durableCommandNames = ["queue", "steer", "continue", "reset"];
+const durableCommandNames = ["queue", "steer", "continue", "reset", "tangent", "side"];
 // Adapt authoritative tool status only; the supplied ToolFallback owns presentation.
 function DurableToolFallback(props: ToolCallMessagePartProps) {
   const host = useChatHost();
@@ -225,7 +225,13 @@ export function Chat(props: ChatProps) {
   }, []);
 
   const admit = useCallback(
-    async (draft: string, mode: SendMode, nativeSend = false, ids?: string[]) => {
+    async (
+      draft: string,
+      mode: SendMode,
+      nativeSend = false,
+      ids?: string[],
+      tangentRequest = false,
+    ) => {
       const composer = runtimeRef.current?.thread.composer;
       setLocalError(null);
       if (
@@ -240,11 +246,19 @@ export function Chat(props: ChatProps) {
       if (
         !available ||
         !props.onSend ||
+        (tangentRequest && !props.canRequestTangent) ||
         (mode === "reject" && props.state?.busy) ||
         (mode === "steer" && !props.state?.busy)
       )
         return false;
-      const text = draft.trim();
+      const goal = draft.trim();
+      if (tangentRequest && !goal) {
+        setLocalError("Enter a goal in the draft before requesting a tangent.");
+        return false;
+      }
+      const text = tangentRequest
+        ? `Please prepare a bounded handoff for the following goal and use create_tangent to create an interactive tangent. Include relevant decisions, constraints, references, and the expected deliverable. Create it without starting work (start: false).\n\nGoal:\n${goal}`
+        : goal;
       const images = ids ?? composer?.getState().attachments.map((item) => item.id) ?? [];
       if (
         (!text && !images.length) ||
@@ -272,7 +286,7 @@ export function Chat(props: ChatProps) {
         return false;
       }
     },
-    [available, props.onSend, props.state, clearSubmitted],
+    [available, props.onSend, props.canRequestTangent, props.state, clearSubmitted],
   );
 
   const onNew = useCallback(
@@ -390,6 +404,8 @@ export function Chat(props: ChatProps) {
         localError,
         clearLocalError: () => setLocalError(null),
         submitDraft: (mode) => admit(runtime.thread.composer.getState().text, mode),
+        requestTangent: () =>
+          admit(runtime.thread.composer.getState().text, "reject", false, undefined, true),
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>

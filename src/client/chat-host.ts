@@ -6,6 +6,7 @@ export interface ChatProps {
   chatId?: string | undefined;
   active?: boolean;
   readOnly?: boolean;
+  canRequestTangent?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
   title: string;
   description?: string;
@@ -37,6 +38,7 @@ type ChatHost = ChatProps & {
   localError: string | null;
   clearLocalError: () => void;
   submitDraft: (mode: SendMode) => Promise<boolean>;
+  requestTangent: () => Promise<boolean>;
 };
 
 export const ChatHostContext = createContext<ChatHost | null>(null);
