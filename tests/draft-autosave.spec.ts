@@ -127,6 +127,51 @@ test("preparation stops on a CAS conflict without recording an intent", async ({
   expect(requests).toEqual(["PUT /api/chats/1/draft", "GET /api/chats/1/draft"]);
 });
 
+test("explicit persistence retry reconciles an uncertain committed PUT and saves newer edits", async ({
+  page,
+}) => {
+  let server = { revision: 0, content: { text: "", images: [] as never[] } };
+  let puts = 0;
+  await page.route("**/api/chats/1/draft", async (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: server });
+    const body = route.request().postDataJSON() as {
+      expectedRevision: number;
+      content: typeof server.content;
+    };
+    puts++;
+    expect(body.expectedRevision).toBe(server.revision);
+    server = { revision: server.revision + 1, content: body.content };
+    if (puts === 1) return route.abort();
+    return route.fulfill({ json: server });
+  });
+  await page.goto("/tests/fixtures/draft-autosave/");
+  const input = page.getByRole("textbox", { name: "Draft" });
+  await input.fill("uncertain");
+  await expect(page.getByRole("button", { name: "Retry saving draft" })).toBeVisible();
+  await input.fill("newer");
+  expect(puts).toBe(1);
+  await page.getByRole("button", { name: "Retry saving draft" }).click();
+  await expect.poll(() => server.content.text).toBe("newer");
+  await expect(page.getByRole("button", { name: "Retry saving draft" })).toHaveCount(0);
+  expect(puts).toBe(2);
+});
+
+test("persistence retry does not overwrite a different concurrent draft", async ({ page }) => {
+  let puts = 0;
+  await page.route("**/api/chats/1/draft", async (route) => {
+    if (route.request().method() === "GET")
+      return route.fulfill({ json: { revision: 1, content: { text: "other tab", images: [] } } });
+    puts++;
+    return route.abort();
+  });
+  await page.goto("/tests/fixtures/draft-autosave/");
+  await page.getByRole("textbox", { name: "Draft" }).fill("mine");
+  await expect(page.getByRole("button", { name: "Retry saving draft" })).toBeVisible();
+  await page.getByRole("button", { name: "Retry saving draft" }).click();
+  await expect(page.getByRole("button", { name: "Keep mine" })).toBeVisible();
+  expect(puts).toBe(1);
+});
+
 test("persists restored image metadata without uploading it again", async ({ page }) => {
   const requests: string[] = [];
   let body: unknown;

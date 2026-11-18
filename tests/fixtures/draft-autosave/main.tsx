@@ -46,6 +46,7 @@ function Fixture() {
       initial: { revision: 0, content: { text: "", images: withImage ? [image] : [] } },
       onConflict: setConflict,
       onError: setError,
+      onSaved: () => setError(""),
     });
     writer.current = current;
     return () => {
@@ -83,6 +84,9 @@ function Fixture() {
         </button>
       )}
       {error && <p role="alert">{error}</p>}
+      {error && (
+        <button onClick={() => void writer.current?.retrySave()}>Retry saving draft</button>
+      )}
       {prepared && <p data-testid="prepared">{prepared}</p>}
       {recovery.attempts.map((attempt) => (
         <p key={attempt.record.requestId}>

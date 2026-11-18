@@ -292,8 +292,7 @@ export function useDraftRecovery(chatId: string | undefined, enabled: boolean) {
 
 /**
  * Serialized CAS writer for the native composer. Start only after restoration has
- * settled; the caller owns conflict presentation and send/ack coordination. This
- * is intentionally not mounted until the admission protocol is wired.
+ * settled; the caller owns conflict presentation and send/ack coordination.
  */
 export function createDraftAutosave(options: {
   runtime: AssistantRuntime;
@@ -301,6 +300,7 @@ export function createDraftAutosave(options: {
   initial: DraftView;
   onConflict(saved: DraftView): void;
   onError(message: string): void;
+  onSaved?(): void;
 }) {
   const composer = options.runtime.thread.composer;
   const metadata = new Map(options.initial.content.images.map((image) => [image.id, image]));
@@ -314,6 +314,7 @@ export function createDraftAutosave(options: {
   let suppressDetachedEmpty = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> | undefined;
+  let failedWrite: { expectedRevision: number; content: DraftView["content"] } | undefined;
   let last = "";
 
   const snapshot = () => {
@@ -337,7 +338,7 @@ export function createDraftAutosave(options: {
   };
   const active = () => !stopped && !controller.signal.aborted;
   const schedule = () => {
-    if (!active() || conflicted || preparing) return;
+    if (!active() || conflicted || preparing || failedWrite) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
@@ -345,7 +346,7 @@ export function createDraftAutosave(options: {
     }, 250);
   };
   const flush = async (): Promise<void> => {
-    if (!active() || conflicted || preparing) return;
+    if (!active() || conflicted || preparing || failedWrite) return;
     if (running) {
       await running;
       if (active() && !conflicted) schedule();
@@ -355,12 +356,13 @@ export function createDraftAutosave(options: {
     if (!content || (suppressDetachedEmpty && !content.text && !content.images.length)) return;
     if (JSON.stringify(content) === JSON.stringify(saved.content)) return;
     const started = generation;
+    const attempted = { expectedRevision: saved.revision, content };
     running = (async () => {
       try {
         const response = await fetch(`/api/chats/${options.chatId}/draft`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ expectedRevision: saved.revision, content }),
+          body: JSON.stringify(attempted),
           signal: controller.signal,
         });
         if (response.status === 409) {
@@ -379,10 +381,14 @@ export function createDraftAutosave(options: {
         const accepted = DraftViewSchema.parse((await response.json()) as unknown);
         if (!active()) return;
         saved = accepted;
+        options.onSaved?.();
         for (const image of accepted.content.images) metadata.set(image.id, image);
         if (generation !== started) schedule();
       } catch {
-        if (active()) options.onError("Draft could not be saved.");
+        if (active()) {
+          failedWrite = attempted;
+          options.onError("Draft could not be saved.");
+        }
       }
     })();
     try {
@@ -404,12 +410,48 @@ export function createDraftAutosave(options: {
   });
   return {
     flush,
+    /** Reconcile an uncertain PUT without overwriting an independently changed revision. */
+    async retrySave() {
+      if (!active() || conflicted || preparing || !failedWrite) return false;
+      const failed = failedWrite;
+      try {
+        const response = await fetch(`/api/chats/${options.chatId}/draft`, {
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Draft unavailable");
+        const remote = DraftViewSchema.parse((await response.json()) as unknown);
+        if (!active() || failedWrite !== failed) return false;
+        const unchanged =
+          remote.revision === failed.expectedRevision &&
+          JSON.stringify(remote.content) === JSON.stringify(saved.content);
+        const committed =
+          remote.revision === failed.expectedRevision + 1 &&
+          JSON.stringify(remote.content) === JSON.stringify(failed.content);
+        if (!unchanged && !committed) {
+          failedWrite = undefined;
+          conflicted = true;
+          options.onConflict(remote);
+          return false;
+        }
+        if (committed) saved = remote;
+        failedWrite = undefined;
+        await flush();
+        if (!failedWrite && !conflicted && active()) {
+          options.onSaved?.();
+          return true;
+        }
+      } catch {
+        if (active()) options.onError("Draft could not be saved.");
+      }
+      return false;
+    },
     /**
      * Pin the original literal input across pending autosaves and edits. Only
      * metadata writes are paused; the native composer stays editable.
      */
     async prepareSend(text: string, images: string[], mode: SendMode, requestId: string) {
-      if (!active() || conflicted || preparing) throw new Error("Draft is not ready to send.");
+      if (!active() || conflicted || preparing || failedWrite)
+        throw new Error("Draft is not ready to send.");
       // Capture available file metadata before any asynchronous work.
       snapshot();
       const content = DraftContentSchema.parse({
@@ -422,7 +464,8 @@ export function createDraftAutosave(options: {
       timer = undefined;
       try {
         if (running) await running;
-        if (!active() || conflicted) throw new Error("Draft changed in another session.");
+        if (!active() || conflicted || failedWrite)
+          throw new Error("Draft save must be resolved before sending.");
         if (JSON.stringify(content) !== JSON.stringify(saved.content)) {
           const response = await fetch(`/api/chats/${options.chatId}/draft`, {
             method: "PUT",

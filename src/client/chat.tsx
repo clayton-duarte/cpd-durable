@@ -197,8 +197,12 @@ function PersistenceBridge({
           runtime,
           chatId,
           initial: saved,
-          onConflict: (remote) => conflictHandler.current(remote),
+          onConflict: (remote) => {
+            setError(null);
+            conflictHandler.current(remote);
+          },
           onError: setError,
+          onSaved: () => setError(null),
         });
         if (choice !== "saved") void writer.current.flush();
       }
@@ -230,15 +234,29 @@ function PersistenceBridge({
       {(error || restoration.error || recovery.error) && (
         <AgentStatus state="failed" label={error ?? restoration.error ?? recovery.error ?? ""} />
       )}
-      {recovery.attempts
-        .filter(
-          (attempt) =>
-            attempt.admission === "unknown" && !confirmed.includes(attempt.record.requestId),
-        )
-        .map(({ record }) => (
+      {error && !readOnly && (
+        <Button type="button" variant="outline" onClick={() => void writer.current?.retrySave()}>
+          Retry saving draft
+        </Button>
+      )}
+      {recovery.attempts.map((attempt) => {
+        const { record } = attempt;
+        const admitted = attempt.admission === "admitted" || confirmed.includes(record.requestId);
+        return (
           <div role="status" key={record.requestId}>
-            Delivery unconfirmed. Inspect history before retrying the original input.
-            {!readOnly && (
+            <p>
+              {admitted ? "Admitted" : "Delivery unconfirmed"} — request {record.requestId}
+            </p>
+            <p>
+              Draft revision {record.draftRevision}; mode {record.mode}.
+            </p>
+            <p>
+              {record.text.slice(0, 160)}
+              {record.text.length > 160 ? "…" : ""}
+            </p>
+            <p>{record.images.length ? `Images: ${record.images.join(", ")}` : "No images"}</p>
+            {attempt.admission === "admitted" && <p>Submission {attempt.submissionId}</p>}
+            {!admitted && !readOnly && (
               <Button
                 type="button"
                 variant="outline"
@@ -252,7 +270,8 @@ function PersistenceBridge({
               </Button>
             )}
           </div>
-        ))}
+        );
+      })}
       {recovery.capped && (
         <Button type="button" variant="outline" onClick={() => void recovery.loadMore()}>
           Load older attempts
@@ -623,22 +642,45 @@ export function Chat(props: ChatProps) {
             key={props.chatId}
             runtime={runtime}
             chatId={props.chatId}
-            enabled={props.active !== false}
+            enabled
             readOnly={!props.onSend}
             writer={persistence}
             localRevision={localRevision}
             onReady={setPersistenceReady}
-            onRetry={(record) => {
-              if (!props.connected || props.pending || !props.onSend) return Promise.resolve(false);
-              return props.onSend(modelInputText(record.text), record.mode, record.images, {
-                requestId: record.requestId,
-                draft: {
-                  revision: record.draftRevision,
-                  text: record.text,
-                  images: record.images,
-                  attempt: true,
+            onRetry={async (record) => {
+              if (!props.connected || props.pending || !props.onSend || !persistence.current)
+                return false;
+              const state = runtime.thread.composer.getState();
+              const original =
+                state.text === record.text &&
+                JSON.stringify(state.attachments.map((item) => item.id)) ===
+                  JSON.stringify(record.images)
+                  ? { text: record.text, ids: [...record.images], revision: revision.current }
+                  : null;
+              const writer = persistence.current;
+              const draft = {
+                revision: record.draftRevision,
+                text: record.text,
+                images: [...record.images],
+                attempt: true as const,
+              };
+              const admitted = await props.onSend(
+                modelInputText(record.text),
+                record.mode,
+                record.images,
+                {
+                  requestId: record.requestId,
+                  draft,
+                  onClear: (nextRevision) => writer?.acknowledgeClear(draft, nextRevision),
                 },
-              });
+              );
+              if (admitted && original) {
+                writer?.beginSend();
+                submitted.current = original;
+                clearSubmitted();
+                writer?.endSend();
+              }
+              return admitted;
             }}
           />
         )}
