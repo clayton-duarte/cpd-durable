@@ -3,6 +3,7 @@ import type {
   SimpleStreamOptions,
   TranscriptContext,
   ToolCall,
+  Usage,
 } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
@@ -12,9 +13,9 @@ import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 type TestCall = {
   context: TranscriptContext;
   partial(text: string): void;
-  finish(text: string): void;
+  finish(text: string, usage?: Usage): void;
   tools(calls: Omit<ToolCall, "type">[]): void;
-  fail(): void;
+  fail(usage?: Usage): void;
 };
 
 export function testModels(onCall?: (call: TestCall) => void) {
@@ -56,9 +57,14 @@ export function testModels(onCall?: (call: TestCall) => void) {
         message = { ...message, content: [{ type: "text", text }] };
         events.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
       },
-      finish(text) {
+      finish(text, usage) {
         options?.signal?.removeEventListener("abort", abort);
-        message = { ...message, content: [{ type: "text", text }], stopReason: "stop" };
+        message = {
+          ...message,
+          content: [{ type: "text", text }],
+          stopReason: "stop",
+          usage: usage ?? message.usage,
+        };
         events.push({ type: "done", reason: "stop", message });
       },
       tools(calls) {
@@ -70,9 +76,14 @@ export function testModels(onCall?: (call: TestCall) => void) {
         };
         events.push({ type: "done", reason: "toolUse", message });
       },
-      fail() {
+      fail(usage) {
         options?.signal?.removeEventListener("abort", abort);
-        message = { ...message, stopReason: "error", errorMessage: "PRIVATE_PROVIDER_DIAGNOSTIC" };
+        message = {
+          ...message,
+          stopReason: "error",
+          errorMessage: "PRIVATE_PROVIDER_DIAGNOSTIC",
+          usage: usage ?? message.usage,
+        };
         events.push({ type: "error", reason: "error", error: message });
       },
     };

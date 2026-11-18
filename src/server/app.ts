@@ -98,6 +98,9 @@ export function createApp(
         ? {
             conversation: chat.conversation,
             archived: false,
+            accounting: async () => {
+              throw new Error("Accounting unavailable");
+            },
             withdraw: chat.withdraw,
             admit: (draft: Parameters<ChatScope["admit"]>[0]) =>
               chat.conversation.submit(draft, BACKGROUND_CONTEXT),
@@ -146,6 +149,7 @@ export function createApp(
       throw error;
     }
   });
+  routes.get("/accounting", async (c) => c.json(await c.get("scope").accounting()));
 
   routes.post("/control", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))
