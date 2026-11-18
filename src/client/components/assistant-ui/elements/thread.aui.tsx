@@ -28,6 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { ConversationMapAui } from "./conversation-map.aui";
 import { ThreadNavigation } from "@/thread-navigation";
+import { ChatDetails } from "@/chat-details";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -256,6 +257,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
             <ThreadScrollToBottom />
             <ThreadFollowupSuggestions />
             <ThreadNavigation />
+            <ChatDetails />
             <Composer autoFocus={autoFocus} />
             <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
               <ThreadSuggestions />

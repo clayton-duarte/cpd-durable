@@ -13,6 +13,7 @@ import {
   type SubmissionId,
 } from "@earendil-works/pi-durable";
 import type { ChatCatalog, ChatSummary } from "../shared/chats.ts";
+import { accounting } from "./accounting.ts";
 
 type CatalogItem = {
   id: number;
@@ -79,6 +80,7 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
     if (!conversation) return undefined;
     return {
       conversation,
+      accounting: () => accounting(harness, conversation.id),
       archived: item.status === "archived",
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),

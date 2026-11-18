@@ -15,6 +15,7 @@ export function ChatPage({
   return (
     <main className="h-full min-h-0">
       <Chat
+        chatId={chatId}
         active={active}
         title="CPD Durable"
         description={`OpenCode Go · ${MODEL_ID}`}
