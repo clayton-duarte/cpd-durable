@@ -106,6 +106,29 @@ describe("native host tools through the durable scheduler", () => {
     expect(failed).not.toHaveProperty("editDiff");
     provider.calls[2]!.finish("Done.");
     await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    const original = await snapshot();
+    const receiptId = edit.resultEntryId!;
+    const branch = await chat.chats.fork(
+      String(chat.conversation.id),
+      crypto.randomUUID(),
+      String(receiptId),
+    );
+    await writeFile(join(cwd, "sample.txt"), "changed independently\n");
+    await chat.close();
+    chat = await openChat(join(directory, "data"), provider.models, cwd);
+    expect((await snapshot()).messages).toEqual(original.messages);
+    const scoped = await chat.chats.resolve(branch.id);
+    if (!scoped) throw new Error("Fork unavailable");
+    const watch = await scoped.conversation.watch(BACKGROUND_CONTEXT);
+    try {
+      const forked = ChatStateSchema.parse(present(watch.value));
+      const inherited = forked.messages
+        .flatMap((item) => item.parts ?? [])
+        .find((part) => part.type === "tool-call" && part.callId === "edit-one");
+      expect(inherited).toEqual(edit);
+    } finally {
+      await watch.stop();
+    }
   });
 
   it("writes, reads, edits and runs shell commands, including paths outside cwd", async () => {

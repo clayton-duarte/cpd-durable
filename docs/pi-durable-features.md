@@ -62,6 +62,8 @@ SDK records useful state that our wire schema intentionally omits. Enriching the
 
 Opt-in [stdio MCP tools](../README.md#optional-mcp-stdio-tools) use server-side configuration; HTTP and broader MCP capabilities remain unimplemented. A human approval workflow requires separate host integration. A skill directory, slash-command palette, Markdown renderer, attachments UI and model picker are not supplied by the durable harness as a browser application.
 
+Successful native edit results can expose a bounded, read-only applied-change receipt in their tool disclosure. This is not a live filesystem view; nested code-mode outputs remain unavailable. [Projection limits](chat-components.md#3-agent-activity-tools-and-tasks).
+
 ## Durability, state and parallel execution
 
 | Capability                                 | SDK support                                                                                                                             | Current chat                                                                                                                                 |

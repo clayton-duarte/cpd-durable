@@ -3,7 +3,12 @@ import { z } from "zod";
 export const EditDiffSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("patch"),
-    patch: z.string().max(65536),
+    patch: z
+      .string()
+      .min(1)
+      .max(65536)
+      .refine((value) => new TextEncoder().encode(value).length <= 65536)
+      .refine((value) => value.split("\n").length <= 1000),
   }),
   z.strictObject({ kind: z.literal("unavailable") }),
 ]);

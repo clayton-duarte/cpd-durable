@@ -44,7 +44,7 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
   const results = useAuiState((state) => state.message.metadata.custom["toolResultParts"]);
   const editDiffs = useAuiState((state) => state.message.metadata.custom["editDiffs"]);
   const editDiff = EditDiffSchema.safeParse(
-    editDiffs && typeof editDiffs === "object"
+    props.toolName === "edit" && editDiffs && typeof editDiffs === "object"
       ? Reflect.get(editDiffs, props.toolCallId)
       : undefined,
   );
@@ -71,7 +71,8 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
                 error: "Result is unavailable in the retained history.",
               }
             : { type: "complete" as const };
-  if (!output.success && !editDiff.success) return <ToolFallback {...props} status={status} />;
+  const showEditDiff = editDiff.success && parsed.success && parsed.data === "complete";
+  if (!output.success && !showEditDiff) return <ToolFallback {...props} status={status} />;
   const lines =
     editDiff.success && editDiff.data.kind === "patch"
       ? parseEditPatch(editDiff.data.patch)
@@ -103,7 +104,7 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
           ) : (
             <ToolFallback.Result result={props.result as unknown} />
           )}
-          {editDiff.success &&
+          {showEditDiff &&
             (lines ? (
               <CodeDiff
                 className="max-w-full border-0 bg-transparent"
