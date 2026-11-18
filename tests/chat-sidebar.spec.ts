@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { RenameChatSchema, ForkChatSchema, type ChatSummary } from "../src/shared/chats.ts";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 async function workspace(page: Page, withHistory = false) {
   await page.route("**/api/**", (route) => route.abort());
@@ -7,6 +8,7 @@ async function workspace(page: Page, withHistory = false) {
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {

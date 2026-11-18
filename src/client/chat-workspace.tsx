@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   AssistantRuntimeProvider,
@@ -13,6 +13,8 @@ import { MainThreadView } from "./tangents/main-thread-view.tsx";
 import { ApiErrorSchema } from "../shared/chat.ts";
 import { MessageBranches } from "@/components/assistant-ui/elements/message-branches";
 import { Button } from "@/components/ui/button";
+import { RegenerationReceiptSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
+import type { z } from "zod";
 import {
   Dialog,
   DialogContent,
@@ -60,6 +62,13 @@ function Workspace() {
   const [visited, setVisited] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
+  const [archiving, setArchiving] = useState<string | null>(null);
+  const draftGuards = useRef(new Map<string, () => Promise<boolean>>());
+  const onUnsavedDraft = useCallback((id: string) => {
+    setError(
+      `Chat ${id} was archived elsewhere with unsaved draft changes. Restore it to resolve the draft.`,
+    );
+  }, []);
   const [forking, setForking] = useState<{
     sourceId: string;
     at: string;
@@ -78,6 +87,19 @@ function Workspace() {
   const [selectedRecovery, setSelectedRecovery] = useState<string | null>(null);
   const cancelEdit = useRef<HTMLButtonElement>(null);
   const cancelFork = useRef<HTMLButtonElement>(null);
+  const [regenerating, setRegenerating] = useState<{
+    sourceId: string;
+    entryId: string;
+    requestId: string;
+  } | null>(null);
+  const [recentRegenerations, setRecentRegenerations] = useState<
+    z.infer<typeof RecentRegenerationsSchema>["operations"] | null
+  >(null);
+  const [regenerationReadError, setRegenerationReadError] = useState(false);
+  const [regenerationReadRevision, setRegenerationReadRevision] = useState(0);
+  const [regenerationUncertain, setRegenerationUncertain] = useState(false);
+  const uncertainRegenerations = useRef(new Map<string, string>());
+  const cancelRegeneration = useRef<HTMLButtonElement>(null);
   const activeChatId = useRef(chatId);
   activeChatId.current = chatId;
   const mutationVersion = useRef(0);
@@ -105,6 +127,31 @@ function Workspace() {
   useEffect(() => {
     setForking((current) => (current?.sourceId === chatId ? current : null));
   }, [chatId]);
+  useEffect(() => {
+    if (!regenerating) return;
+    const controller = new AbortController();
+    setRecentRegenerations(null);
+    setRegenerationReadError(false);
+    void fetch(`/api/chats/${regenerating.sourceId}/regenerations/${regenerating.entryId}`, {
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unavailable");
+        const result = RecentRegenerationsSchema.parse(await response.json());
+        if (
+          result.operations.some(
+            (item) =>
+              item.sourceId !== regenerating.sourceId || item.entryId !== regenerating.entryId,
+          )
+        )
+          throw new Error("Wrong scope");
+        if (!controller.signal.aborted) setRecentRegenerations(result.operations);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setRegenerationReadError(true);
+      });
+    return () => controller.abort();
+  }, [regenerating?.sourceId, regenerating?.entryId, regenerationReadRevision]);
   useEffect(() => {
     if (!editing) return;
     const controller = new AbortController();
@@ -221,6 +268,14 @@ function Workspace() {
     setManaging(true);
     setError(null);
     try {
+      if (action === "archive") {
+        setArchiving(id);
+        const guard = draftGuards.current.get(id);
+        if ((mounted.includes(id) && !guard) || (guard && !(await guard())))
+          throw new Error(
+            "Draft could not be saved before archiving. Open the chat, resolve the draft or retry saving, then try again.",
+          );
+      }
       const response = await fetch(`/api/chats/${id}/manage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -249,6 +304,7 @@ function Workspace() {
     } finally {
       managementInFlight.current = false;
       setManaging(false);
+      setArchiving(null);
     }
   }
   async function rename(id: string, title: string) {
@@ -309,6 +365,95 @@ function Workspace() {
       setError(
         "Fork could not be confirmed. Retry uses the same saved boundary and request identity.",
       );
+    } finally {
+      managementInFlight.current = false;
+      setManaging(false);
+    }
+  }
+  async function regenerate(request: NonNullable<typeof regenerating>) {
+    if (managementInFlight.current || inFlight.current) return;
+    managementInFlight.current = true;
+    setManaging(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/chats/${request.sourceId}/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) throw new Error("Not confirmed");
+      const receipt = RegenerationReceiptSchema.parse(await response.json());
+      if (
+        receipt.sourceId !== request.sourceId ||
+        receipt.entryId !== request.entryId ||
+        receipt.status !== "admitted" ||
+        !receipt.submissionId
+      )
+        throw new Error("Invalid receipt");
+      mutationVersion.current++;
+      const listResponse = await fetch("/api/chats");
+      if (!listResponse.ok) throw new Error("Catalog unavailable");
+      const next = ChatCatalogSchema.parse(await listResponse.json());
+      if (!next.chats.some((item) => item.id === receipt.branchId && item.status === "regular"))
+        throw new Error("Chat unavailable");
+      setCatalog(next);
+      setRegenerating(null);
+      setRegenerationUncertain(false);
+      uncertainRegenerations.current.delete(`${request.sourceId}:${request.entryId}`);
+      if (activeChatId.current === request.sourceId) switchChat(receipt.branchId);
+      setReload((value) => value + 1);
+    } catch {
+      setRegenerating(activeChatId.current === request.sourceId ? request : null);
+      setRegenerationUncertain(true);
+      uncertainRegenerations.current.set(
+        `${request.sourceId}:${request.entryId}`,
+        request.requestId,
+      );
+      setError(
+        "Regeneration was not confirmed. Retry this same request or close and recover it later.",
+      );
+    } finally {
+      managementInFlight.current = false;
+      setManaging(false);
+    }
+  }
+  async function openRegeneration(
+    item: z.infer<typeof RecentRegenerationsSchema>["operations"][number],
+  ) {
+    if (!regenerating || managementInFlight.current || inFlight.current) return;
+    const source = regenerating.sourceId;
+    const entry = regenerating.entryId;
+    managementInFlight.current = true;
+    setManaging(true);
+    try {
+      const [operationsResponse, catalogResponse] = await Promise.all([
+        fetch(`/api/chats/${source}/regenerations/${entry}`),
+        fetch("/api/chats"),
+      ]);
+      if (!operationsResponse.ok || !catalogResponse.ok) throw new Error("Unavailable");
+      const operations = RecentRegenerationsSchema.parse(
+        await operationsResponse.json(),
+      ).operations;
+      const next = ChatCatalogSchema.parse(await catalogResponse.json());
+      if (
+        !operations.some(
+          (candidate) =>
+            candidate.sourceId === source &&
+            candidate.entryId === entry &&
+            candidate.requestId === item.requestId &&
+            candidate.branchId === item.branchId &&
+            candidate.status === "admitted",
+        ) ||
+        !next.chats.some((chat) => chat.id === item.branchId && chat.status === "regular")
+      )
+        throw new Error("Unavailable");
+      setCatalog(next);
+      setRegenerating(null);
+      setRegenerationUncertain(false);
+      if (activeChatId.current === source) switchChat(item.branchId);
+    } catch {
+      setError("The recovered chat is no longer available. Check previous regenerations again.");
+      setRegenerationReadRevision((value) => value + 1);
     } finally {
       managementInFlight.current = false;
       setManaging(false);
@@ -483,7 +628,7 @@ function Workspace() {
           {mounted.map((id) => (
             <div
               key={id}
-              inert={id !== selected?.id}
+              inert={id !== selected?.id || archiving === id}
               aria-hidden={id !== selected?.id}
               className="absolute inset-0 flex min-h-0 flex-col"
               style={{ visibility: id === selected?.id ? "visible" : "hidden" }}
@@ -491,6 +636,8 @@ function Workspace() {
               <MainThreadView
                 mainId={id}
                 title={catalog?.chats.find((item) => item.id === id)?.title ?? "Main chat"}
+                draftGuards={draftGuards}
+                onUnsavedDraft={onUnsavedDraft}
                 active={id === selected?.id}
                 readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
                 selectedTangent={
@@ -512,11 +659,30 @@ function Workspace() {
                   setError(null);
                   setForking({ sourceId: id, at: String(entryId), requestId: crypto.randomUUID() });
                 }}
+                onRegenerate={(entryId) => {
+                  if (
+                    managementInFlight.current ||
+                    inFlight.current ||
+                    regenerating ||
+                    editing ||
+                    id !== activeChatId.current
+                  )
+                    return;
+                  setError(null);
+                  const existing = uncertainRegenerations.current.get(`${id}:${entryId}`);
+                  setRegenerationUncertain(existing !== undefined);
+                  setRegenerating({
+                    sourceId: id,
+                    entryId: String(entryId),
+                    requestId: existing ?? crypto.randomUUID(),
+                  });
+                }}
                 onEdit={(entryId, text) => {
                   if (
                     managementInFlight.current ||
                     inFlight.current ||
                     editing ||
+                    regenerating ||
                     id !== activeChatId.current
                   )
                     return;
@@ -535,6 +701,107 @@ function Workspace() {
           ))}
         </div>
       </SidebarInset>
+      <AlertDialog
+        open={regenerating !== null}
+        onOpenChange={(open) => {
+          if (!open && !managing) {
+            setRegenerating(null);
+            setRegenerationUncertain(false);
+          }
+        }}
+      >
+        <AlertDialogContent initialFocus={cancelRegeneration}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Regenerate in a new chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The source chat and its draft stay unchanged. The new chat inherits context before
+              this answer and configuration at that boundary. Regeneration may repeat tool calls and
+              external effects; earlier effects are not undone. Admission does not mean the answer
+              has completed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {recentRegenerations === null && (
+            <p>
+              {regenerationReadError
+                ? "Could not check previous regenerations."
+                : "Checking previous regenerations…"}
+            </p>
+          )}
+          {regenerationReadError && (
+            <Button
+              variant="outline"
+              onClick={() => setRegenerationReadRevision((value) => value + 1)}
+            >
+              Retry checking
+            </Button>
+          )}
+          {recentRegenerations && recentRegenerations.length > 0 && (
+            <div className="space-y-2">
+              <p>
+                Previous operations for this answer. Recover one, or deliberately start another.
+              </p>
+              {recentRegenerations.map((item) => (
+                <div key={item.requestId} className="flex items-center gap-2">
+                  <span>
+                    Chat {item.branchId}: {item.status}
+                  </span>
+                  {item.status === "admitted" ? (
+                    <Button
+                      variant="outline"
+                      disabled={managing}
+                      onClick={() => {
+                        void openRegeneration(item);
+                      }}
+                    >
+                      Open created chat
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      disabled={managing}
+                      onClick={() => {
+                        if (regenerating)
+                          void regenerate({ ...regenerating, requestId: item.requestId });
+                      }}
+                    >
+                      Resume prepared regeneration
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {error && regenerationUncertain && (
+            <ErrorState
+              title="Regeneration not confirmed"
+              detail={error}
+              retrying={managing}
+              onRetry={() => {
+                if (regenerating) void regenerate(regenerating);
+              }}
+            />
+          )}
+          {error && !regenerationUncertain && <p role="alert">{error}</p>}
+          <AlertDialogFooter>
+            <AlertDialogCancel ref={cancelRegeneration} disabled={managing}>
+              {regenerationUncertain ? "Close and recover later" : "Cancel"}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={managing || recentRegenerations === null}
+              onClick={(event) => {
+                event.preventDefault();
+                if (regenerating) void regenerate(regenerating);
+              }}
+            >
+              {regenerationUncertain
+                ? "Retry same regeneration"
+                : recentRegenerations?.length
+                  ? "Create another regeneration"
+                  : "Regenerate"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={editing !== null}
         onOpenChange={(open) => {

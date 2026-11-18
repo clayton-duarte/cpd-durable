@@ -9,7 +9,10 @@ export function ChatPage({
   canRequestTangent = false,
   inputBlockedReason,
   onFork,
+  onRegenerate,
   onEdit,
+  draftGuards,
+  onUnsavedDraft,
 }: {
   chatId?: string;
   active?: boolean;
@@ -18,7 +21,10 @@ export function ChatPage({
   canRequestTangent?: boolean;
   inputBlockedReason?: string | undefined;
   onFork?: ((entryId: number) => void) | undefined;
+  onRegenerate?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;
+  draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
+  onUnsavedDraft?: (chatId: string) => void;
 }) {
   const chat = useChat(chatId, active);
   return (
@@ -31,7 +37,10 @@ export function ChatPage({
         canRequestTangent={canRequestTangent}
         inputBlockedReason={inputBlockedReason}
         onFork={onFork}
+        onRegenerate={onRegenerate}
         onEdit={onEdit}
+        {...(draftGuards ? { draftGuards } : {})}
+        {...(onUnsavedDraft ? { onUnsavedDraft } : {})}
         title="CPD Durable"
         description="Durable chat · model settings in Chat details"
         state={chat.state}

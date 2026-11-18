@@ -107,7 +107,10 @@ export function MainThreadView({
   onSelectTangent,
   onCloseTangent,
   onFork,
+  onRegenerate,
   onEdit,
+  draftGuards,
+  onUnsavedDraft,
 }: {
   mainId: string;
   title: string;
@@ -117,7 +120,10 @@ export function MainThreadView({
   onSelectTangent: (id: string) => void;
   onCloseTangent: () => void;
   onFork: (entryId: number) => void;
+  onRegenerate: (entryId: number) => void;
   onEdit: (entryId: number, text: string) => void;
+  draftGuards: React.RefObject<Map<string, () => Promise<boolean>>>;
+  onUnsavedDraft: (chatId: string) => void;
 }) {
   const [items, setItems] = useState<TangentView[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -283,7 +289,10 @@ export function MainThreadView({
               readOnly={readOnly}
               canRequestTangent={configured}
               onFork={onFork}
+              onRegenerate={onRegenerate}
               onEdit={onEdit}
+              draftGuards={draftGuards}
+              onUnsavedDraft={onUnsavedDraft}
             />
           </div>
         )}
@@ -354,6 +363,19 @@ export function MainThreadView({
                         setLifecycleError(null);
                         void (async () => {
                           try {
+                            if (
+                              next !== "open" &&
+                              !((await draftGuards.current.get(tangent.id)?.()) ?? true)
+                            ) {
+                              onUnsavedDraft(tangent.id);
+                              return;
+                            }
+                            if (
+                              stale.current ||
+                              parentReadOnly.current ||
+                              (item.lifecycle === "open" && !childMutationAllowed(tangent.id))
+                            )
+                              return;
                             const response = await fetch(
                               `/api/chats/${mainId}/tangents/${item.id}/lifecycle`,
                               {
@@ -415,6 +437,8 @@ export function MainThreadView({
             />
             <ChatPage
               chatId={tangent.id}
+              draftGuards={draftGuards}
+              onUnsavedDraft={onUnsavedDraft}
               active={active && visible}
               readOnly={
                 readOnly ||

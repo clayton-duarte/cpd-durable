@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 const pending = {
   questionId: "q-7",
@@ -39,6 +40,7 @@ async function setup(page: Page) {
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {

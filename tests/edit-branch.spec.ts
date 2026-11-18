@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 test("edit uses the native composer, safely retries the same operation and keeps the source draft", async ({
   page,
@@ -11,6 +12,7 @@ test("edit uses the native composer, safely retries the same operation and keeps
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {
@@ -161,6 +163,7 @@ test("prepared recovery requires explicit matching text and rejects wrong-scope 
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {

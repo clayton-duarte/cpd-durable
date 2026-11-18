@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
 const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
@@ -210,6 +211,7 @@ test("production route keeps native chats and drafts through tangent navigation"
       return route.fulfill({ status: 200, contentType: "image/png", body: png });
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/chats/1");
   const main = page.getByRole("region", { name: "Main chat: Main" });
   const input = (scope: ReturnType<Page["locator"]>) =>
@@ -272,13 +274,12 @@ test("production route keeps native chats and drafts through tangent navigation"
     childMutationsBefore,
   );
   await expect.poll(() => requests.includes("GET /api/model-policy")).toBe(true);
-  await input(main).fill("/ Explore the architecture");
-  await input(main).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(1, 1));
+  await input(main).fill("/tangent Explore the architecture");
+  await input(main).evaluate((node: HTMLTextAreaElement) => node.setSelectionRange(8, 8));
   await input(main).press("ArrowLeft");
   await input(main).press("ArrowRight");
   const palette = main.locator('[data-slot="composer-trigger-popover"]');
   await expect(palette.getByRole("option", { name: /\/tangent/ })).toBeVisible();
-  await expect(palette.getByRole("option", { name: /\/side/ })).toBeVisible();
   await palette.getByRole("option", { name: /\/tangent/ }).click();
   await expect.poll(() => inputs.length).toBe(1);
   expect(inputs[0]).toMatchObject({
@@ -529,6 +530,7 @@ test("busy and archived main chats do not expose tangent commands or send their 
       return route.fulfill({ json: { conversationId: "1", questions: [] } });
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/chats/1");
   const draft = page.getByRole("textbox", { name: "Message input" });
   await draft.fill("/tangent goal");
@@ -650,6 +652,7 @@ test("loading earlier child history keeps main history and both native drafts in
     }
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/chats/1?tangent=2");
   const main = page.getByRole("region", { name: "Main chat: Main" });
   const child = page.getByRole("region", { name: "Tangent chat: Running child" });

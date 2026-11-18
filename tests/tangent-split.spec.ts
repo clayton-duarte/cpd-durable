@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 async function attach(page: Page, chat: string, name: string) {
   const scope = page.getByTestId(`chat-${chat}`);
@@ -12,6 +13,7 @@ const calls = (page: Page) =>
 
 test("native chats preserve independent drafts and files across navigation", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
+  await syntheticDrafts(page);
   await page.goto("/tests/tangent-fixture/workspace.html");
   const main = page.getByTestId("chat-main");
   const a = page.getByTestId("chat-a");
@@ -65,6 +67,7 @@ test("native chats preserve independent drafts and files across navigation", asy
 
 test("mobile tabs switch visible context with keyboard without starting work", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await syntheticDrafts(page);
   await page.goto("/tests/tangent-fixture/workspace.html");
   await page.getByRole("button", { name: "Open tangent: Running tangent" }).click();
   const mainTab = page.getByRole("tab", { name: "Main thread" });

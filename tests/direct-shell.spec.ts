@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 test("fresh double-prefix sends to shell and Stop targets its request", async ({ page }) => {
   await page.route("**/api/**", (route) => route.abort());
@@ -6,6 +7,17 @@ test("fresh double-prefix sends to shell and Stop targets its request", async ({
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
+  let normalAttempts = 0;
+  let normalInputs = 0;
+  await page.route("**/api/chats/1/draft/attempt", (route) => {
+    normalAttempts++;
+    return route.abort();
+  });
+  await page.route("**/api/chats/1/input", (route) => {
+    normalInputs++;
+    return route.abort();
+  });
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
@@ -68,6 +80,9 @@ test("fresh double-prefix sends to shell and Stop targets its request", async ({
   await input.press("Enter");
   await expect.poll(() => request?.command).toBe("printf synthetic");
   expect(request?.includeInContext).toBe(false);
+  expect(normalAttempts).toBe(0);
+  expect(normalInputs).toBe(0);
+  await expect(input).toHaveValue("!!printf synthetic");
   await page.getByRole("button", { name: "1 tool call" }).click();
   await expect(page.getByRole("button", { name: /Running tool.*Direct shell/ })).toBeVisible();
   await page.getByRole("button", { name: /Running tool.*Direct shell/ }).click();
@@ -84,6 +99,7 @@ test("uncertain shell retries the original identity without consuming a newer dr
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
@@ -140,6 +156,7 @@ test("ignores a shell status from another chat", async ({ page }) => {
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
@@ -199,6 +216,7 @@ test("a delayed old poll cannot replace a newer shell or change its Stop target"
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
@@ -306,6 +324,7 @@ test("visible idle chat discovers remote shell tasks in succession and stops the
   await page.route("**/api/chats/*/workers", (route) =>
     route.fulfill({ json: { helpers: [], hasUnsettled: false } }),
   );
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {
