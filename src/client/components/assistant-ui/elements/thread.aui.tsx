@@ -33,6 +33,7 @@ import { AgentQuestions } from "@/agent-questions";
 import { ForkMessageAction } from "@/fork-message-action";
 import { RegenerateMessageAction } from "@/regenerate-message-action";
 import { EditMessageAction } from "@/edit-message-action";
+import { FeedbackAction } from "@/feedback-action";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -69,8 +70,6 @@ import {
   Loader2Icon,
   SquareIcon,
   PlayIcon,
-  ThumbsDownIcon,
-  ThumbsUpIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -794,71 +793,53 @@ const AssistantMessage: FC = () => {
 
 const AssistantActionBar: FC = () => {
   return (
-    <ActionBarPrimitive.Root
-      hideWhenRunning
-      autohide="not-last"
-      className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
-    >
-      <ForkMessageAction />
-      <RegenerateMessageAction />
-      <ActionBarPrimitive.Copy render={<TooltipIconButton tooltip="Copy" />}>
-        <AuiIf condition={(s) => s.message.isCopied}>
-          <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+    <div className="text-muted-foreground col-start-3 row-start-2 -ms-1 flex gap-1">
+      <ActionBarPrimitive.Root
+        hideWhenRunning
+        autohide="not-last"
+        className="aui-assistant-action-bar-root animate-in fade-in flex gap-1 duration-200"
+      >
+        <ForkMessageAction />
+        <RegenerateMessageAction />
+        <ActionBarPrimitive.Copy render={<TooltipIconButton tooltip="Copy" />}>
+          <AuiIf condition={(s) => s.message.isCopied}>
+            <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />
+          </AuiIf>
+          <AuiIf condition={(s) => !s.message.isCopied}>
+            <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
+          </AuiIf>
+        </ActionBarPrimitive.Copy>
+        <AuiIf condition={(s) => s.thread.capabilities.reload}>
+          <ActionBarPrimitive.Reload render={<TooltipIconButton tooltip="Refresh" />}>
+            <RefreshCwIcon />
+          </ActionBarPrimitive.Reload>
         </AuiIf>
-        <AuiIf condition={(s) => !s.message.isCopied}>
-          <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />
-        </AuiIf>
-      </ActionBarPrimitive.Copy>
-      <AuiIf condition={(s) => s.thread.capabilities.feedback}>
-        <ActionBarPrimitive.FeedbackPositive
-          render={
-            <TooltipIconButton
-              tooltip="Helpful"
-              className="data-[submitted=true]:bg-accent data-[submitted=true]:text-accent-foreground"
-            />
-          }
-        >
-          <ThumbsUpIcon />
-        </ActionBarPrimitive.FeedbackPositive>
-        <ActionBarPrimitive.FeedbackNegative
-          render={
-            <TooltipIconButton
-              tooltip="Not helpful"
-              className="data-[submitted=true]:bg-accent data-[submitted=true]:text-accent-foreground"
-            />
-          }
-        >
-          <ThumbsDownIcon />
-        </ActionBarPrimitive.FeedbackNegative>
-      </AuiIf>
-      <AuiIf condition={(s) => s.thread.capabilities.reload}>
-        <ActionBarPrimitive.Reload render={<TooltipIconButton tooltip="Refresh" />}>
-          <RefreshCwIcon />
-        </ActionBarPrimitive.Reload>
-      </AuiIf>
-      <ActionBarMorePrimitive.Root>
-        <ActionBarMorePrimitive.Trigger
-          render={<TooltipIconButton tooltip="More" className="data-[state=open]:bg-accent" />}
-        >
-          <MoreHorizontalIcon />
-        </ActionBarMorePrimitive.Trigger>
-        <ActionBarMorePrimitive.Content
-          side="bottom"
-          align="start"
-          sideOffset={6}
-          className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
-        >
-          <ActionBarPrimitive.ExportMarkdown
-            render={
-              <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none" />
-            }
+        <ActionBarMorePrimitive.Root>
+          <ActionBarMorePrimitive.Trigger
+            render={<TooltipIconButton tooltip="More" className="data-[state=open]:bg-accent" />}
           >
-            <DownloadIcon className="size-4" />
-            Export as Markdown
-          </ActionBarPrimitive.ExportMarkdown>
-        </ActionBarMorePrimitive.Content>
-      </ActionBarMorePrimitive.Root>
-    </ActionBarPrimitive.Root>
+            <MoreHorizontalIcon />
+          </ActionBarMorePrimitive.Trigger>
+          <ActionBarMorePrimitive.Content
+            side="bottom"
+            align="start"
+            sideOffset={6}
+            className="aui-action-bar-more-content bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-[8rem] overflow-hidden rounded-xl border p-1.5"
+          >
+            <ActionBarPrimitive.ExportMarkdown
+              render={
+                <ActionBarMorePrimitive.Item className="aui-action-bar-more-item hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none" />
+              }
+            >
+              <DownloadIcon className="size-4" />
+              Export as Markdown
+            </ActionBarPrimitive.ExportMarkdown>
+          </ActionBarMorePrimitive.Content>
+        </ActionBarMorePrimitive.Root>
+      </ActionBarPrimitive.Root>
+      {/* Keep the dialog and uncertain retry mounted when the native action bar autohides. */}
+      <FeedbackAction />
+    </div>
   );
 };
 

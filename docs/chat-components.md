@@ -48,6 +48,16 @@ Ambiguous multi-entry updates, another conversation/task, dropped boundaries and
 
 Strict wire validation rejects duplicate message/part identities and unknown wire part types. Rejected frames retain history/drafts, disable new actions and show a sanitized error. A later valid frame clears only that frame error, preserving uncertain-operation retries.
 
+### Private response feedback
+
+Helpful and Not helpful open a private feedback dialog for committed SDK assistant model messages containing text. The server validates the selected conversation's fork-aware history and the original entry ID and model-message index; visual part indexes and live render aliases are not targets. User messages, transient responses, gaps and tool-only messages have no feedback controls. An inherited answer can be rated in a fork independently of its parent; the fork starts without the parent's feedback. Archived chats are read-only and deleted chats reject access.
+
+Feedback in a tangent is scoped to that tangent's conversation. A closed tangent or archived parent is read-only; a deleted parent makes it unavailable. The client also checks the current pane and tangent-ownership gate before mutations and before accepting late responses.
+
+The current vote and optional comment (up to 4,000 characters) are stored in a conversation-scoped SDK metadata document, not in a model entry or a second transcript database. Reads and writes do not submit a model request, add feedback to model context, upload telemetry or send feedback to a provider. This is a same-user local host, not a multi-account privacy boundary. Protect the SDK storage and backups as private data.
+
+Each target has a revision; saves and explicit clears compare that revision atomically. A request ID binds its target and payload, so an unconfirmed save can be retried unchanged. The UI does not claim a save until acknowledged, retains newer comment edits, and requires an explicit refresh after a conflict. A clear removes the current value, not necessarily the SDK's retained operation receipts or older storage records; it is not a physical-erasure promise. Retry identities and unsaved edits are retained only in the mounted chat, not across page refresh.
+
 ### Complete history access (Batch 3)
 
 `src/server/history.ts` binds one transient SDK `ConversationTranscript` to each browser view. The SDK's `entries()`, `loadEarlier()`, `fillGap()` and `resume` window own page boundaries, deduplication, ordering and gap detection. Each read loads at most 50 entries; record IDs are bounds, not contiguous counts. Loaded entries remain in the view as the watched recent window advances. Full canonical projection is recomputed over the loaded entries, but tool-result pairing never crosses an unresolved gap.
@@ -242,9 +252,12 @@ Source-backed live/committed identity, paged history/gap recovery, loaded-turn n
 
 ## shadcn gap decisions
 
+**Private feedback uses supplied TooltipIconButton and shadcn Dialog/Textarea.** The installed assistant-ui catalogue does not supply a FeedbackDialog. Its FeedbackPositive/FeedbackNegative primitives invoke the assistant-ui runtime feedback callback and derive submitted state from runtime metadata, which does not implement this conversation-scoped private service's revision and retry protocol. The adapter composes the supplied controls instead of calling that unrelated callback or inventing a visual component. It keeps the dialog mounted outside the autohiding native action-bar root so a draft and uncertain retry survive hiding.
+
 **Narrow tangent pane selection uses supplied shadcn Tabs.** The supplied TaskCard provides child actions but not an accessible switcher between two independently mounted chat panes. Tabs fills that layout gap; desktop retains both panes and neither tab selection nor closing cancels SDK work.
 
 **Prompt templates use supplied shadcn Dialog and read-only Textarea around assistant-ui CommandPalette.** The palette supplies selection but no host-scoped container for provenance, literal content review and explicit append/replace. The existing Textarea displays plain text without interpreting markup or fetching images; these supplied controls fill the gap without adding a custom visual component.
+
 **Global Settings uses the supplied shadcn Dialog around assistant-ui ModelSelector.** The supplied SettingsPanel requires visible system-prompt and temperature fields and a single model, none of which represents this three-assignment application-default form. The dialog provides the missing global settings container without inventing those controls.
 
 **Reset and chat-deletion confirmation use supplied shadcn AlertDialog.** assistant-ui supplies no dedicated context-reset confirmation dialog, and ThreadList's native Delete action does not confirm removal/discarding an unsent draft. ElicitationForm adds server/plug identity, “needs input,” an extra confirmation field and Send/Decline semantics; it is not an appropriate destructive-action modal. Use the existing supplied shadcn **AlertDialog** for accessible modal confirmation and **Textarea** for optional reset handoff. These provide Cancel / Reset context or Cancel / Delete chat without another card, checkbox or custom visual component. Deletion starts focus on Cancel and explicitly distinguishes app removal from underlying record erasure. Reset focus starts on Cancel, stays in the modal, and returns to the correct composer. Cancel/Escape changes no server state and retains handoff text; Reset context alone admits the existing operation. Failure retains the handoff and the original request-ID-safe retry; admission does not mean the reset has been placed.

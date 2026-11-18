@@ -59,6 +59,7 @@ import { RegenerationError } from "./regeneration.ts";
 import { RegenerationRequestSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
 import { DirectShellRequestSchema } from "../shared/direct-shell.ts";
 import { admitDirectShell } from "./direct-shell.ts";
+import { createFeedbackRoutes } from "./feedback-routes.ts";
 import { BranchOperationError } from "./branch-operations.ts";
 import {
   EditBranchRequestSchema,
@@ -128,6 +129,11 @@ export function createApp(
   );
   app.use("/api/*", limitRequests);
   if (chat.attachments) app.route("/", chat.attachments.routes);
+  if (chat.chats)
+    app.route(
+      "/",
+      createFeedbackRoutes(async (id) => (await chat.chats?.resolve(id))?.conversation),
+    );
   if (chat.tangents) app.route("/", chat.tangents.routes);
   if (chat.workers) app.route("/", chat.workers);
   if (chat.handoffs) app.route("/", chat.handoffs);

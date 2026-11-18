@@ -39,6 +39,138 @@ const tangent = (id: number, title: string, activity: "running" | "idle") => ({
   },
 });
 
+test("private feedback stays scoped to each pane and stale ownership blocks held saves", async ({
+  page,
+}) => {
+  let stale = false;
+  let releaseRead: (() => void) | undefined;
+  let releaseSave: (() => void) | undefined;
+  let reads = 0;
+  const writes: {
+    chat: string;
+    body: {
+      requestId: string;
+      expectedRevision: number;
+      value: { vote: string; comment: string | null };
+    };
+  }[] = [];
+  const values: Record<
+    string,
+    { revision: number; value: { vote: string; comment: string | null } | null }
+  > = {
+    "1": { revision: 0, value: null },
+    "2": { revision: 0, value: null },
+  };
+  await page.addInitScript(() => {
+    class Source extends EventTarget {
+      onerror: (() => void) | null = null;
+      constructor(url: string) {
+        super();
+        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: id,
+                messages: [
+                  {
+                    id: "11:2",
+                    role: "assistant",
+                    text: "Inherited answer",
+                    interrupted: false,
+                    source: { entryId: 11, feedbackModelIndex: 2 },
+                  },
+                ],
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+                controls: { canContinue: false, resetPending: false, queue: [] },
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Source });
+  });
+  await page.route("**/api/**", async (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: { rootId: "1", chats: [{ id: "1", title: "Main", running: false }] },
+      });
+    if (path === "/api/chats/1/tangents")
+      return stale
+        ? route.fulfill({ status: 503 })
+        : route.fulfill({ json: { tangents: [tangent(2, "Child", "idle")] } });
+    const match = /^\/api\/chats\/([12])\/feedback\/11\/2$/.exec(path);
+    if (match) {
+      const chat = match[1]!;
+      const view = () => ({
+        conversationId: chat,
+        target: { entryId: 11, modelIndex: 2 },
+        ...values[chat]!,
+        readOnly: false,
+      });
+      if (req.method() === "GET") {
+        if (chat === "2" && reads++ === 0)
+          await new Promise<void>((resolve) => {
+            releaseRead = resolve;
+          });
+        return route.fulfill({ json: view() });
+      }
+      const body = req.postDataJSON() as (typeof writes)[number]["body"];
+      writes.push({ chat, body });
+      if (chat === "2")
+        await new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        });
+      values[chat] = { revision: body.expectedRevision + 1, value: body.value };
+      return route.fulfill({ json: view() });
+    }
+    return route.abort();
+  });
+  await syntheticDrafts(page);
+  await page.goto("/chats/1");
+  const main = page.getByRole("region", { name: "Main chat: Main" });
+  const draft = main.getByRole("textbox", { name: "Message input" });
+  await draft.fill("Main draft");
+  await main.getByRole("button", { name: "Helpful", exact: true }).click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Optional comment").fill("Main vote");
+  await dialog.getByRole("button", { name: "Save feedback" }).click();
+  await expect(dialog).toContainText("Saved revision 1");
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Open tangent: Child" }).click();
+  const side = page.getByRole("region", { name: "Tangent chat: Child" });
+  await expect.poll(() => !!releaseRead).toBe(true);
+  await page.getByRole("button", { name: "Close tangent" }).click();
+  releaseRead?.();
+  await page.getByRole("button", { name: "Open tangent: Child" }).click();
+  await side.getByRole("button", { name: "Not helpful", exact: true }).click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Optional comment").fill("Child vote");
+  await expect(dialog.getByRole("button", { name: "Save feedback" })).toBeEnabled();
+  await dialog.getByRole("button", { name: "Save feedback" }).click();
+  await expect.poll(() => !!releaseSave).toBe(true);
+  await dialog.getByLabel("Optional comment").fill("Newer child draft");
+  stale = true;
+  await expect(page.getByText("Tangents unavailable", { exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  await expect(dialog.getByRole("button", { name: "Save feedback" })).toBeDisabled();
+  releaseSave?.();
+  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Newer child draft");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Main draft");
+  expect(writes.map((entry) => entry.chat)).toEqual(["1", "2"]);
+  expect(writes[0]!.body.value.vote).toBe("helpful");
+  expect(writes[1]!.body.value.vote).toBe("unhelpful");
+});
+
 async function addFile(page: Page, scope: ReturnType<Page["locator"]>, name: string) {
   const chooser = page.waitForEvent("filechooser");
   await scope.getByRole("button", { name: "Add Attachment" }).click();
