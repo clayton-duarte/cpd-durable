@@ -149,8 +149,17 @@ export class StdioMcpClient {
       try {
         const text = new TextDecoder("utf-8", { fatal: true }).decode(line);
         const message = JsonRpc.parse(JSON.parse(text) as unknown);
-        if (message.method) {
-          if (message.id !== undefined && message.id !== null) {
+        const hasMethod = Object.hasOwn(message, "method");
+        const hasId = Object.hasOwn(message, "id");
+        const hasResult = Object.hasOwn(message, "result");
+        const hasError = Object.hasOwn(message, "error");
+        const hasParams = Object.hasOwn(message, "params");
+        if (hasMethod) {
+          if (!message.method || hasResult || hasError || (hasId && message.id === null))
+            return this.fail();
+          if (hasParams && (!message["params"] || typeof message["params"] !== "object"))
+            return this.fail();
+          if (hasId && message.id !== undefined && message.id !== null) {
             this.send({
               jsonrpc: "2.0",
               id: message.id,
@@ -159,17 +168,21 @@ export class StdioMcpClient {
           } else if (message.method === "notifications/tools/list_changed") this.stale = true;
           continue;
         }
-        if (typeof message.id !== "number" || !Number.isSafeInteger(message.id) || message.id < 1)
+        if (
+          !hasId ||
+          hasParams ||
+          hasResult === hasError ||
+          typeof message.id !== "number" ||
+          !Number.isSafeInteger(message.id) ||
+          message.id < 1
+        )
           return this.fail();
         const pending = this.pending.get(message.id);
         if (!pending) continue; // Late response after cancellation.
         this.pending.delete(message.id);
         pending.detach();
-        if (message.error !== undefined && message.result === undefined)
-          pending.reject(new Error("MCP protocol request failed."));
-        else if (message.error === undefined && message.result !== undefined)
-          pending.resolve(message.result);
-        else return this.fail();
+        if (hasError) pending.reject(new Error("MCP protocol request failed."));
+        else pending.resolve(message.result);
       } catch {
         return this.fail();
       }
@@ -186,7 +199,9 @@ export class StdioMcpClient {
     }
     this.pending.clear();
     this.child?.stdin.destroy();
-    this.child?.kill();
+    // Explicit shutdown or fatal framing failure: terminate only this owned
+    // process, not its process group. This is not a request execution deadline.
+    this.child?.kill("SIGKILL");
   }
 
   async close() {

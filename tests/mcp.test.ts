@@ -10,6 +10,7 @@ import {
   MemoryStorage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
+import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { openMcpTools } from "../src/server/mcp/index.ts";
 import { StdioMcpClient, type StdioServer } from "../src/server/mcp/stdio.ts";
@@ -22,18 +23,31 @@ import readline from "node:readline";
 import {appendFileSync} from "node:fs";
 const args = process.argv.slice(2);
 const reply = value => { const s=JSON.stringify(value)+"\\n"; process.stdout.write(s.slice(0,5)); process.stdout.write(s.slice(5)); };
+if(args.includes("ignore-term")) { process.on("SIGTERM",()=>{}); appendFileSync(args[0], "started\\n"); }
 process.stderr.write("PRIVATE_STDERR_MARKER");
 readline.createInterface({input:process.stdin}).on("line", line => {
  const m=JSON.parse(line);
- if(m.method==="initialize") { reply({jsonrpc:"2.0",id:m.id,result:{protocolVersion:"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}}); if(args.includes("server-request")) reply({jsonrpc:"2.0",id:"server-request",method:"sampling/createMessage",params:{}}); return; }
+ if(m.method==="initialize") { reply({jsonrpc:"2.0",id:m.id,result:{protocolVersion:args.includes("bad-init")?"unsupported":"2025-03-26",capabilities:{tools:{}},serverInfo:{name:"fixture",version:"1"}}}); if(args.includes("server-request")) reply({jsonrpc:"2.0",id:"server-request",method:"sampling/createMessage",params:{}}); return; }
+ if(m.method==="notifications/initialized" && args.includes("pause-input")) { process.stdin.pause(); return; }
  if(m.id==="server-request" && m.error) { appendFileSync(args[0], String(m.error.code)); return; }
  if(m.method==="tools/list") {
   if(args.includes("cycle")) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[],nextCursor:"same"}});
   if(args.includes("schema")) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"bad",inputSchema:{type:"object",properties:{},unevaluatedProperties:false}}]}});
+  if(args.includes("negative")) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"bad",inputSchema:{type:"object",properties:{x:{type:"string",minLength:-1}}}}]}});
+  if(args.includes("fraction")) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"bad",inputSchema:{type:"object",properties:{x:{type:"string",minLength:1.5}}}}]}});
+  if(args.includes("integer")) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"bad",inputSchema:{type:"object",properties:{n:{type:"integer"}}}}]}});
+  if(args.includes("constraints")) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"constraints",inputSchema:{type:"object",properties:{word:{type:"string",pattern:"^ab",minLength:2,maxLength:4},num:{type:"number",minimum:2,maximum:5,exclusiveMinimum:2,exclusiveMaximum:5},obj:{type:"object",minProperties:1,maxProperties:1,additionalProperties:true},empty:{type:"array",items:false},list:{type:"array",items:true,minItems:1,maxItems:2},choice:{oneOf:[{const:"one"},{const:"two"}]},either:{anyOf:[{const:"one"},{const:"two"}]},both:{allOf:[{type:"string",minLength:2},{type:"string",maxLength:3}]},options:{enum:["yes","no"]},fixed:{const:"fixed"}},required:["word","num","obj","empty","list","choice","either","both","options","fixed"],additionalProperties:false}}]}});
   if(m.params.cursor) return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"other",inputSchema:{type:"object",properties:{},additionalProperties:false}}]}});
   return reply({jsonrpc:"2.0",id:m.id,result:{tools:[{name:"echo ☃",description:"echo",inputSchema:{type:"object",properties:{text:{type:args.includes("change")?"number":"string"}},required:["text"],additionalProperties:false}}],nextCursor:"next"}});
  }
  if(m.method==="tools/call") {
+  if(m.params.arguments.text==="both") return reply({jsonrpc:"2.0",id:m.id,result:{},error:{code:-1,message:"hidden"}});
+  if(m.params.arguments.text==="neither") return reply({jsonrpc:"2.0",id:m.id});
+  if(m.params.arguments.text==="empty-method") return reply({jsonrpc:"2.0",id:m.id,method:"",result:{}});
+  if(m.params.arguments.text==="null") return reply({jsonrpc:"2.0",id:m.id,result:null});
+  if(m.params.arguments.text==="utf8") return process.stdout.write(Buffer.from([255,10]));
+  if(m.params.arguments.text==="json") return process.stdout.write("{bad}\\n");
+  if(m.params.arguments.text==="oversize") return process.stdout.write(Buffer.alloc(10*1024*1024+1,65));
   if(m.params.arguments.text==="block") { appendFileSync(args[0], "once\\n"); return; }
   if(m.params.arguments.text==="error") return reply({jsonrpc:"2.0",id:m.id,result:{content:[{type:"text",text:"expected tool failure"}],isError:true}});
   if(m.params.arguments.text==="large") return reply({jsonrpc:"2.0",id:m.id,result:{content:[{type:"text",text:"X".repeat(80000)}]}});
@@ -253,6 +267,151 @@ describe("stdio MCP adapter", () => {
     } finally {
       await client.close();
     }
+  });
+
+  it.each(["both", "neither", "empty-method", "utf8", "json", "oversize"])(
+    "rejects all concurrent waits after malformed %s framing",
+    async (kind) => {
+      const client = new StdioMcpClient(config);
+      await client.connect();
+      try {
+        const waiting = client.request("tools/call", {
+          name: "echo",
+          arguments: { text: "block" },
+        });
+        const malformed = client.request("tools/call", {
+          name: "echo",
+          arguments: { text: kind },
+        });
+        const outcomes = await Promise.allSettled([waiting, malformed]);
+        expect(outcomes.map((outcome) => outcome.status)).toEqual(["rejected", "rejected"]);
+        expect(JSON.stringify(outcomes)).not.toContain("hidden");
+      } finally {
+        await client.close();
+      }
+    },
+  );
+
+  it("accepts JSON-RPC null results and rejects oversized writes without poisoning the client", async () => {
+    const client = new StdioMcpClient(config);
+    await client.connect();
+    try {
+      await expect(
+        client.request("tools/call", { name: "echo", arguments: { text: "null" } }),
+      ).resolves.toBeNull();
+      await expect(
+        client.request("tools/call", {
+          name: "echo",
+          arguments: { text: "x".repeat(11 * 1024 * 1024) },
+        }),
+      ).rejects.toThrow("transport unavailable");
+      await expect(client.request("tools/list", {})).resolves.toMatchObject({ nextCursor: "next" });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("bounds queued writes under backpressure and settles every pending request on close", async () => {
+    const client = new StdioMcpClient({ ...config, args: [...config.args, "pause-input"] });
+    await client.connect();
+    let rejected = false;
+    const waits = Array.from({ length: 24 }, () =>
+      client
+        .request("tools/call", { name: "echo", arguments: { text: "x".repeat(1024 * 1024) } })
+        .catch(() => {
+          rejected = true;
+        }),
+    );
+    try {
+      await vi.waitFor(() => expect(rejected).toBe(true));
+    } finally {
+      await client.close();
+      await Promise.all(waits);
+    }
+  });
+
+  it("terminates its own SIGTERM-ignoring child on close and failed initialization", async () => {
+    const client = new StdioMcpClient({ ...config, args: [...config.args, "ignore-term"] });
+    await client.connect();
+    await client.close();
+    await client.close();
+    expect(await readFile(join(dir, "effect"), "utf8")).toBe("started\n");
+    await expect(
+      openMcpTools([{ ...config, args: [...config.args, "ignore-term", "bad-init"] }]),
+    ).rejects.toThrow("MCP server startup");
+    expect(await readFile(join(dir, "effect"), "utf8")).toBe("started\nstarted\n");
+  });
+
+  it("enforces supported constraint families through the registered SDK tool validator", async () => {
+    const mcp = await openMcpTools([{ ...config, args: [...config.args, "constraints"] }]);
+    try {
+      const tool = mcp.extension.tools![0]!;
+      const valid = {
+        word: "abc",
+        num: 3,
+        obj: { a: 1 },
+        empty: [],
+        list: [1],
+        choice: "one",
+        either: "one",
+        both: "ab",
+        options: "yes",
+        fixed: "fixed",
+      };
+      const validate = (args: Record<string, unknown>): unknown =>
+        validateToolArguments(tool, {
+          type: "toolCall",
+          id: "test",
+          name: tool.name,
+          arguments: args as typeof valid,
+        });
+      expect(validate(valid)).toEqual(valid);
+      for (const update of [
+        { word: "zz" },
+        { word: "a" },
+        { word: "abcde" },
+        { num: 1 },
+        { num: 6 },
+        { num: 2 },
+        { num: 5 },
+        { obj: {} },
+        { obj: { a: 1, b: 2 } },
+        { empty: [1] },
+        { list: [] },
+        { list: [1, 2, 3] },
+        { choice: "three" },
+        { either: "three" },
+        { both: "a" },
+        { both: "abcd" },
+        { options: "other" },
+        { fixed: "other" },
+        { extra: 1 },
+      ])
+        expect(() => validate({ ...valid, ...update }), JSON.stringify(update)).toThrow();
+    } finally {
+      await mcp.close();
+    }
+    const coercingTool = {
+      name: "integer-check",
+      description: "Validation probe",
+      parameters: {
+        type: "object",
+        properties: { n: { type: "integer" } },
+        required: ["n"],
+      },
+    };
+    expect(
+      validateToolArguments(coercingTool, {
+        type: "toolCall",
+        id: "integer",
+        name: coercingTool.name,
+        arguments: { n: 2.5 },
+      }) as unknown,
+    ).toEqual({ n: 2 });
+    for (const mode of ["negative", "fraction", "integer"])
+      await expect(openMcpTools([{ ...config, args: [...config.args, mode] }])).rejects.toThrow(
+        "Unsupported MCP input schema",
+      );
   });
 
   it("does not replay an interrupted unsafe nested MCP call after reopening", async () => {

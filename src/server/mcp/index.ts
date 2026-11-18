@@ -43,7 +43,8 @@ function freezeJson(value: JsonValue): void {
 
 // Deliberately accept a verifiable JSON Schema subset, not unknown constraints
 // that pi-schema may ignore. Unsupported schemas fail discovery, never weaken it.
-function checkSchema(value: JsonValue, root = true): void {
+function checkSchema(value: JsonValue, root = true, depth = 0, budget = { nodes: 0 }): void {
+  if (depth > 64 || ++budget.nodes > 4096) throw new Error("Unsupported MCP input schema.");
   if (typeof value === "boolean" && !root) return;
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Unsupported MCP input schema.");
@@ -81,6 +82,13 @@ function checkSchema(value: JsonValue, root = true): void {
     !z.union([types, z.array(types).min(1)]).safeParse(value["type"]).success
   )
     throw new Error("Unsupported MCP input schema.");
+  // pi-ai's public argument validator coerces fractional values to integers;
+  // do not claim strict integer validation for external MCP contracts.
+  if (
+    value["type"] === "integer" ||
+    (Array.isArray(value["type"]) && value["type"].includes("integer"))
+  )
+    throw new Error("Unsupported MCP input schema.");
   if (value["required"] !== undefined && !z.array(z.string()).safeParse(value["required"]).success)
     throw new Error("Unsupported MCP input schema.");
   for (const key of [
@@ -96,6 +104,25 @@ function checkSchema(value: JsonValue, root = true): void {
     "maxProperties",
   ]) {
     if (value[key] !== undefined && !z.number().finite().safeParse(value[key]).success)
+      throw new Error("Unsupported MCP input schema.");
+  }
+  for (const key of [
+    "minLength",
+    "maxLength",
+    "minItems",
+    "maxItems",
+    "minProperties",
+    "maxProperties",
+  ]) {
+    if (value[key] !== undefined && !z.number().int().nonnegative().safeParse(value[key]).success)
+      throw new Error("Unsupported MCP input schema.");
+  }
+  for (const [min, max] of [
+    ["minLength", "maxLength"],
+    ["minItems", "maxItems"],
+    ["minProperties", "maxProperties"],
+  ] as const) {
+    if (typeof value[min] === "number" && typeof value[max] === "number" && value[min] > value[max])
       throw new Error("Unsupported MCP input schema.");
   }
   for (const key of ["pattern", "description", "title"]) {
@@ -115,18 +142,18 @@ function checkSchema(value: JsonValue, root = true): void {
   if (properties !== undefined) {
     if (!properties || typeof properties !== "object" || Array.isArray(properties))
       throw new Error("Unsupported MCP input schema.");
-    for (const schema of Object.values(properties)) checkSchema(schema, false);
+    for (const schema of Object.values(properties)) checkSchema(schema, false, depth + 1, budget);
   }
   for (const key of ["items", "additionalProperties"]) {
     const child = value[key];
-    if (child !== undefined) checkSchema(child, false);
+    if (child !== undefined) checkSchema(child, false, depth + 1, budget);
   }
   for (const key of ["anyOf", "oneOf", "allOf"]) {
     const children = value[key];
     if (children !== undefined) {
       if (!Array.isArray(children) || children.length === 0)
         throw new Error("Unsupported MCP input schema.");
-      for (const child of children) checkSchema(child, false);
+      for (const child of children) checkSchema(child, false, depth + 1, budget);
     }
   }
 }
