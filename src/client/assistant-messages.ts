@@ -49,6 +49,7 @@ function committedMessage(message: ChatMessage, displayId: string): ThreadMessag
     metadata: {
       custom: {
         durableId: message.id,
+        ...(message.source ? { sourceEntryId: message.source.entryId } : {}),
         partIds: parts.map((part) => part.id),
         interrupted: outcome === "interrupted",
         toolStates: Object.fromEntries(

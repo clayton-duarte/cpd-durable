@@ -1,23 +1,27 @@
 import { Chat } from "./chat.tsx";
 import { useChat } from "./use-chat.ts";
-import { MODEL_ID } from "../shared/chat.ts";
 
 export function ChatPage({
   chatId,
   active = true,
   readOnly = false,
+  onFork,
 }: {
   chatId?: string;
   active?: boolean;
   readOnly?: boolean;
+  onFork?: ((entryId: number) => void) | undefined;
 }) {
   const chat = useChat(chatId, active);
   return (
     <main className="h-full min-h-0">
       <Chat
+        chatId={chatId}
         active={active}
+        readOnly={readOnly}
+        onFork={onFork}
         title="CPD Durable"
-        description={`OpenCode Go · ${MODEL_ID}`}
+        description="Durable chat · model settings in Chat details"
         state={chat.state}
         connected={chat.connected}
         pending={chat.pending}

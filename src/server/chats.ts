@@ -1,6 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   configure,
+  AgentDoc,
   defineDoc,
   LiveDoc,
   InboxDoc,
@@ -11,8 +12,14 @@ import {
   type Harness,
   type SubmissionDraft,
   type SubmissionId,
+  type EntryId,
 } from "@earendil-works/pi-durable";
 import type { ChatCatalog, ChatSummary } from "../shared/chats.ts";
+import { accounting } from "./accounting.ts";
+import { inspectContext } from "./context.ts";
+import type { Models } from "@earendil-works/pi-ai/models";
+import { modelChoices, sameSelection, selection } from "./configuration.ts";
+import type { Selection } from "../shared/configuration.ts";
 
 type CatalogItem = {
   id: number;
@@ -20,10 +27,14 @@ type CatalogItem = {
   named: boolean;
   requestId: string | null;
   status?: "archived" | "deleted";
+  parentId?: number;
+  forkEntryId?: number;
+  branchRootId?: number;
 };
 export const CatalogDoc = defineDoc<{
   items: CatalogItem[];
   requests?: { requestId: string; id: number }[];
+  forks?: { requestId: string; parentId: number; at: number; id: number }[];
 }>({
   kind: "cpd.chats",
   version: 1,
@@ -42,7 +53,7 @@ export class ChatLifecycleError extends Error {
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
-  return live.run === undefined && inbox.items.length === 0;
+  return live.run === undefined && !live.compactions?.length && inbox.items.length === 0;
 }
 async function empty(tx: Tx, item: CatalogItem) {
   return (
@@ -52,7 +63,12 @@ async function empty(tx: Tx, item: CatalogItem) {
   );
 }
 
-export async function openChats(harness: Harness, root: Conversation, defaults: AgentChange) {
+export async function openChats(
+  harness: Harness,
+  root: Conversation,
+  defaults: AgentChange,
+  models: Models,
+) {
   await harness.commit(async (tx) => {
     const catalog = await tx.doc(CatalogDoc);
     if (!catalog.items.some((item) => item.id === root.id))
@@ -60,7 +76,11 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
     let retainedEmpty = false;
     for (const item of catalog.items) {
       if (item.status === "deleted") continue;
-      await configure(tx, item.id as ConversationId, defaults);
+      const agent = await tx.doc(AgentDoc, item.id as ConversationId);
+      await configure(tx, item.id as ConversationId, {
+        ...defaults,
+        ...(agent.model ? { model: agent.model } : {}),
+      });
       if (!item.status && (await empty(tx, item))) {
         if (retainedEmpty) item.status = "archived";
         retainedEmpty = true;
@@ -79,6 +99,39 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
     if (!conversation) return undefined;
     return {
       conversation,
+      accounting: () => accounting(harness, conversation.id),
+      context: () => inspectContext(harness, conversation),
+      configuration: async () => ({
+        conversationId: String(conversation.id),
+        selection: selection(await harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)),
+        choices: await modelChoices(models),
+      }),
+      configure: async (expected: Selection, next: Selection) => {
+        const choices = await modelChoices(models);
+        const choice = choices.find(
+          (choice) => choice.provider === next.provider && choice.modelId === next.modelId,
+        );
+        if (!choice || !choice.thinkingLevels.includes(next.thinkingLevel))
+          throw new ChatLifecycleError("Model or thinking level is unavailable.", 409);
+        await harness.commit(async (tx) => {
+          const catalog = await tx.doc(CatalogDoc);
+          const item = catalog.items.find((item) => item.id === conversation.id);
+          if (!item || item.status)
+            throw new ChatLifecycleError("Restore this chat before changing configuration.", 409);
+          const agent = await tx.doc(AgentDoc, conversation.id);
+          const current = selection(agent);
+          if (sameSelection(current, next)) return;
+          if (!sameSelection(current, expected))
+            throw new ChatLifecycleError(
+              "Configuration changed. Refresh before choosing again.",
+              409,
+            );
+          await configure(tx, conversation.id, {
+            model: { provider: next.provider, modelId: next.modelId },
+            thinkingLevel: next.thinkingLevel,
+          });
+        }, BACKGROUND_CONTEXT);
+      },
       archived: item.status === "archived",
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
@@ -116,10 +169,88 @@ export async function openChats(harness: Harness, root: Conversation, defaults: 
               title: item.title,
               running: live?.run !== undefined,
               status: item.status === "archived" ? "archived" : "regular",
+              ...(item.parentId === undefined
+                ? {}
+                : {
+                    parentId: String(item.parentId),
+                    forkEntryId: String(item.forkEntryId),
+                    branchRootId: String(item.branchRootId),
+                  }),
             };
           }),
       );
       return { rootId: String(root.id), chats };
+    },
+    async rename(id: string, title: string, expected: string) {
+      await harness.commit(async (tx) => {
+        const catalog = await tx.doc(CatalogDoc);
+        const item = catalog.items.find(
+          (item) => String(item.id) === id && item.status !== "deleted",
+        );
+        if (!item) throw new ChatLifecycleError("Chat not found.", 404);
+        if (item.status) throw new ChatLifecycleError("Restore this chat before renaming.", 409);
+        if (item.title === title) return;
+        if (item.title !== expected)
+          throw new ChatLifecycleError("Title changed. Refresh before renaming.", 409);
+        item.title = title;
+        item.named = true;
+      }, BACKGROUND_CONTEXT);
+    },
+    async fork(id: string, requestId: string, at: string): Promise<ChatSummary> {
+      const created = await harness.commit(async (tx) => {
+        const catalog = await tx.doc(CatalogDoc);
+        const parent = catalog.items.find(
+          (item) => String(item.id) === id && item.status !== "deleted",
+        );
+        if (!parent) throw new ChatLifecycleError("Source chat not found.", 404);
+        if (parent.status)
+          throw new ChatLifecycleError("Restore the source chat before forking.", 409);
+        const previous = catalog.forks?.find((request) => request.requestId === requestId);
+        if (previous) {
+          if (String(previous.parentId) !== id || String(previous.at) !== at)
+            throw new ChatLifecycleError("Fork request identity does not match its boundary.", 409);
+          const item = catalog.items.find((item) => item.id === previous.id && !item.status);
+          if (!item) throw new ChatLifecycleError("The fork was archived or deleted.", 409);
+          return { ...item };
+        }
+        const entryId = Number(at) as EntryId;
+        const visible = await tx.scanEntries(
+          { conversationId: parent.id as ConversationId, minEntryId: entryId, maxEntryId: entryId },
+          1,
+        );
+        if (!visible.items.length)
+          throw new ChatLifecycleError("Saved entry is not visible in this chat.", 404);
+        const record = await tx.forkConversation(parent.id as ConversationId, entryId, {
+          ownership: { kind: "ownerless" },
+        });
+        const item: CatalogItem = {
+          id: record.id,
+          title: `Fork of ${parent.title}`.slice(0, 80),
+          named: true,
+          requestId: null,
+          parentId: parent.id,
+          forkEntryId: entryId,
+          branchRootId: parent.branchRootId ?? parent.id,
+        };
+        catalog.items.push(item);
+        catalog.forks ??= [];
+        catalog.forks.push({ requestId, parentId: parent.id, at: entryId, id: record.id });
+        return item;
+      }, BACKGROUND_CONTEXT);
+      const live = await harness.snapshot(
+        LiveDoc,
+        created.id as ConversationId,
+        BACKGROUND_CONTEXT,
+      );
+      return {
+        id: String(created.id),
+        title: created.title,
+        running: live?.run !== undefined,
+        status: "regular",
+        parentId: String(created.parentId),
+        forkEntryId: String(created.forkEntryId),
+        branchRootId: String(created.branchRootId),
+      };
     },
     async change(id: string, action: "archive" | "unarchive" | "delete") {
       await harness.commit(async (tx) => {

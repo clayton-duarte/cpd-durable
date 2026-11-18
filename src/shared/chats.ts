@@ -9,6 +9,9 @@ export const ChatSummarySchema = z.strictObject({
   title: z.string(),
   running: z.boolean(),
   status: z.enum(["regular", "archived"]).default("regular"),
+  parentId: ChatIdSchema.optional(),
+  forkEntryId: ChatIdSchema.optional(),
+  branchRootId: ChatIdSchema.optional(),
 });
 export const ChatCatalogSchema = z
   .strictObject({
@@ -20,6 +23,11 @@ export const ChatCatalogSchema = z
     "Duplicate chat identity",
   );
 export const CreateChatSchema = z.strictObject({ requestId: z.uuid() });
+export const RenameChatSchema = z.strictObject({
+  title: z.string().trim().min(1).max(80),
+  expected: z.string(),
+});
+export const ForkChatSchema = z.strictObject({ requestId: z.uuid(), at: ChatIdSchema });
 export const ChatActionSchema = z.strictObject({
   action: z.enum(["archive", "unarchive", "delete"]),
 });

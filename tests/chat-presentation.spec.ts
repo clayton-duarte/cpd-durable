@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/shared/chat.ts";
+import { ConfigurationChangeSchema } from "../src/shared/configuration.ts";
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
 const controls = { canContinue: false, resetPending: false, queue: [] };
@@ -189,6 +190,175 @@ test("conversation map selects actual loaded turns and preserves the native draf
     )
     .toBeLessThan(5);
   await expect(draft).toHaveValue("Keep navigation draft");
+});
+
+test("details use chat/session SDK scopes and read retries never resend the draft", async ({
+  page,
+}) => {
+  await connect(page);
+  let reads = 0;
+  await page.route("**/api/chats/1/configuration", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        selection: { provider: "test", modelId: "one", thinkingLevel: "off" },
+        choices: [],
+      },
+    }),
+  );
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        headId: null,
+        entryCount: 0,
+        messageCount: 0,
+        roles: [],
+        entries: [],
+        truncated: false,
+        compactions: [],
+        failure: null,
+      },
+    }),
+  );
+  await page.route("**/api/chats/1/accounting", async (route) => {
+    if (++reads === 1) return route.abort();
+    return route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        conversation: {
+          cost: 0.5,
+          totalTokens: 37,
+          lines: [
+            {
+              label: "test/model",
+              input: 10,
+              output: 20,
+              cacheRead: 3,
+              cacheWrite: 4,
+              totalTokens: 37,
+              cost: 0.5,
+              billed: false,
+            },
+          ],
+        },
+        session: { cost: 1, totalTokens: 74, lines: [] },
+        activity: {
+          phase: "retrying",
+          attempt: 2,
+          retryAt: 2000,
+          pollAt: null,
+          toolRounds: 1,
+          failure: null,
+        },
+      },
+    });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Unsent accounting draft");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("Details unavailable");
+  await dialog.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(dialog.locator('[data-slot="cost-meter"]')).toContainText("this chat");
+  await expect(dialog).toContainText("$1.00 session");
+  await expect(dialog).toContainText("SDK phase: retrying");
+  await expect(dialog).not.toContainText("this run");
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Unsent accounting draft");
+});
+
+test("context compaction reports admission rather than placement and never retries uncertain writes", async ({
+  page,
+}) => {
+  await connect(page);
+  const posts: unknown[] = [];
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        headId: "3",
+        entryCount: 2,
+        messageCount: 2,
+        roles: [
+          { role: "user", count: 1 },
+          { role: "assistant", count: 1 },
+        ],
+        entries: [{ id: "3", kind: "pi.compaction", messages: 1 }],
+        truncated: false,
+        compactions: [
+          { taskId: "5", trigger: "threshold", blocking: false, attempt: 1, retryAt: null },
+        ],
+        failure: null,
+      },
+    }),
+  );
+  await page.route("**/api/chats/1/compact", (route) => {
+    posts.push(route.request().postDataJSON());
+    return route.abort();
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Preserve compact draft");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const context = page.getByRole("region", { name: "Active context" });
+  await expect(context).toContainText("Token occupancy and headroom are unknown");
+  await expect(context).toContainText("threshold compaction 5");
+  await context
+    .getByRole("textbox", { name: "Optional summary instructions" })
+    .fill("Keep decisions");
+  await context.getByRole("button", { name: "Compact context", exact: true }).click();
+  await expect(context).toContainText("Admission unconfirmed");
+  await expect(
+    context.getByRole("button", { name: "Compact context", exact: true }),
+  ).toBeDisabled();
+  expect(posts).toEqual([{ instructions: "Keep decisions" }]);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Preserve compact draft");
+});
+
+test("supplied model picker saves scoped choices and supported thinking without submitting the draft", async ({
+  page,
+}) => {
+  await connect(page);
+  let selection = { provider: "test", modelId: "one", thinkingLevel: "off" };
+  const posts: unknown[] = [];
+  const choices = [
+    { provider: "test", modelId: "one", name: "First model", thinkingLevels: ["off", "low"] },
+    { provider: "test", modelId: "two", name: "Second model", thinkingLevels: ["off", "high"] },
+  ];
+  await page.route("**/api/chats/1/configuration", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = ConfigurationChangeSchema.parse(route.request().postDataJSON());
+      posts.push(body);
+      selection = body.selection;
+    }
+    return route.fulfill({ json: { conversationId: "1", selection, choices } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep model draft");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const config = page.getByRole("region", { name: "Model configuration" });
+  await config.getByRole("combobox").click();
+  await page.getByRole("option", { name: /Second model/ }).click();
+  await config.getByRole("combobox").click();
+  await page.getByRole("radio", { name: "high", exact: true }).click();
+  await page.keyboard.press("Escape");
+  await config.getByRole("button", { name: "Save model settings" }).click();
+  await expect(config).toContainText("Saved: test/two · thinking high");
+  expect(posts).toEqual([
+    {
+      expected: { provider: "test", modelId: "one", thinkingLevel: "off" },
+      selection: { provider: "test", modelId: "two", thinkingLevel: "high" },
+    },
+  ]);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Keep model draft");
 });
 
 test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
