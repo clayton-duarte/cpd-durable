@@ -10,12 +10,14 @@ import {
   type EntryId,
   type Harness,
   type Tx,
+  type EntryRecord,
 } from "@earendil-works/pi-durable";
 import {
   EditBranchRequestSchema,
   type EditBranchReceipt,
   type EditBranchRequest,
 } from "../shared/branch-operations.ts";
+import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 
 type Operation = {
   requestId: string;
@@ -86,6 +88,17 @@ function receipt(operation: Operation): EditBranchReceipt {
   };
 }
 
+export function editableUserEntry(entry: EntryRecord | undefined): boolean {
+  const message = entry?.model?.[0];
+  return (
+    entry?.kind === "pi.user" &&
+    entry.model?.length === 1 &&
+    message?.role === "user" &&
+    (typeof message.content === "string" ||
+      (message.content.length > 0 && message.content.every((part) => part.type === "text")))
+  );
+}
+
 export function createBranchOperations(harness: Harness, catalog: BranchCatalogHooks) {
   // This two-phase protocol is client-retry-resumable, not an autonomous SDK task.
   // No input is submitted during preparation or as a side effect of reads/reopen.
@@ -111,16 +124,7 @@ export function createBranchOperations(harness: Harness, catalog: BranchCatalogH
       if (!entry) throw new BranchOperationError("Saved entry is not visible.", 404);
       // A whole pi.user entry with exactly one plain-text user message only.
       // Never silently remove siblings, image parts or custom entry semantics.
-      const message = entry.model?.[0];
-      if (
-        entry.kind !== "pi.user" ||
-        entry.model?.length !== 1 ||
-        message?.role !== "user" ||
-        !(
-          typeof message.content === "string" ||
-          (message.content.length > 0 && message.content.every((part) => part.type === "text"))
-        )
-      )
+      if (!editableUserEntry(entry))
         throw new BranchOperationError("This entry cannot be edited safely.", 409);
       // Query two visible entries: the first is the target, the second its actual predecessor.
       const preceding = await tx.scanEntries(
@@ -188,12 +192,19 @@ export function createBranchOperations(harness: Harness, catalog: BranchCatalogH
         inbox.items.length > 0
       )
         throw new BranchOperationError("Prepared edit branch changed before admission.", 409);
+      const record = await checkAdmissionRequest(
+        tx,
+        conversation.id,
+        request.requestId,
+        admissionDigest(["branch-edit", request.sourceId, request.entryId, request.text]),
+      );
       const id = await conversation.submit(tx, {
         type: "input",
         requestId: request.requestId,
         content: request.text,
         whenBusy: "reject",
       });
+      record();
       operation.submissionId = id;
       return receipt(operation);
     }, BACKGROUND_CONTEXT);

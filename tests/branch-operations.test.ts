@@ -20,6 +20,9 @@ import {
 } from "../src/server/branch-operations.ts";
 import { testModels } from "./models.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
+import { openChat } from "../src/server/chat.ts";
+import { createApp } from "../src/server/app.ts";
+import { imageRequestDigest } from "../src/server/attachment-catalog.ts";
 
 describe("durable edit branch foundation", () => {
   let directory: string;
@@ -264,6 +267,25 @@ describe("durable edit branch foundation", () => {
       BACKGROUND_CONTEXT,
     );
     await expect(operations.edit(request(ambiguous))).rejects.toThrow("safely");
+    const imageEntry = await harness.commit(
+      async (tx) =>
+        (
+          await tx.appendEntry(UserEntry, root.id, {
+            model: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "Image input" },
+                  { type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+                ],
+                timestamp: 0,
+              },
+            ],
+          })
+        ).id,
+      BACKGROUND_CONTEXT,
+    );
+    await expect(operations.edit(request(imageEntry))).rejects.toThrow("safely");
     const nonUser = await harness.commit(
       async (tx) =>
         (
@@ -282,4 +304,59 @@ describe("durable edit branch foundation", () => {
     await expect(operations.edit(request(target))).rejects.toThrow("unavailable");
     expect(provider.calls).toHaveLength(0);
   });
+});
+
+it("production catalog and routes admit edits without bypassing the unified request fingerprint", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "cpd-edit-route-"));
+  const provider = testModels();
+  const chat = await openChat(directory, provider.models, directory);
+  try {
+    const id = String(chat.conversation.id);
+    const entry = await chat.conversation.commit(
+      async (tx) =>
+        tx.appendEntry(UserEntry, chat.conversation.id, {
+          model: [{ role: "user", content: "Original", timestamp: 0 }],
+        }),
+      BACKGROUND_CONTEXT,
+    );
+    const app = createApp(chat);
+    const eligibility = await app.request(
+      `http://localhost:3000/api/chats/${id}/edit-eligibility/${entry.id}`,
+    );
+    expect(await eligibility.json()).toEqual({ eligible: true });
+    const input = {
+      sourceId: id,
+      entryId: String(entry.id),
+      requestId: crypto.randomUUID(),
+      text: "Replacement",
+    };
+    const post = () =>
+      app.request(`http://localhost:3000/api/chats/${id}/edit-branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+    const response = await post();
+    expect(response.status).toBe(202);
+    const receipt = (await response.json()) as { branchId: string; submissionId: string };
+    expect(await (await post()).json()).toEqual(receipt);
+    const branch = (await chat.chats.resolve(receipt.branchId))!;
+    await expect(
+      branch.admit(
+        {
+          type: "input",
+          requestId: input.requestId,
+          content: "Replacement",
+          whenBusy: "reject",
+        },
+        { digest: imageRequestDigest({ text: "Replacement", images: [], mode: "reject" }) },
+      ),
+    ).rejects.toThrow("Request ID");
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.finish("Answer");
+    await branch.conversation.waitForIdle(BACKGROUND_CONTEXT);
+  } finally {
+    await chat.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });

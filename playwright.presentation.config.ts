@@ -11,6 +11,7 @@ export default defineConfig({
     "chat-sidebar.spec.ts",
     "theme.spec.ts",
     "history-operations.spec.ts",
+    "edit-branch.spec.ts",
     "questions.spec.ts",
   ],
   workers: 1,

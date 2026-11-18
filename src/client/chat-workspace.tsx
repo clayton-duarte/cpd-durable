@@ -13,6 +13,7 @@ import { ChatPage } from "./chat-page.tsx";
 import { ApiErrorSchema } from "../shared/chat.ts";
 import { MessageBranches } from "@/components/assistant-ui/elements/message-branches";
 import { Button } from "@/components/ui/button";
+import { EditBranchReceiptSchema } from "../shared/branch-operations.ts";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -50,6 +51,14 @@ function Workspace() {
     at: string;
     requestId: string;
   } | null>(null);
+  const [editing, setEditing] = useState<{
+    sourceId: string;
+    entryId: string;
+    requestId: string;
+    text: string;
+  } | null>(null);
+  const [editUncertain, setEditUncertain] = useState(false);
+  const cancelEdit = useRef<HTMLButtonElement>(null);
   const cancelFork = useRef<HTMLButtonElement>(null);
   const activeChatId = useRef(chatId);
   activeChatId.current = chatId;
@@ -258,6 +267,54 @@ function Workspace() {
       setManaging(false);
     }
   }
+  async function editBranch() {
+    if (!editing || managementInFlight.current || inFlight.current) return;
+    const request = editing;
+    managementInFlight.current = true;
+    setManaging(true);
+    setError(null);
+    let uncertain = true;
+    try {
+      const response = await fetch(`/api/chats/${request.sourceId}/edit-branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) {
+        uncertain = editUncertain || response.status >= 500;
+        throw new Error("Edit could not be confirmed.");
+      }
+      const receipt = EditBranchReceiptSchema.parse(await response.json());
+      if (
+        receipt.sourceId !== request.sourceId ||
+        receipt.entryId !== request.entryId ||
+        receipt.status !== "admitted" ||
+        !receipt.submissionId
+      )
+        throw new Error("Mismatched edit receipt.");
+      mutationVersion.current++;
+      const catalogResponse = await fetch("/api/chats");
+      if (!catalogResponse.ok) throw new Error("Edit admitted; chat list unavailable.");
+      const next = ChatCatalogSchema.parse(await catalogResponse.json());
+      if (!next.chats.some((item) => item.id === receipt.branchId))
+        throw new Error("Edit branch unavailable.");
+      setCatalog(next);
+      setEditing(null);
+      setEditUncertain(false);
+      if (activeChatId.current === request.sourceId) switchChat(receipt.branchId);
+      setReload((value) => value + 1);
+    } catch {
+      setEditUncertain(uncertain);
+      setError(
+        uncertain
+          ? "Edit delivery could not be confirmed. Retry uses the same source, entry, text and request ID."
+          : "Edit was rejected. The original chat remains unchanged.",
+      );
+    } finally {
+      managementInFlight.current = false;
+      setManaging(false);
+    }
+  }
   // This runtime presents navigation metadata only. Each Chat below retains its
   // own immutable runtime; pi-durable alone owns execution and transcripts.
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -380,11 +437,83 @@ function Workspace() {
                   setError(null);
                   setForking({ sourceId: id, at: String(entryId), requestId: crypto.randomUUID() });
                 }}
+                onEdit={(entryId, text) => {
+                  if (
+                    managementInFlight.current ||
+                    inFlight.current ||
+                    editing ||
+                    id !== activeChatId.current
+                  )
+                    return;
+                  setError(null);
+                  setEditUncertain(false);
+                  setEditing({
+                    sourceId: id,
+                    entryId: String(entryId),
+                    text,
+                    requestId: crypto.randomUUID(),
+                  });
+                }}
               />
             </div>
           ))}
         </div>
       </SidebarInset>
+      <AlertDialog
+        open={editing !== null}
+        onOpenChange={(open) => {
+          if (!open && !managing && !editUncertain) setEditing(null);
+        }}
+      >
+        <AlertDialogContent initialFocus={cancelEdit}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Edit in a new chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The original chat and its draft remain unchanged. A new chat inherits history before
+              the entire saved entry. Earlier-boundary configuration is inherited; editing the first
+              entry uses the source chat’s current saved configuration. Sending the replacement
+              starts a new response and may execute tools.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && (
+            <ErrorState
+              title="Edit not confirmed"
+              detail={error}
+              retrying={managing}
+              onRetry={() => {
+                void editBranch();
+              }}
+            />
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              ref={cancelEdit}
+              disabled={managing}
+              onClick={() => {
+                if (editUncertain) {
+                  setEditing(null);
+                  setEditUncertain(false);
+                  setError(
+                    "Edit delivery was not confirmed. Inspect the chat list before trying a new edit.",
+                  );
+                  setReload((value) => value + 1);
+                }
+              }}
+            >
+              {editUncertain ? "Close and inspect chats" : "Cancel"}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={managing}
+              onClick={(event) => {
+                event.preventDefault();
+                void editBranch();
+              }}
+            >
+              {editUncertain ? "Retry same edit" : "Create edited chat"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={forking !== null}
         onOpenChange={(open) => {
