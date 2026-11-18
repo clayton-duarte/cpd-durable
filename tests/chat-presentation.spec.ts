@@ -683,9 +683,8 @@ test("idle composer is one surface with discoverable commands and no inert contr
     /Type \/ for commands/,
   );
   await expect(page.getByText("Ready", { exact: true })).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: /Conversation actions|Add Attachment|Refresh/ }),
-  ).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Conversation actions|Refresh/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add Attachment" })).toBeEnabled();
   await expect(
     page.locator('[data-slot="command-palette"], [data-slot="composer-menu"]'),
   ).toHaveCount(0);

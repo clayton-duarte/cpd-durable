@@ -1,6 +1,12 @@
 import type { ConversationView } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import type { ChatMessage, ChatPart, ChatState } from "../shared/chat.ts";
+import {
+  presentCodeModeReceipt,
+  presentLiveNested,
+  sanitizeCodeModeOutput,
+} from "./nested-tool-presentation.ts";
+import { SavedImageReferenceSchema, ImageMimeSchema } from "../shared/attachments.ts";
 
 // Allowlist presentation fields; unknown payloads and provider diagnostics never cross the wire.
 const RecordIdSchema = z.number().int().positive().safe();
@@ -10,6 +16,11 @@ const MessageSchema = z.looseObject({
   stopReason: z.string().optional(),
 });
 const PartSchema = z.looseObject({ type: z.string(), text: z.string().optional() });
+const ImagePartSchema = z.looseObject({
+  type: z.literal("image"),
+  mimeType: ImageMimeSchema,
+  data: z.string(),
+});
 const ToolCallSchema = z.looseObject({
   type: z.literal("toolCall"),
   id: z.string(),
@@ -42,12 +53,14 @@ const LiveSchema = z.looseObject({
       z.looseObject({
         callId: z.string(),
         name: z.string(),
+        taskId: RecordIdSchema.optional(),
         status: z.enum(["pending", "running", "done"]),
         output: z.string().optional(),
         diagnostics: z.array(z.looseObject({ code: z.string().optional() })).optional(),
       }),
     )
     .optional(),
+  nestedTools: z.unknown().optional(),
 });
 const InboxSchema = z.looseObject({
   items: z
@@ -72,12 +85,17 @@ function partsOf(
   content: z.infer<typeof MessageSchema>["content"],
   prefix: string,
   assistant = false,
+  saved?: { entryId: number; modelIndex: number },
 ): ChatPart[] {
   if (typeof content === "string")
     return content ? [{ id: `${prefix}:0`, type: "text", text: content }] : [];
   return content.flatMap((raw, index): ChatPart[] => {
     const part = PartSchema.safeParse(raw);
     const id = `${prefix}:${index}`;
+    if (saved && ImagePartSchema.safeParse(raw).success) {
+      const source = SavedImageReferenceSchema.safeParse({ ...saved, partIndex: index });
+      if (source.success) return [{ id, type: "image", source: source.data }];
+    }
     const reasoning = assistant ? ReasoningSchema.safeParse(raw) : null;
     if (reasoning?.success)
       return reasoning.data.thinking
@@ -176,11 +194,35 @@ export function present(
         entry.kind === "pi.tool-result" ? ToolResultSchema.safeParse(raw) : null;
       if (resultMessage?.success) {
         const result = resultMessage.data;
-        const output = partsOf(result.content, `${entry.id}:${index}`)
+        const rawOutput = partsOf(result.content, `${entry.id}:${index}`)
           .map((part) =>
             part.type === "text" ? part.text : "[Non-text tool output is not displayed.]",
           )
           .join("\n");
+        const output =
+          result.toolName === "codemode" ? sanitizeCodeModeOutput(raw, rawOutput) : rawOutput;
+        const resultParts = result.content.map((raw, partIndex) => {
+          const text = PartSchema.safeParse(raw);
+          if (text.success && text.data.type === "text" && text.data.text !== undefined)
+            return {
+              type: "text" as const,
+              text:
+                result.toolName === "codemode"
+                  ? sanitizeCodeModeOutput(resultMessage.data, text.data.text)
+                  : text.data.text,
+            };
+          const source = SavedImageReferenceSchema.safeParse({
+            entryId: entry.id,
+            modelIndex: index,
+            partIndex,
+          });
+          return source.success && ImagePartSchema.safeParse(raw).success
+            ? { type: "image" as const, source: source.data }
+            : { type: "omitted" as const };
+        });
+        const imageOutput = result.content.some(
+          (raw) => PartSchema.safeParse(raw).data?.type === "image",
+        );
         const diagnostics = z
           .looseObject({
             diagnostics: z.array(z.looseObject({ code: z.string().optional() })),
@@ -191,10 +233,23 @@ export function present(
           diagnostics.data.diagnostics.some((item) => item.code === "aborted");
         const call = pending.get(result.toolCallId);
         const state = cancelled ? "cancelled" : result.isError ? "error" : "complete";
+        const receipt = result.toolName === "codemode" ? presentCodeModeReceipt(raw) : undefined;
+        const nested =
+          result.toolName === "codemode"
+            ? receipt
+              ? {
+                  state: "available" as const,
+                  calls: receipt.calls,
+                  outputSpilled: receipt.outputSpilled,
+                }
+              : { state: "unavailable" as const, calls: [] }
+            : undefined;
         if (call && call.name === result.toolName) {
           call.state = state;
           call.output = output;
+          if (imageOutput) call.resultParts = resultParts;
           call.resultEntryId = entry.id;
+          if (nested) call.nested = nested;
           pending.delete(result.toolCallId);
         } else {
           // Window may start after the originating call. Keep its result visible,
@@ -216,7 +271,9 @@ export function present(
                 argumentsUnavailable: true,
                 state,
                 output,
+                ...(imageOutput ? { resultParts } : {}),
                 resultEntryId: entry.id,
+                ...(nested ? { nested } : {}),
               },
             ],
           });
@@ -231,6 +288,9 @@ export function present(
         message.content,
         id,
         entry.kind === "pi.assistant" && message.role === "assistant",
+        entry.kind === "pi.user" && message.role === "user"
+          ? { entryId: entry.id, modelIndex: index }
+          : undefined,
       );
       if (parts.length === 0) continue;
       for (const part of parts) {
@@ -272,6 +332,15 @@ export function present(
     ) {
       call.state = slot.status;
       if (slot.output !== undefined) call.output = slot.output;
+      if (slot.name === "codemode" && slot.taskId !== undefined) {
+        call.nested = {
+          state: "live",
+          calls: presentLiveNested(live.nestedTools, {
+            taskId: slot.taskId,
+            callId: slot.callId,
+          }),
+        };
+      }
     }
   }
   for (const part of liveParts) {
