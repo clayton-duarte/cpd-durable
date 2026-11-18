@@ -10,6 +10,7 @@ export default defineConfig({
     "chat-presentation.spec.ts",
     "chat-sidebar.spec.ts",
     "theme.spec.ts",
+    "history-operations.spec.ts",
     "questions.spec.ts",
   ],
   workers: 1,
