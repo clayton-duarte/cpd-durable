@@ -64,6 +64,12 @@ test("nested code-mode calls use supplied disclosures without inventing output",
                               name: "bash",
                               state: "unavailable",
                             },
+                            {
+                              parentCallId: "parent",
+                              callId: "parent/c4",
+                              name: "mcp_123456789012345678901234__123456789012345678901234",
+                              state: "complete",
+                            },
                           ],
                         },
                       },
@@ -91,6 +97,11 @@ test("nested code-mode calls use supplied disclosures without inventing output",
   await expect(page.locator('img[src="/api/chats/1/images/2/0/1"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Pending tool: write" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Tool status unavailable: bash" })).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Used tool: mcp_123456789012345678901234__123456789012345678901234",
+    }),
+  ).toBeVisible();
   await expect(
     page.getByText(
       "The SDK reports a code-mode output spill file; its contents are not shown here.",

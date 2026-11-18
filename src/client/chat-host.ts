@@ -9,6 +9,7 @@ export interface ChatProps {
   active?: boolean;
   readOnly?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
+  onEdit?: ((entryId: number, text: string) => void) | undefined;
   title: string;
   description?: string;
   state: ChatState | null;

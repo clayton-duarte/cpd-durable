@@ -13,6 +13,7 @@ export default defineConfig({
     "codemode.spec.ts",
     "direct-shell.spec.ts",
     "history-operations.spec.ts",
+    "edit-branch.spec.ts",
     "questions.spec.ts",
   ],
   workers: 1,
