@@ -371,8 +371,19 @@ export async function openChats(
           if (options?.draft?.attempt && !attempt) throw new DraftAttemptConflict();
           if (attempt) {
             const original = attempt.record;
+            const submittedText =
+              draft.type !== "input"
+                ? undefined
+                : typeof draft.content === "string"
+                  ? draft.content
+                  : draft.content
+                      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                      .join("");
             if (
               draft.type !== "input" ||
+              submittedText !== modelInputText(original.text) ||
+              (draft.whenBusy ?? "reject") !== original.mode ||
+              (original.mode === "steer" && draft.whenIdle !== "reject") ||
               !options?.draft ||
               options.draft.revision !== original.draftRevision ||
               options.draft.text !== original.text ||

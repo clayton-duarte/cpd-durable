@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { createApp } from "../src/server/app.ts";
 import { openChat } from "../src/server/chat.ts";
 import { DraftDoc } from "../src/server/drafts.ts";
+import { imageRequestDigest } from "../src/server/attachment-catalog.ts";
 import { testModels } from "./models.ts";
 
 describe("draft attempt HTTP integration", () => {
@@ -98,6 +99,16 @@ describe("draft attempt HTTP integration", () => {
         text: "original",
         draft: { revision: 1, text: "original", images: [], attempt: true },
       };
+      const scope = (await host.chats.resolve(String(host.conversation.id)))!;
+      await expect(
+        scope.admit(
+          { type: "input", requestId: attempt.requestId, content: "different", whenBusy: "reject" },
+          {
+            draft: { ...input.draft, attempt: true },
+            digest: imageRequestDigest({ text: "original", images: [], mode: "reject" }),
+          },
+        ),
+      ).rejects.toMatchObject({ status: 409 });
       const admitted = await send("/input", "POST", input);
       expect(admitted.status).toBe(202);
       expect(await admitted.json()).not.toHaveProperty("clearedDraftRevision");
