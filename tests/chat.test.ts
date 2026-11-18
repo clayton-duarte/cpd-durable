@@ -196,6 +196,7 @@ describe("single durable chat", () => {
       "write",
       "edit",
       "bash",
+      "codemode",
       "powershell",
     ]);
     expect(agent.cwd).toBe(homedir());

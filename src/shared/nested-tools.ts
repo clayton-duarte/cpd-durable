@@ -9,6 +9,12 @@ export const NestedToolSchema = z.strictObject({
 });
 export type NestedTool = z.infer<typeof NestedToolSchema>;
 
+export const NestedToolDisplaySchema = z.strictObject({
+  state: z.enum(["live", "available", "unavailable"]),
+  calls: z.array(NestedToolSchema),
+  outputSpilled: z.boolean().optional(),
+});
+
 export const CodeModeReceiptSchema = z.strictObject({
   parentCallId: z.string().min(1),
   calls: z.array(NestedToolSchema),

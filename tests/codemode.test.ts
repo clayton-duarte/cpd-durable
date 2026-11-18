@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile, appendFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import {
   createRegistry,
   defineExtension,
@@ -14,6 +15,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { createCodeMode } from "../src/server/codemode.ts";
+import { openChat } from "../src/server/chat.ts";
 import {
   presentCodeModeReceipt,
   presentLiveNested,
@@ -323,5 +325,61 @@ describe("durable pi code mode", () => {
     expect(entered).toBe(1);
     provider.calls.at(-1)!.finish("Done.");
     await conversation.waitForIdle(BACKGROUND_CONTEXT);
+  });
+});
+
+describe("code-mode host lifecycle", () => {
+  it("closes the sandbox and storage if Harness.open fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cpd-codemode-open-"));
+    const open = vi.spyOn(Harness, "open").mockRejectedValueOnce(new Error("test-open-failure"));
+    const close = vi.spyOn(CodemodeSandbox.prototype, "close");
+    try {
+      await expect(openChat(directory, testModels().models, directory)).rejects.toThrow(
+        "test-open-failure",
+      );
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      open.mockRestore();
+      close.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("offers code mode through the application host and disposes it", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "cpd-codemode-host-"));
+    const close = vi.spyOn(CodemodeSandbox.prototype, "close");
+    const provider = testModels();
+    let chat: Awaited<ReturnType<typeof openChat>> | undefined;
+    try {
+      await writeFile(join(directory, "source.txt"), "host fixture");
+      chat = await openChat(join(directory, "data"), provider.models, directory);
+      const names = (await chat.conversation.agent(BACKGROUND_CONTEXT)).tools.map(
+        (tool) => tool.name,
+      );
+      expect(names).toEqual(expect.arrayContaining(["codemode", "read", "write", "bash"]));
+      await chat.conversation.submit(
+        { type: "input", content: "Read fixture" },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([
+        {
+          id: "script",
+          name: "codemode",
+          arguments: { code: `text(await tools.read({path:"source.txt"}));` },
+        },
+      ]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      expect(JSON.stringify(provider.calls[1]!.context.messages)).toContain("host fixture");
+      provider.calls[1]!.finish("Done.");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+      await chat.close();
+      await chat.close();
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      await chat?.close();
+      close.mockRestore();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 });

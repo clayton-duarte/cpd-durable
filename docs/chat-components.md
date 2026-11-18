@@ -91,6 +91,8 @@ Native `read`, `write`, `edit`, `bash` and `powershell` now execute through pi-d
 
 Known `pi.tool-result` entries attach to the preceding unmatched call with the same SDK call ID and tool name, in transcript order. Reused call IDs in later rounds do not overwrite earlier results. Result entry IDs remain metadata separate from call-part identity. If the originating call has left the window, render the result as its own authoritative row with unknown arguments, not attached to a guessed call. Live progress overlays only an unsettled call owned by the current generation task; a missing result is unavailable, not successful. Arbitrary result details/documents are ignored. Output is rendered as literal text, never executed as HTML/JS.
 
+Code-mode disclosures show allowlisted nested call names, canonical IDs and actual states, under the matching parent call. Live slots are associated by the SDK parent task and call IDs; completed calls use the SDK code-mode receipt. Nested arguments, outputs and raw errors are not projected and are labeled unavailable. Missing receipts remain unavailable. A recorded spill is indicated without exposing its path; absence of a spill receipt does not prove output was never truncated.
+
 Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Image output currently receives a non-text receipt. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
 
 ## 4. Context, configuration and usage

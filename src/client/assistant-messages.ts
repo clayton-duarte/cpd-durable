@@ -55,6 +55,11 @@ function committedMessage(message: ChatMessage, displayId: string): ThreadMessag
         toolStates: Object.fromEntries(
           parts.filter((part) => part.type === "tool-call").map((part) => [part.id, part.state]),
         ),
+        nestedTools: Object.fromEntries(
+          parts
+            .filter((part) => part.type === "tool-call" && part.nested !== undefined)
+            .map((part) => [part.id, part.type === "tool-call" ? part.nested : undefined]),
+        ),
       },
     },
     ...(message.role === "assistant"

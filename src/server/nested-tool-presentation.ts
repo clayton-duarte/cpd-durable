@@ -88,3 +88,12 @@ export function presentCodeModeReceipt(value: unknown): CodeModeReceipt | undefi
     outputSpilled: result.details.fullOutputPath !== undefined,
   });
 }
+
+/** Remove the known SDK spill path from display text; never forward the path itself. */
+export function sanitizeCodeModeOutput(value: unknown, text: string): string {
+  const parsed = z
+    .looseObject({ details: z.looseObject({ fullOutputPath: z.string().optional() }) })
+    .safeParse(value);
+  const path = parsed.success ? parsed.data.details.fullOutputPath : undefined;
+  return path ? text.replaceAll(path, "[host file]") : text;
+}

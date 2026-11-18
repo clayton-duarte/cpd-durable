@@ -38,6 +38,7 @@ import {
 } from "./collapsible-root";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { NestedToolDisplaySchema } from "../../../../shared/nested-tools.ts";
 
 const ANIMATION_DURATION = 200;
 
@@ -1086,6 +1087,7 @@ function ToolFallbackApprovalImpl({
 }
 
 const ToolFallbackImpl: ToolCallMessagePartComponent = ({
+  toolCallId,
   toolName,
   argsText,
   result,
@@ -1098,6 +1100,12 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   approval,
   respondToApproval,
 }) => {
+  const nestedByCall = useAuiState((state) => state.message.metadata.custom["nestedTools"]);
+  const nested = NestedToolDisplaySchema.safeParse(
+    nestedByCall && typeof nestedByCall === "object"
+      ? Reflect.get(nestedByCall, toolCallId)
+      : undefined,
+  );
   const isCancelled = status?.type === "incomplete" && status.reason === "cancelled";
   const isRequiresAction = status?.type === "requires-action";
   const shouldRenderApproval =
@@ -1169,6 +1177,32 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
           />
         )}
         <ToolFallbackResult result={result as unknown} />
+        {nested.success && nested.data.state === "unavailable" && (
+          <ToolFallbackResult result="Nested call receipt unavailable." />
+        )}
+        {nested.success && nested.data.outputSpilled && (
+          <ToolFallbackResult result="Code-mode output was truncated; full output was saved on the host." />
+        )}
+        {nested.success &&
+          nested.data.calls.map((call) => {
+            const callStatus: ToolCallMessagePartStatus =
+              call.state === "pending" || call.state === "running"
+                ? { type: "running" }
+                : call.state === "complete"
+                  ? { type: "complete" }
+                  : call.state === "cancelled"
+                    ? { type: "incomplete", reason: "cancelled" }
+                    : { type: "incomplete", reason: "other" };
+            return (
+              <ToolFallbackRoot key={call.callId}>
+                <ToolFallbackTrigger toolName={call.name} status={callStatus} />
+                <ToolFallbackContent>
+                  <ToolFallbackArgs argsText="Nested arguments unavailable." />
+                  <ToolFallbackResult result="Nested output unavailable." />
+                </ToolFallbackContent>
+              </ToolFallbackRoot>
+            );
+          })}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );

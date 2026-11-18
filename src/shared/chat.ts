@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { NestedToolDisplaySchema } from "./nested-tools.ts";
 
 export const PROVIDER_ID = "opencode-go";
 export const MODEL_ID = "deepseek-v4.1-flash";
@@ -68,6 +69,7 @@ export const ChatPartSchema = z.discriminatedUnion("type", [
     state: ToolStateSchema,
     output: z.string().optional(),
     resultEntryId: RecordIdSchema.optional(),
+    nested: NestedToolDisplaySchema.optional(),
   }),
   z.strictObject({
     id: z.string(),

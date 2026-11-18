@@ -12,23 +12,27 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
   const execution = createExecution(cwd);
-  const harness = await Harness.open(
-    storage,
-    {
-      models,
-      registry: execution.registry,
-      env: execution.env,
-      settings: { retry: { maxRetries: 2 } },
-      identity: {
-        userAgent: { custom: "cpd-durable/0.1.0" },
-        attribution: { name: "CPD Durable", url: "https://github.com/clayton-duarte/cpd-durable" },
-      },
-      // Log categories only: reports can contain prompts, paths or credentials.
-      onReport: (report) => console.error("pi-durable report:", report.kind),
-    },
-    BACKGROUND_CONTEXT,
-  );
+  let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   try {
+    harness = await Harness.open(
+      storage,
+      {
+        models,
+        registry: execution.registry,
+        env: execution.env,
+        settings: { retry: { maxRetries: 2 } },
+        identity: {
+          userAgent: { custom: "cpd-durable/0.1.0" },
+          attribution: {
+            name: "CPD Durable",
+            url: "https://github.com/clayton-duarte/cpd-durable",
+          },
+        },
+        // Log categories only: reports can contain prompts, paths or credentials.
+        onReport: (report) => console.error("pi-durable report:", report.kind),
+      },
+      BACKGROUND_CONTEXT,
+    );
     const conversation = await harness.root(BACKGROUND_CONTEXT);
     // Initialize new chats; retain each reopened conversation's saved model/thinking.
     const defaults: AgentChange = {
@@ -46,20 +50,24 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       conversation,
       chats,
       withdraw: (id: SubmissionId) =>
-        harness.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
+        harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {
         if (closed) return;
         closed = true;
         try {
-          await harness.close(BACKGROUND_CONTEXT);
+          await harness!.close(BACKGROUND_CONTEXT);
         } finally {
           await execution.close();
         }
       },
     };
   } catch (error) {
-    await harness.close(BACKGROUND_CONTEXT);
-    await execution.close();
+    try {
+      if (harness) await harness.close(BACKGROUND_CONTEXT);
+      else await storage.close(BACKGROUND_CONTEXT);
+    } finally {
+      await execution.close();
+    }
     throw error;
   }
 }
