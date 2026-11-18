@@ -215,8 +215,9 @@ describe("interactive tangents", () => {
     try {
       await f.main.submit({ type: "input", content: "Create an independent tangent" }, context);
       await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      const { parentId: _parentId, sourceId: _sourceId, ...args } = f.request;
       f.provider.calls[1]!.tools([
-        { id: "create-tangent", name: "create_tangent", arguments: f.request },
+        { id: "create-tangent", name: "create_tangent", arguments: args },
       ]);
       await vi.waitFor(() => expect(f.provider.calls).toHaveLength(3));
       const list = await listTangents(f.harness, f.main.id, f.hooks);

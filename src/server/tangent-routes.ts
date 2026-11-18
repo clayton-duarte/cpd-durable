@@ -15,6 +15,7 @@ import {
   type TangentHooks,
 } from "./tangents/index.ts";
 import { ChatLifecycleError } from "./chats.ts";
+import { ModelPolicyError } from "./model-policy.ts";
 
 export class TangentPolicyUnavailable extends Error {}
 class UnsupportedMedia extends Error {}
@@ -156,7 +157,9 @@ export function createTangentRoutes(harness: Harness, hooks: TangentHooks, model
           ? c.json({ error: "Tangent model policy is unavailable." }, 503)
           : error instanceof ChatLifecycleError
             ? c.json({ error: error.message }, error.status)
-            : c.json({ error: "Tangent request unavailable or changed." }, 409),
+            : error instanceof ModelPolicyError
+              ? c.json({ error: error.message }, 409)
+              : c.json({ error: "Tangent request unavailable or changed." }, 409),
   );
   return routes;
 }

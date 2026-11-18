@@ -52,7 +52,12 @@ import { ModelPolicyError } from "./model-policy.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
-    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments" | "modelPolicy" | "tangents">>,
+    Partial<
+      Pick<
+        Awaited<ReturnType<typeof openChat>>,
+        "chats" | "attachments" | "modelPolicy" | "tangents"
+      >
+    >,
 ) {
   const app = new Hono();
   const histories = new Map<string, ReturnType<typeof createHistory>>();

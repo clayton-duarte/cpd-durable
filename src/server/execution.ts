@@ -8,6 +8,7 @@ import { createCodeMode } from "./codemode.ts";
 import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
+import { createTangentExtension, type TangentHooks } from "./tangents/index.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -16,7 +17,10 @@ export function workingDirectory(path = "~"): string {
 }
 
 // Native host execution, deliberately not a sandbox or approval policy.
-export function createExecution(defaultCwd = workingDirectory()) {
+export function createExecution(
+  defaultCwd = workingDirectory(),
+  tangentHooks?: () => TangentHooks,
+) {
   const registry = createRegistry();
   const codeMode = createCodeMode();
   registry.install(CodingTools);
@@ -25,6 +29,7 @@ export function createExecution(defaultCwd = workingDirectory()) {
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
+  if (tangentHooks) registry.install(createTangentExtension(tangentHooks));
   registry.install(
     defineExtension({
       name: "cpd-context",

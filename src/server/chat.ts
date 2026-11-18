@@ -8,13 +8,14 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
 import { createTangentCatalogHooks, modelKey, openChats } from "./chats.ts";
-import { createTangentRoutes, TangentPolicyUnavailable } from "./tangent-routes.ts";
+import { createTangentRoutes } from "./tangent-routes.ts";
+import type { TangentHooks } from "./tangents/index.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
 import type { Tx } from "@earendil-works/pi-durable";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
-import { createModelPolicy } from "./model-policy.ts";
+import { assertModelPolicyTx, createModelPolicy } from "./model-policy.ts";
 
 export type TangentPolicy = {
   resolveModel(): Promise<ResolvedTangentModel>;
@@ -34,7 +35,11 @@ export async function openChat(
 ) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
-  const execution = createExecution(cwd);
+  let boundTangentHooks: TangentHooks | undefined;
+  const execution = createExecution(cwd, () => {
+    if (!boundTangentHooks) throw new Error("Tangent service unavailable.");
+    return boundTangentHooks;
+  });
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   try {
     harness = await Harness.open(
@@ -68,14 +73,15 @@ export async function openChat(
     };
     const modelPolicy = createModelPolicy(harness, models);
     const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
-    const policy = options.tangentPolicy?.(harness, models);
+    const policy = options.tangentPolicy?.(harness, models) ?? {
+      resolveModel: () => modelPolicy.resolveModelForRole("tangent"),
+      assertResolvedModel: assertModelPolicyTx,
+    };
     const tangentHooks = createTangentCatalogHooks({
       resolveModel: async () => {
-        if (!policy) throw new TangentPolicyUnavailable();
         return policy.resolveModel();
       },
       assertResolvedModel: async (tx, resolved) => {
-        if (!policy) throw new TangentPolicyUnavailable();
         await policy.assertResolvedModel(tx, resolved);
       },
       cwd: (source) => workingDirectory(source ?? cwd),
@@ -83,6 +89,7 @@ export async function openChat(
         ? { assertNoUnsettled: options.assertNoUnsettledTangent }
         : {}),
     });
+    boundTangentHooks = tangentHooks;
     const tangents = { routes: createTangentRoutes(harness, tangentHooks, models) };
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({

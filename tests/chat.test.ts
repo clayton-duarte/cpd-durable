@@ -203,6 +203,7 @@ describe("single durable chat", () => {
       "powershell",
       "load_skill",
       "ask_user",
+      "create_tangent",
     ]);
     expect(agent.cwd).toBe(homedir());
   });

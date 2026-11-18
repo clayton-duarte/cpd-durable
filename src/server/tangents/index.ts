@@ -487,7 +487,7 @@ export async function setTangentLifecycle(
 }
 
 /** A model tool returns on admission, never waits for child completion. */
-export function createTangentExtension(hooks: TangentHooks) {
+export function createTangentExtension(hooks: TangentHooks | (() => TangentHooks)) {
   return defineExtension({
     name: "cpd-tangents",
     tools: [
@@ -495,13 +495,17 @@ export function createTangentExtension(hooks: TangentHooks) {
         name: "create_tangent",
         description:
           "Create an independent interactive tangent using selected guidance; start only when requested. Do not include secrets.",
-        parameters: z.toJSONSchema(CreateTangentSchema),
+        parameters: z.toJSONSchema(CreateTangentSchema.omit({ parentId: true, sourceId: true })),
         replay: "safe",
         async execute(args, api, context) {
-          const request = CreateTangentSchema.parse(args);
-          if (request.parentId !== api.conversationId || request.sourceId !== api.conversationId)
-            throw new Error("Tangent source must be this main conversation");
-          const result = await admitTangentStart(api, request, hooks, context);
+          const input = CreateTangentSchema.omit({ parentId: true, sourceId: true }).parse(args);
+          const request = { ...input, parentId: api.conversationId, sourceId: api.conversationId };
+          const result = await admitTangentStart(
+            api,
+            request,
+            typeof hooks === "function" ? hooks() : hooks,
+            context,
+          );
           return {
             output: [
               {

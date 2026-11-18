@@ -248,7 +248,7 @@ describe("tangent HTTP and catalog composition", () => {
     }
     const g = await setup(false);
     try {
-      expect((await g.post(g.base, g.create("unconfigured"))).status).toBe(503);
+      expect((await g.post(g.base, g.create("unconfigured"))).status).toBe(409);
     } finally {
       await g.chat.close();
     }
