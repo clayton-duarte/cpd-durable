@@ -11,6 +11,7 @@ import { modelKey, openChats } from "./chats.ts";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
+import { createModelPolicy } from "./model-policy.ts";
 
 export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -47,7 +48,8 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       modelTools: null,
       maxTurns: null,
     };
-    const chats = await openChats(harness, conversation, defaults, models);
+    const modelPolicy = createModelPolicy(harness, models);
+    const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({
       harness,
@@ -81,6 +83,7 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
     return {
       conversation,
       chats,
+      modelPolicy,
       attachments,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
