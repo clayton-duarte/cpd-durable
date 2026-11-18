@@ -795,6 +795,8 @@ test("native Reasoning follows live streaming and collapses when reasoning compl
   await connect(page, streaming);
   await page.goto("/");
   const root = page.locator('[data-slot="reasoning-root"]');
+  await expect(root).toHaveAttribute("data-variant", "ghost");
+  await expect(root).toHaveCSS("border-top-width", "0px");
   const trigger = root.getByRole("button", { name: "Reasoning", exact: true });
   await expect(trigger).toHaveAttribute("aria-expanded", "true");
   await expect(root).toContainText("Provider reasoning stream");
@@ -863,6 +865,8 @@ test("provider reasoning uses the supplied Reasoning disclosure, not a paused st
   await page.goto("/");
   const reasoning = page.locator('[data-slot="reasoning-root"]');
   await expect(reasoning).toHaveCount(1);
+  await expect(reasoning).toHaveAttribute("data-variant", "ghost");
+  await expect(reasoning).toHaveCSS("border-top-width", "0px");
   await reasoning.getByRole("button", { name: "Reasoning", exact: true }).click();
   await expect(reasoning).toContainText("Actual provider reasoning");
   await expect(page.getByText("Final answer", { exact: true })).toBeVisible();
