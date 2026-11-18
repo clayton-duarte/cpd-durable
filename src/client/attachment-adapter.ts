@@ -56,26 +56,31 @@ export function createImageAttachmentAdapter(options: {
   upload(file: File): Promise<unknown>;
   previewUrl(id: string): string;
   onAddStart?(): void;
+  onAddEnd?(): void;
 }): AttachmentAdapter {
   return {
     accept: "image/png,image/jpeg",
     async add({ file }) {
       options.onAddStart?.();
-      if (
-        !["image/png", "image/jpeg"].includes(file.type) ||
-        file.size === 0 ||
-        file.size > IMAGE_MAX_BYTES
-      )
-        throw new Error("Choose a PNG or JPEG image within the upload limit.");
-      const ref = ImageReferenceSchema.parse(await options.upload(file));
-      return {
-        id: ref.id,
-        type: "image",
-        name: file.name,
-        contentType: ref.mimeType,
-        file,
-        status: { type: "requires-action", reason: "composer-send" },
-      };
+      try {
+        if (
+          !["image/png", "image/jpeg"].includes(file.type) ||
+          file.size === 0 ||
+          file.size > IMAGE_MAX_BYTES
+        )
+          throw new Error("Choose a PNG or JPEG image within the upload limit.");
+        const ref = ImageReferenceSchema.parse(await options.upload(file));
+        return {
+          id: ref.id,
+          type: "image",
+          name: file.name,
+          contentType: ref.mimeType,
+          file,
+          status: { type: "requires-action", reason: "composer-send" },
+        };
+      } finally {
+        options.onAddEnd?.();
+      }
     },
     async remove() {
       // Draft removal is not permission to delete bytes that may have been admitted.

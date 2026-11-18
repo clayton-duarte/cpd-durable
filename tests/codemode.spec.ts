@@ -1,9 +1,11 @@
 import { expect, test } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 test("nested code-mode calls use supplied disclosures without inventing output", async ({
   page,
 }) => {
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
