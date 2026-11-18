@@ -28,7 +28,7 @@ This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual e
 | Acknowledgement/retry  | Admission-aware composer submission and transport notices        | Preserves original payload/ID after uncertain delivery, not answer-completion claims                         |
 | Interrupted answer     | Incomplete status and typed interruption receipt                 | Cancellation, error and output limit remain distinct; Continue stays separate                                |
 | Custom events/activity | Allowlisted text, omission and interruption parts                | Positioned omission receipts only; unknown custom entry data stays hidden                                    |
-| Images/files/sources   | Image/File/Attachment/Source elements and part renderers         | Require actual host/provider data; not enabled by this text-only migration                                   |
+| Images/files/sources   | Image/File/Attachment/Source elements and part renderers         | PNG/JPEG uploads and saved user/tool images use scoped references; other file ingestion is not enabled       |
 
 Markdown does not enable raw HTML or code execution. Markdown image elements are disallowed rather than fetching remote URLs. Links are not verified citations. Neither Shiki nor Prism, math, Mermaid, maps nor arbitrary generative UI execution is installed just because the catalogue offers it.
 
@@ -36,7 +36,7 @@ The native viewport uses bottom anchoring with automatic following, not top-turn
 
 ### Transcript identity and projection (Batch 2)
 
-Batch 2 added optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. The native-tools increment projects validated tool calls, arguments and textual output alongside ordered text. Provider-supplied `thinking` text is now a native `reasoning` part; signatures/encrypted metadata, media, arbitrary custom entry data and provider diagnostics are not forwarded.
+Batch 2 added optional canonical parts, outcomes, entry/task attribution, conversation identity, retained-window entry IDs and live generation metadata. Original entry/model/content indexes survive filtering. The native-tools increment projects validated tool calls, arguments and textual output alongside ordered text. Provider-supplied `thinking` text is now a native `reasoning` part; saved PNG/JPEG images project as coordinates rather than binary payloads. Signatures/encrypted metadata, other media, arbitrary custom entry data and provider diagnostics are not forwarded.
 
 Reasoning uses the official [assistant-ui runtime composition](https://www.assistant-ui.com/elements/reasoning): Thread's GroupedParts, ReasoningRoot/Trigger/Content/Text and Markdown renderer, with the supplied `ghost` variant. It opens during reasoning streaming and collapses afterward unless the reader chose otherwise. Only actual provider text is rendered; empty reasoning produces no disclosure. No synthetic step titles, elapsed-time estimates or hidden-reasoning reconstruction is added. Older omission-only reasoning receipts render nothing, not a paused AgentStatus bar. ThinkingIndicator, loaders and typing indicators are transient activity feedback, ReasoningEffort is configuration, and GuardrailNotice requires an actual guardrail event; none substitutes for the reasoning trace.
 
@@ -75,7 +75,7 @@ The supplied ConversationMap rail groups loaded user turns with their following 
 | Stop                     | Native Stop bound to host abort                               | Also withdraws queued inputs; queued reset writes survive                                                                                                            |
 | Continue                 | `/continue` selection                                         | Starts a run without adding user text or consuming the draft; not checkpoint Resume or Regenerate                                                                    |
 | Reset/handoff            | `/reset` → supplied shadcn AlertDialog and Textarea           | One explicit Reset context action, optional multiline handoff; initial focus is Cancel, modal focus is contained and Escape/Cancel restores the originating composer |
-| Attachments              | Thread capability gating                                      | Omitted while unsupported; no upload adapter or file picker                                                                                                          |
+| Attachments              | Supplied Attachment adapter, picker, paste and Image          | PNG/JPEG only; server checks image model support and retains originals, including removed drafts                                                                     |
 
 Steering is requested at an eligible boundary, not an immediate interruption. Continue eligibility comes from idle active model context ending in user content/tool results, with no queued reset, not the recent transcript window. Continue/reset admissions use request IDs for safe retry; reset uses the SDK's public reset-entry shape.
 
@@ -105,7 +105,7 @@ Stop aborts the owning execution and makes its unanswered question non-actionabl
 
 Known `pi.tool-result` entries attach to the preceding unmatched call with the same SDK call ID and tool name, in transcript order. Reused call IDs in later rounds do not overwrite earlier results. Result entry IDs remain metadata separate from call-part identity. If the originating call has left the window, render the result as its own authoritative row with unknown arguments, not attached to a guessed call. Live progress overlays only an unsettled call owned by the current generation task; a missing result is unavailable, not successful. Arbitrary result details/documents are ignored. Output is rendered as literal text, never executed as HTML/JS.
 
-Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Image output currently receives a non-text receipt. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
+Tool output/arguments can contain sensitive local data: they are intentionally visible to the local user and persisted by the SDK, unlike hidden provider diagnostics. Saved PNG/JPEG tool images use the requesting conversation's authorized SDK history and preserve text/image order; unsupported formats remain omission receipts. The [parity inventory](pi-durable-features.md#pi-tui-parity) records the remaining feature work; subagents/background/task inspectors are not implemented by this increment.
 
 ## 4. Context, configuration and usage
 
@@ -157,11 +157,13 @@ The supplied standalone MessageBranches stepper navigates actual catalog convers
 
 `src/client/chat.tsx` exports `Chat` and `ChatProps`. Supply title, optional description, validated presentation state (`null` during initial load), connection and pending/error/notice state. The parent supplies a bounded height. `src/client/chat-page.tsx` owns per-chat integration; `src/client/use-chat.ts` owns the immutable conversation-scoped API connection. Optional `active` closes transient reset UI when the containing workspace hides the chat.
 
-Omit `onSend` for read-only mode. Otherwise it receives text and optional send mode, returning true only for confirmed admission. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
+Omit `onSend` for read-only mode. Otherwise it receives text, optional send mode and image reference IDs, returning true only for confirmed admission. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
 
 Optional `onLoadEarlier`/`onFillGap` bind history reads, with separate `historyLoading`, `historyGap`, `historyError` and `onRetryHistory`. Read-only embeddings may still page if their host supplies these callbacks. Without a paging adapter, the earlier-history notice remains informational.
 
-Native composer Send reaches the external-store `onNew` host adapter. Because native Send detaches its draft eagerly, the adapter immediately restores it if the composer is still empty. Only an unchanged draft clears after confirmed admission. Busy-mode slash commands use the same admission function without detachment. This preserves server authority without a second React draft store or an optimistic transcript.
+Native composer Send reaches the external-store `onNew` host adapter. Because native Send detaches its draft eagerly, the adapter restores text and the same immutable image references if the composer is still empty. Confirmed admission clears only the unchanged text, ordered references and edit generation. Busy-mode slash commands use the same admission function without detachment. This preserves server authority without a second React draft store or an optimistic transcript. Drafts and retry identities are not persisted across refresh.
+
+PNG/JPEG uploads are limited to four per input, 5 MiB each, 8,192 pixels per dimension and 32 million pixels. The SDK decoder prepares model content within 2,000×2,000 pixels and 4,500,000 base64 bytes; original bytes remain in the owner-only data directory and may retain metadata. Removed, failed-binding and otherwise unreferenced uploads are not automatically deleted. Pending references are conversation-scoped and do not become actionable fork drafts; inherited saved images resolve through the requesting fork's SDK history. Before request fingerprints existed, identical legacy retries cannot be verified and return 409.
 
 After uncertain input/control delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` or `retryAction`. Retain the original operation/payload/request ID. Other mutations stay blocked while a new draft remains editable. Continue/reset/withdraw do not consume the composer draft. Reset handoff text survives a failed attempt.
 
@@ -169,7 +171,7 @@ The transport serializes mutations and keeps retry identity only until refresh. 
 
 ## Remaining work
 
-Source-backed live/committed identity, paged history/gap recovery, loaded-turn navigation/search and ordered text/reasoning/tool/omission projection retain the limits above. Whole-storage search, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
+Source-backed live/committed identity, paged history/gap recovery, loaded-turn navigation/search and ordered text/reasoning/tool/image/omission projection retain the limits above. Whole-storage search, other media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
 
 ## shadcn gap decisions
 
