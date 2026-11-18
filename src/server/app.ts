@@ -49,6 +49,9 @@ import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
 import { ModelPolicyChangeSchema } from "../shared/model-policy.ts";
 import { ModelPolicyError } from "./model-policy.ts";
+import { DirectShellRequestSchema } from "../shared/direct-shell.ts";
+import { admitDirectShell } from "./direct-shell.ts";
+import { z } from "zod";
 import { BranchOperationError } from "./branch-operations.ts";
 import {
   EditBranchRequestSchema,
@@ -272,6 +275,17 @@ export function createApp(
               throw new Error("Configuration unavailable");
             },
             withdraw: chat.withdraw,
+            shellStatus: async () => undefined,
+            stopShell: async () => {
+              throw new Error("Shell unavailable.");
+            },
+            compactReservation: async () => null,
+            releaseCompactReservation: async () => {
+              throw new Error("Unavailable.");
+            },
+            compact: async () => {
+              throw new Error("Transactional compaction unavailable.");
+            },
             admit: async (_draft: Parameters<ChatScope["admit"]>[0]) => {
               throw new Error("Transactional admission unavailable.");
             },
@@ -339,6 +353,60 @@ export function createApp(
       throw error;
     }
   });
+
+  routes.post("/shell", async (c) => {
+    if (c.req.param("chatId") === undefined || !chat.chats)
+      return c.json({ error: "Chat not found." }, 404);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = DirectShellRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!parsed.success) return c.json({ error: "Invalid shell request." }, 400);
+    const scope = c.get("scope");
+    try {
+      return c.json(
+        {
+          id: String(await admitDirectShell(scope.conversation, parsed.data, scope.assertWritable)),
+        },
+        202,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "Conversation busy.",
+          "Request identity already used.",
+          "Shell request identity mismatch.",
+        ].includes(error.message)
+      )
+        return c.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
+  routes.get("/shell", async (c) => {
+    if (c.req.param("chatId") === undefined || !chat.chats)
+      return c.json({ error: "Chat not found." }, 404);
+    const requestId = z.uuid().optional().safeParse(c.req.query("requestId"));
+    if (!requestId.success) return c.json({ error: "Invalid shell request." }, 400);
+    const status = await c.get("scope").shellStatus(requestId.data);
+    return status
+      ? c.json(status)
+      : requestId.data === undefined
+        ? c.json(null)
+        : c.json({ error: "Shell request not found." }, 404);
+  });
+  routes.post("/shell/stop", async (c) => {
+    if (c.req.param("chatId") === undefined || !chat.chats)
+      return c.json({ error: "Chat not found." }, 404);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const request = z
+      .strictObject({ requestId: z.uuid() })
+      .safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!request.success) return c.json({ error: "Invalid shell request." }, 400);
+    return c.json({ status: await c.get("scope").stopShell(request.data.requestId) });
+  });
   routes.get("/questions", async (c) => {
     if (c.req.param("chatId") === undefined) return c.json({ error: "Chat not found." }, 404);
     return c.json(await questionProjection(c.get("scope")));
@@ -369,10 +437,21 @@ export function createApp(
       return c.json({ error: "Expected application/json." }, 415);
     const result = CompactSchema.safeParse(await c.req.json<unknown>().catch(() => null));
     if (!result.success) return c.json({ error: "Invalid compaction request." }, 400);
-    const taskId = await c
-      .get("scope")
-      .conversation.compact(result.data.instructions || undefined, BACKGROUND_CONTEXT);
+    const taskId = await c.get("scope").compact(result.data.instructions || undefined);
     return c.json({ taskId: String(taskId) }, 202);
+  });
+  routes.get("/compact/reservation", async (c) =>
+    c.json(await c.get("scope").compactReservation()),
+  );
+  routes.post("/compact/recover", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = z
+      .strictObject({ id: z.uuid() })
+      .safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!parsed.success) return c.json({ error: "Invalid reservation." }, 400);
+    await c.get("scope").releaseCompactReservation(parsed.data.id);
+    return c.json({ status: "released", outcome: "unknown" });
   });
 
   routes.post("/control", async (c) => {
