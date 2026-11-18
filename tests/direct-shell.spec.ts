@@ -281,3 +281,102 @@ test("a delayed old poll cannot replace a newer shell or change its Stop target"
     release();
   }
 });
+
+test("visible idle chat discovers remote shell tasks in succession and stops the selected one", async ({
+  page,
+}) => {
+  await page.route("**/api/**", (route) => route.abort());
+  await page.route("**/api/chats", (route) =>
+    route.fulfill({
+      json: {
+        rootId: "1",
+        chats: [
+          { id: "1", title: "Original chat", running: false },
+          { id: "2", title: "Other chat", running: false },
+        ],
+      },
+    }),
+  );
+  const firstId = "11111111-1111-4111-8111-111111111111";
+  const secondId = "22222222-2222-4222-8222-222222222222";
+  let reads = 0;
+  let remote: { requestId: string; taskId: string; command: string; output: string } | null = null;
+  const stopped: unknown[] = [];
+  await page.route("**/api/chats/1/shell/stop", (route) => {
+    stopped.push(route.request().postDataJSON());
+    remote = null;
+    return route.fulfill({ json: { status: "marked" } });
+  });
+  await page.route("**/api/chats/1/shell**", (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/stop")) return route.fallback();
+    reads++;
+    return route.fulfill({
+      json: remote
+        ? {
+            ...remote,
+            conversationId: "1",
+            includeInContext: false,
+            status: "running",
+            truncated: false,
+          }
+        : null,
+    });
+  });
+  await page.addInitScript(() => {
+    class Events extends EventTarget {
+      constructor(url: string) {
+        super();
+        const conversationId = Number(
+          new URL(url, location.href).pathname.match(/\/chats\/(\d+)\//)?.[1] ?? 1,
+        );
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId,
+                messages: [],
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+                controls: { canContinue: false, resetPending: false, queue: [] },
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Events });
+  });
+  await page.goto("/chats/1");
+  await expect.poll(() => reads).toBeGreaterThan(0);
+  await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
+  remote = { requestId: firstId, taskId: "11", command: "first", output: "first progress" };
+  await expect(page.getByRole("button", { name: "1 tool call" })).toBeVisible();
+  await page.getByRole("button", { name: "1 tool call" }).click();
+  await page.getByRole("button", { name: /Running tool.*Direct shell/ }).click();
+  await expect(page.getByText("first progress")).toBeVisible();
+  await page.getByRole("button", { name: "Stop generating" }).click();
+  await expect.poll(() => stopped).toEqual([{ requestId: firstId }]);
+  await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
+  remote = { requestId: secondId, taskId: "22", command: "second", output: "second progress" };
+  await expect(page.getByRole("button", { name: "1 tool call" })).toBeVisible();
+  await page.getByRole("button", { name: "1 tool call" }).click();
+  await page.getByRole("button", { name: /Running tool.*Direct shell/ }).click();
+  await expect(page.getByText("second progress")).toBeVisible();
+  await page.getByRole("button", { name: "Stop generating" }).click();
+  await expect.poll(() => stopped).toEqual([{ requestId: firstId }, { requestId: secondId }]);
+  remote = {
+    requestId: firstId,
+    taskId: "33",
+    command: "still running",
+    output: "hidden progress",
+  };
+  await page.getByRole("button", { name: "Other chat", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Message input" })).toBeVisible();
+  const readsWhenHidden = reads;
+  await page.waitForTimeout(2300);
+  expect(reads).toBe(readsWhenHidden);
+  expect(remote?.taskId).toBe("33");
+});

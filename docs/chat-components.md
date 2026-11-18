@@ -137,7 +137,7 @@ Manual Compact context invokes SDK `compact()` with optional instructions and re
 
 Compaction writes have no SDK request-ID API and are never automatically retried. Unconfirmed admission disables that inspector's action and asks the reader to inspect state before deliberately trying again. This is not durable deduplication. Read-only archived views omit the action, and lifecycle checks refuse archive/delete while a compaction is active. The optional instructions field reuses supplied Textarea because assistant-ui has no compaction-instructions input.
 
-Manual compaction and direct shell admission use a durable reservation to avoid starting both concurrently. If the host stops before recording the compaction task identity, the reservation remains unresolved. After restarting, an explicit release is allowed only when no compaction is live and any known task is terminal. Release does not start another compaction or establish whether an unknown original ran.
+Manual compaction and direct shell admission use a durable reservation to avoid starting both concurrently. If compaction admission throws or the host stops before recording the task identity, the reservation remains unresolved; the public `compact()` contract does not identify a generally safe class of such failures to clear automatically. After restarting, an explicit release is allowed only when no compaction is live and any known task is terminal. Release does not start another compaction or establish whether an unknown original ran.
 
 ## 5. Recovery and connection
 

@@ -101,7 +101,6 @@ export function useChat(chatId?: string, observing = true) {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     let selectedTask: string | undefined = shellTaskId;
-    let polling = shellRequestId !== undefined;
     async function refresh() {
       try {
         const query = shellRequestId ? `?requestId=${encodeURIComponent(shellRequestId)}` : "";
@@ -113,12 +112,11 @@ export function useChat(chatId?: string, observing = true) {
           next &&
           (next.conversationId !== chatId ||
             (shellRequestId && next.requestId !== shellRequestId) ||
-            (selectedTask && selectedTask !== next.taskId))
+            (shellRequestId && selectedTask && selectedTask !== next.taskId))
         )
           throw new Error("Wrong shell status");
         if (!active || shellEpoch.current !== epoch) return;
-        if (next) selectedTask = next.taskId;
-        polling = next?.status === "running";
+        selectedTask = next?.status === "running" ? next.taskId : undefined;
         setShell(next?.status === "running" ? next : null);
         if (next && next.status !== "running") {
           setShellRequestId(undefined);
@@ -127,7 +125,7 @@ export function useChat(chatId?: string, observing = true) {
       } catch {
         // Keep the last observed status; a failed read must not start or stop work.
       } finally {
-        if (active && polling) timer = setTimeout(() => void refresh(), 1000);
+        if (active) timer = setTimeout(() => void refresh(), shellRequestId ? 1000 : 2000);
       }
     }
     void refresh();
