@@ -38,6 +38,53 @@ test("serializes edits and never persists the native-send transient empty compos
   expect(writes[2]?.content.text).toBe("next draft");
 });
 
+test("prepares the original snapshot behind an in-flight save before writing newer edits", async ({
+  page,
+}) => {
+  const events: { path: string; body: Record<string, unknown> }[] = [];
+  let revision = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/chats/1/draft**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const body = route.request().postDataJSON() as Record<string, unknown>;
+    events.push({ path, body });
+    if (path.endsWith("/draft/attempt")) {
+      return route.fulfill({ json: { ...body, fingerprint: "a".repeat(64) } });
+    }
+    if (events.length === 1) await gate;
+    expect(body["expectedRevision"]).toBe(revision);
+    revision++;
+    return route.fulfill({ json: { revision, content: body["content"] } });
+  });
+  await page.goto("/tests/fixtures/draft-autosave/");
+  const input = page.getByRole("textbox", { name: "Draft" });
+  await input.fill("original");
+  await expect.poll(() => events.length).toBe(1);
+  await page.getByRole("button", { name: "Prepare send" }).click();
+  await input.fill("newer");
+  release();
+  await expect(page.getByTestId("prepared")).toContainText('"revision":1');
+  await expect.poll(() => events.length).toBe(3);
+  expect(events.map((event) => event.path)).toEqual([
+    "/api/chats/1/draft",
+    "/api/chats/1/draft/attempt",
+    "/api/chats/1/draft",
+  ]);
+  expect(events[1]?.body).toMatchObject({
+    requestId: "44444444-4444-4444-8444-444444444444",
+    draftRevision: 1,
+    text: "original",
+    images: [],
+  });
+  expect(events[2]?.body).toEqual({
+    expectedRevision: 1,
+    content: { text: "newer", images: [] },
+  });
+});
+
 test("CAS conflict requires an explicit choice before writing against the current revision", async ({
   page,
 }) => {
@@ -60,6 +107,24 @@ test("CAS conflict requires an explicit choice before writing against the curren
   await page.getByRole("button", { name: "Keep mine" }).click();
   await expect.poll(() => writes.length).toBe(2);
   expect(writes[1]).toEqual({ expectedRevision: 4, content: { text: "mine", images: [] } });
+});
+
+test("preparation stops on a CAS conflict without recording an intent", async ({ page }) => {
+  const requests: string[] = [];
+  await page.route("**/api/**", async (route) => {
+    const method = route.request().method();
+    const path = new URL(route.request().url()).pathname;
+    requests.push(`${method} ${path}`);
+    if (method === "GET")
+      return route.fulfill({ json: { revision: 4, content: { text: "other tab", images: [] } } });
+    return route.fulfill({ status: 409, json: {} });
+  });
+  await page.goto("/tests/fixtures/draft-autosave/");
+  await page.getByRole("textbox", { name: "Draft" }).fill("original");
+  await page.getByRole("button", { name: "Prepare send" }).click();
+  await expect(page.getByRole("button", { name: "Keep mine" })).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveText("Prepare failed");
+  expect(requests).toEqual(["PUT /api/chats/1/draft", "GET /api/chats/1/draft"]);
 });
 
 test("persists restored image metadata without uploading it again", async ({ page }) => {

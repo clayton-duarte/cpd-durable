@@ -13,6 +13,7 @@ function Fixture() {
   const recovery = useDraftRecovery("1", location.search.includes("recovery"));
   const [conflict, setConflict] = useState<DraftView>();
   const [error, setError] = useState("");
+  const [prepared, setPrepared] = useState("");
   const writer = useRef<ReturnType<typeof createDraftAutosave>>(undefined);
   const messages = useExternalMessageConverter({
     isRunning: false,
@@ -58,6 +59,17 @@ function Fixture() {
         <ComposerPrimitive.Input aria-label="Draft" />
       </ComposerPrimitive.Root>
       <button onClick={() => writer.current?.beginSend()}>Begin send</button>
+      <button
+        onClick={() => {
+          const text = runtime.thread.composer.getState().text;
+          void writer.current
+            ?.prepareSend(text, [], "reject", "44444444-4444-4444-8444-444444444444")
+            .then((result) => setPrepared(JSON.stringify(result)))
+            .catch(() => setError("Prepare failed"));
+        }}
+      >
+        Prepare send
+      </button>
       <button onClick={() => writer.current?.endSend()}>End send</button>
       <button onClick={() => runtime.thread.composer.setText("")}>Detach</button>
       {conflict && (
@@ -71,6 +83,7 @@ function Fixture() {
         </button>
       )}
       {error && <p role="alert">{error}</p>}
+      {prepared && <p data-testid="prepared">{prepared}</p>}
       {recovery.attempts.map((attempt) => (
         <p key={attempt.record.requestId}>
           {attempt.admission}: {attempt.record.requestId}

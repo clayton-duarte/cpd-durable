@@ -59,15 +59,16 @@ test("late read does not replace edits and stale chat responses are discarded", 
   await expect(page.getByRole("textbox", { name: "Draft" })).toHaveValue("  saved draft  ");
 });
 
-test("readonly does not fetch or restore", async ({ page }) => {
-  let count = 0;
+test("readonly restores a saved draft without writing or sending", async ({ page }) => {
+  const requests: string[] = [];
   await page.route("**/api/**", async (route) => {
-    count++;
-    await route.fulfill({ json: saved });
+    requests.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
+    if (route.request().url().endsWith("/draft")) return route.fulfill({ json: saved });
+    return route.fulfill({ body: png, contentType: "image/png" });
   });
   await page.goto("/tests/fixtures/draft-restoration/?readonly");
-  await expect(page.getByRole("textbox", { name: "Draft" })).toBeVisible();
-  expect(count).toBe(0);
+  await expect(page.getByRole("textbox", { name: "Draft" })).toHaveValue("  saved draft  ");
+  expect(requests.every((request) => request.startsWith("GET "))).toBe(true);
 });
 
 test("switching chats before a read completes discards the old response", async ({ page }) => {

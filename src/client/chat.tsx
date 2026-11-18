@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalMessageConverter,
@@ -30,6 +30,12 @@ import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachmen
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
+import { Button } from "@/components/ui/button";
+import {
+  createDraftAutosave,
+  useDraftRecovery,
+  useDraftRestoration,
+} from "./draft-persistence.tsx";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
@@ -142,10 +148,126 @@ const historyGapUI = {
   },
 };
 
+type DraftWriter = ReturnType<typeof createDraftAutosave>;
+function PersistenceBridge({
+  runtime,
+  chatId,
+  enabled,
+  readOnly,
+  writer,
+  localRevision,
+  onReady,
+  onRetry,
+}: {
+  runtime: AssistantRuntime;
+  chatId: string;
+  enabled: boolean;
+  readOnly: boolean;
+  writer: React.RefObject<DraftWriter | null>;
+  localRevision: () => number;
+  onReady: (ready: boolean) => void;
+  onRetry: (record: {
+    requestId: string;
+    draftRevision: number;
+    text: string;
+    images: string[];
+    mode: SendMode;
+  }) => Promise<boolean>;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState<string[]>([]);
+  const conflictHandler = useRef<(saved: import("../shared/drafts.ts").DraftView) => void>(
+    () => {},
+  );
+  const recovery = useDraftRecovery(chatId, enabled);
+  const restoration = useDraftRestoration({
+    runtime,
+    chatId,
+    enabled,
+    readOnly,
+    localRevision,
+    onResolved: (saved, choice) => {
+      if (readOnly) return;
+      if (writer.current) {
+        if (choice === "mine") writer.current.keepMine(saved);
+        else writer.current.useSaved(saved);
+      } else {
+        writer.current = createDraftAutosave({
+          runtime,
+          chatId,
+          initial: saved,
+          onConflict: (remote) => conflictHandler.current(remote),
+          onError: setError,
+        });
+        if (choice !== "saved") void writer.current.flush();
+      }
+      onReady(true);
+    },
+  });
+  conflictHandler.current = restoration.offerConflict;
+  useEffect(
+    () => () => {
+      writer.current?.stop();
+      writer.current = null;
+      onReady(false);
+    },
+    [chatId, enabled, onReady, readOnly, writer],
+  );
+  return (
+    <>
+      {restoration.conflict && (
+        <div role="alert">
+          Draft changed in another session.
+          <Button type="button" variant="outline" onClick={() => void restoration.useSaved()}>
+            Use saved
+          </Button>
+          <Button type="button" variant="outline" onClick={restoration.keepMine}>
+            Keep mine
+          </Button>
+        </div>
+      )}
+      {(error || restoration.error || recovery.error) && (
+        <AgentStatus state="failed" label={error ?? restoration.error ?? recovery.error ?? ""} />
+      )}
+      {recovery.attempts
+        .filter(
+          (attempt) =>
+            attempt.admission === "unknown" && !confirmed.includes(attempt.record.requestId),
+        )
+        .map(({ record }) => (
+          <div role="status" key={record.requestId}>
+            Delivery unconfirmed. Inspect history before retrying the original input.
+            {!readOnly && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void onRetry(record).then((admitted) => {
+                    if (admitted) setConfirmed((previous) => [...previous, record.requestId]);
+                  });
+                }}
+              >
+                Retry original
+              </Button>
+            )}
+          </div>
+        ))}
+      {recovery.capped && (
+        <Button type="button" variant="outline" onClick={() => void recovery.loadMore()}>
+          Load older attempts
+        </Button>
+      )}
+    </>
+  );
+}
+
 // Application code adapts host behavior; the official Thread owns presentation.
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
   const revision = useRef(0);
+  const persistence = useRef<DraftWriter | null>(null);
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const localRevision = useCallback(() => revision.current, []);
   const detached = useRef<{ revision: number } | null>(null);
   const submitted = useRef<{ text: string; ids: string[]; revision: number } | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -171,7 +293,8 @@ export function Chat(props: ChatProps) {
     !props.pending &&
     !props.uncertain &&
     props.retryText == null &&
-    !props.retryAction;
+    !props.retryAction &&
+    (!props.chatId || persistenceReady);
 
   const adapter = useMemo(() => {
     if (props.onSend && props.attachmentAdapter) return props.attachmentAdapter;
@@ -261,18 +384,36 @@ export function Chat(props: ChatProps) {
         JSON.stringify(state.attachments.map((item) => item.id)) === JSON.stringify(images)
           ? { text: draft, ids: [...images], revision: revision.current }
           : null;
+      const writer = persistence.current;
+      if (props.chatId && !writer) return false;
+      writer?.beginSend();
       try {
-        const admitted = await props.onSend(text, mode, images);
+        const prepared = writer
+          ? await writer.prepareSend(draft, images, mode, crypto.randomUUID())
+          : undefined;
+        const admitted = await props.onSend(
+          text,
+          mode,
+          images,
+          prepared && writer
+            ? {
+                ...prepared,
+                onClear: (nextRevision) => writer.acknowledgeClear(prepared.draft, nextRevision),
+              }
+            : undefined,
+        );
         if (admitted) clearSubmitted();
         return admitted;
       } catch {
         setLocalError(
-          "Message delivery could not be confirmed. Check the conversation before sending again.",
+          "Draft preparation or delivery could not be confirmed. Inspect the conversation before retrying.",
         );
         return false;
+      } finally {
+        writer?.endSend();
       }
     },
-    [available, props.onSend, props.state, clearSubmitted],
+    [available, props.onSend, props.state, props.chatId, clearSubmitted],
   );
 
   const onNew = useCallback(
@@ -293,6 +434,7 @@ export function Chat(props: ChatProps) {
         )
       ) {
         setLocalError("Only PNG and JPEG attachments are supported.");
+        persistence.current?.endSend();
         return;
       }
       const composer = runtimeRef.current?.thread.composer;
@@ -318,6 +460,7 @@ export function Chat(props: ChatProps) {
           );
         } catch {
           setLocalError("Attachment restoration failed. Check the draft before retrying.");
+          persistence.current?.endSend();
           return;
         }
       }
@@ -327,6 +470,7 @@ export function Chat(props: ChatProps) {
         true,
         (message.attachments ?? []).map((attachment) => attachment.id),
       );
+      persistence.current?.endSend();
     },
     [admit, props.chatId, props.state?.conversationId],
   );
@@ -360,12 +504,15 @@ export function Chat(props: ChatProps) {
       }
       if (state.submission && state.submission.id !== lastSubmission) {
         lastSubmission = state.submission.id;
+        persistence.current?.beginSend();
         detached.current = { revision: revision.current };
       }
     });
     const unsubscribeText = composer.unstable_on("textChange", (event) => {
-      if (event.origin === "send" && !detached.current)
-        detached.current = { revision: revision.current };
+      if (event.origin === "send") {
+        persistence.current?.beginSend();
+        if (!detached.current) detached.current = { revision: revision.current };
+      }
     });
     return () => {
       unsubscribe();
@@ -393,6 +540,30 @@ export function Chat(props: ChatProps) {
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>
+        {props.chatId && (
+          <PersistenceBridge
+            key={props.chatId}
+            runtime={runtime}
+            chatId={props.chatId}
+            enabled={props.active !== false}
+            readOnly={!props.onSend}
+            writer={persistence}
+            localRevision={localRevision}
+            onReady={setPersistenceReady}
+            onRetry={(record) => {
+              if (!props.connected || props.pending || !props.onSend) return Promise.resolve(false);
+              return props.onSend(record.text.trim(), record.mode, record.images, {
+                requestId: record.requestId,
+                draft: {
+                  revision: record.draftRevision,
+                  text: record.text,
+                  images: record.images,
+                  attempt: true,
+                },
+              });
+            }}
+          />
+        )}
         <OfficialThread />
       </AssistantRuntimeProvider>
     </ChatHostContext.Provider>

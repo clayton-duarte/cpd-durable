@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AssistantRuntime } from "@assistant-ui/react";
+import type { SendMode } from "../shared/chat.ts";
 import {
   DraftAttemptRecoveryPageSchema,
+  DraftAttemptRecordSchema,
   DraftContentSchema,
   DraftViewSchema,
   type DraftAttemptRecoveryPage,
@@ -15,24 +17,34 @@ type Props = {
   readOnly?: boolean;
   /** Include edits that have begun but have not yet appeared in composer state, such as uploads. */
   localRevision?: () => number;
+  onResolved?: (saved: DraftView, choice: "initial" | "saved" | "mine") => void;
 };
 type Conflict = { saved: DraftView; chatId: string };
 
 /** Restoration only. The native composer remains the sole owner of editable draft content. */
-export function useDraftRestoration({ runtime, chatId, enabled, readOnly, localRevision }: Props) {
+export function useDraftRestoration({
+  runtime,
+  chatId,
+  enabled,
+  readOnly,
+  localRevision,
+  onResolved,
+}: Props) {
   const [conflict, setConflict] = useState<Conflict | null>(null);
   const [error, setError] = useState<string | null>(null);
   const epoch = useRef(0);
   const currentChat = useRef(chatId);
   currentChat.current = chatId;
   const allowed = useRef(enabled && !readOnly);
-  allowed.current = enabled && !readOnly;
+  allowed.current = enabled;
   const restoreRef = useRef<((saved: DraftView, replace: boolean) => Promise<void>) | null>(null);
+  const resolvedRef = useRef(onResolved);
+  resolvedRef.current = onResolved;
   useEffect(() => {
     const token = ++epoch.current;
     setConflict(null);
     setError(null);
-    if (!enabled || readOnly || !chatId || !/^[1-9]\d*$/.test(chatId)) return;
+    if (!enabled || !chatId || !/^[1-9]\d*$/.test(chatId)) return;
     const controller = new AbortController();
     const composer = runtime.thread.composer;
     let generation = 0;
@@ -148,8 +160,10 @@ export function useDraftRestoration({ runtime, chatId, enabled, readOnly, localR
         generation === startGeneration &&
         acceptOwnRevision() &&
         fingerprint() === JSON.stringify([saved.content.text, inserted])
-      )
+      ) {
         setConflict(null);
+        resolvedRef.current?.(saved, replace ? "saved" : "initial");
+      }
     };
     restoreRef.current = restore;
     const initialGeneration = generation;
@@ -160,7 +174,19 @@ export function useDraftRestoration({ runtime, chatId, enabled, readOnly, localR
         if (!response.ok) throw new Error("Draft unavailable");
         const saved = DraftViewSchema.parse((await response.json()) as unknown);
         if (!active()) return;
-        if (!saved.content.text && !saved.content.images.length) return;
+        if (!saved.content.text && !saved.content.images.length) {
+          resolvedRef.current?.(saved, "initial");
+          return;
+        }
+        if (
+          generation === initialGeneration &&
+          localRevision?.() === initialLocal &&
+          fingerprint() ===
+            JSON.stringify([saved.content.text, saved.content.images.map((image) => image.id)])
+        ) {
+          resolvedRef.current?.(saved, "initial");
+          return;
+        }
         if (generation !== initialGeneration || localRevision?.() !== initialLocal || !isEmpty()) {
           setConflict({ saved, chatId });
           return;
@@ -194,8 +220,18 @@ export function useDraftRestoration({ runtime, chatId, enabled, readOnly, localR
         setError("Saved draft could not be restored.");
     }
   }, [conflict, chatId]);
-  const keepMine = useCallback(() => setConflict(null), []);
-  return { conflict: conflict?.chatId === chatId, error, useSaved, keepMine };
+  const keepMine = useCallback(() => {
+    if (!conflict || conflict.chatId !== chatId) return;
+    resolvedRef.current?.(conflict.saved, "mine");
+    setConflict(null);
+  }, [conflict, chatId]);
+  const offerConflict = useCallback(
+    (saved: DraftView) => {
+      if (chatId && allowed.current) setConflict({ saved, chatId });
+    },
+    [chatId],
+  );
+  return { conflict: conflict?.chatId === chatId, error, useSaved, keepMine, offerConflict };
 }
 
 /** Read-only discovery: callers must offer explicit retry; reading never sends input. */
@@ -274,6 +310,7 @@ export function createDraftAutosave(options: {
   let conflicted = false;
   let generation = 0;
   let sendPending = false;
+  let preparing = false;
   let suppressDetachedEmpty = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running: Promise<void> | undefined;
@@ -287,7 +324,9 @@ export function createDraftAutosave(options: {
       return { id: item.id, name: item.name, mimeType: item.contentType, size };
     });
     const parsed = DraftContentSchema.safeParse({ text: state.text, images });
-    return parsed.success ? parsed.data : undefined;
+    if (!parsed.success) return undefined;
+    for (const image of parsed.data.images) metadata.set(image.id, image);
+    return parsed.data;
   };
   const fingerprint = () => {
     const state = composer.getState();
@@ -298,7 +337,7 @@ export function createDraftAutosave(options: {
   };
   const active = () => !stopped && !controller.signal.aborted;
   const schedule = () => {
-    if (!active() || conflicted) return;
+    if (!active() || conflicted || preparing) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = undefined;
@@ -306,7 +345,7 @@ export function createDraftAutosave(options: {
     }, 250);
   };
   const flush = async (): Promise<void> => {
-    if (!active() || conflicted) return;
+    if (!active() || conflicted || preparing) return;
     if (running) {
       await running;
       if (active() && !conflicted) schedule();
@@ -365,6 +404,90 @@ export function createDraftAutosave(options: {
   });
   return {
     flush,
+    /**
+     * Pin the original literal input across pending autosaves and edits. Only
+     * metadata writes are paused; the native composer stays editable.
+     */
+    async prepareSend(text: string, images: string[], mode: SendMode, requestId: string) {
+      if (!active() || conflicted || preparing) throw new Error("Draft is not ready to send.");
+      // Capture available file metadata before any asynchronous work.
+      snapshot();
+      const content = DraftContentSchema.parse({
+        text,
+        images: images.map((id) => metadata.get(id)),
+      });
+      if (!text.trim() && !images.length) throw new Error("Draft is empty.");
+      preparing = true;
+      if (timer) clearTimeout(timer);
+      timer = undefined;
+      try {
+        if (running) await running;
+        if (!active() || conflicted) throw new Error("Draft changed in another session.");
+        if (JSON.stringify(content) !== JSON.stringify(saved.content)) {
+          const response = await fetch(`/api/chats/${options.chatId}/draft`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ expectedRevision: saved.revision, content }),
+            signal: controller.signal,
+          });
+          if (response.status === 409) {
+            const current = await fetch(`/api/chats/${options.chatId}/draft`, {
+              signal: controller.signal,
+            });
+            if (!current.ok) throw new Error("Draft unavailable");
+            const remote = DraftViewSchema.parse((await current.json()) as unknown);
+            if (active()) {
+              conflicted = true;
+              options.onConflict(remote);
+            }
+            throw new Error("Draft changed in another session.");
+          }
+          if (!response.ok) throw new Error("Draft could not be saved.");
+          const accepted = DraftViewSchema.parse((await response.json()) as unknown);
+          if (
+            !active() ||
+            accepted.revision !== saved.revision + 1 ||
+            JSON.stringify(accepted.content) !== JSON.stringify(content)
+          )
+            throw new Error("Draft save could not be confirmed.");
+          saved = accepted;
+        }
+        const draft = {
+          revision: saved.revision,
+          text,
+          images: [...images],
+          attempt: true as const,
+        };
+        const intent = {
+          requestId,
+          draftRevision: draft.revision,
+          text,
+          images: [...images],
+          mode,
+        };
+        const response = await fetch(`/api/chats/${options.chatId}/draft/attempt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(intent),
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("Draft attempt could not be confirmed.");
+        const confirmed = DraftAttemptRecordSchema.parse((await response.json()) as unknown);
+        if (
+          !active() ||
+          confirmed.requestId !== requestId ||
+          confirmed.draftRevision !== draft.revision ||
+          confirmed.text !== text ||
+          confirmed.mode !== mode ||
+          JSON.stringify(confirmed.images) !== JSON.stringify(images)
+        )
+          throw new Error("Draft attempt could not be confirmed.");
+        return { requestId, draft };
+      } finally {
+        preparing = false;
+        if (active() && !conflicted) schedule();
+      }
+    },
     /** Suppress only native-send's transient empty state, not later nonempty edits. */
     beginSend() {
       sendPending = true;
@@ -384,6 +507,21 @@ export function createDraftAutosave(options: {
         suppressDetachedEmpty = false;
         schedule();
       }
+    },
+    /** Adopt only the clear confirmed by the same SDK admission transaction. */
+    acknowledgeClear(
+      original: { revision: number; text: string; images: string[] },
+      revision: number,
+    ) {
+      if (
+        active() &&
+        revision === original.revision + 1 &&
+        saved.revision === original.revision &&
+        saved.content.text === original.text &&
+        JSON.stringify(saved.content.images.map((image) => image.id)) ===
+          JSON.stringify(original.images)
+      )
+        saved = { revision, content: { text: "", images: [] } };
     },
     /** Called only after an explicit conflict choice, with the fetched revision. */
     keepMine(remote: DraftView) {
