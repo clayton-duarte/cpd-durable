@@ -18,6 +18,7 @@ import {
 } from "@/components/assistant-ui/elements/tool-fallback.aui";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { Image } from "@/components/assistant-ui/elements/image";
+import { CodeDiff } from "@/components/assistant-ui/elements/code-diff";
 import {
   ToolResultPartSchema,
   ToolStateSchema,
@@ -30,6 +31,7 @@ import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachmen
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
+import { EditDiffSchema, parseEditPatch } from "../shared/edit-diff.ts";
 import { Button } from "@/components/ui/button";
 import {
   CollapsibleRoot,
@@ -52,6 +54,12 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
   const host = useChatHost();
   const states = useAuiState((state) => state.message.metadata.custom["toolStates"]);
   const results = useAuiState((state) => state.message.metadata.custom["toolResultParts"]);
+  const editDiffs = useAuiState((state) => state.message.metadata.custom["editDiffs"]);
+  const editDiff = EditDiffSchema.safeParse(
+    props.toolName === "edit" && editDiffs && typeof editDiffs === "object"
+      ? Reflect.get(editDiffs, props.toolCallId)
+      : undefined,
+  );
   const output = z
     .array(ToolResultPartSchema)
     .safeParse(
@@ -75,27 +83,54 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
                 error: "Result is unavailable in the retained history.",
               }
             : { type: "complete" as const };
-  if (!output.success) return <ToolFallback {...props} status={status} />;
+  const showEditDiff = editDiff.success && parsed.success && parsed.data === "complete";
+  if (!output.success && !showEditDiff) return <ToolFallback {...props} status={status} />;
+  const lines =
+    editDiff.success && editDiff.data.kind === "patch"
+      ? parseEditPatch(editDiff.data.patch)
+      : undefined;
   return (
     <ToolFallbackWithResult
       {...props}
       status={status}
-      renderResult={() =>
-        output.data.map((part, index) =>
-          part.type === "text" ? (
-            <ToolFallback.Result key={index} result={part.text} />
-          ) : part.type === "image" && host.state?.conversationId ? (
-            <Image
-              key={index}
-              type="image"
-              status={{ type: "complete" }}
-              image={`/api/chats/${host.state.conversationId}/images/${part.source.entryId}/${part.source.modelIndex}/${part.source.partIndex}`}
-            />
+      renderResult={() => (
+        <>
+          {output.success ? (
+            output.data.map((part, index) =>
+              part.type === "text" ? (
+                <ToolFallback.Result key={index} result={part.text} />
+              ) : part.type === "image" && host.state?.conversationId ? (
+                <Image
+                  key={index}
+                  type="image"
+                  status={{ type: "complete" }}
+                  image={`/api/chats/${host.state.conversationId}/images/${part.source.entryId}/${part.source.modelIndex}/${part.source.partIndex}`}
+                />
+              ) : (
+                <ToolFallback.Result
+                  key={index}
+                  result="Unsupported tool output is not displayed."
+                />
+              ),
+            )
           ) : (
-            <ToolFallback.Result key={index} result="Unsupported tool output is not displayed." />
-          ),
-        )
-      }
+            <ToolFallback.Result result={props.result as unknown} />
+          )}
+          {showEditDiff &&
+            (lines ? (
+              <CodeDiff
+                className="max-w-full border-0 bg-transparent"
+                filename="Applied edit (receipt)"
+                additions={lines.filter((line) => line.kind === "added").length}
+                deletions={lines.filter((line) => line.kind === "removed").length}
+                lines={lines}
+                cycle={0}
+              />
+            ) : (
+              <ToolFallback.Result result="Edit diff unavailable." />
+            ))}
+        </>
+      )}
     />
   );
 }
