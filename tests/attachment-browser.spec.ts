@@ -122,6 +122,51 @@ test("new attachment survives acknowledgement of an unchanged text draft", async
   await expect(page.getByRole("button", { name: "Remove two.png" })).toBeVisible();
   await expect(draft).toHaveValue("hello");
 });
+test("an upload still in flight is not cancelled by an earlier admission acknowledgement", async ({
+  page,
+}) => {
+  let accept!: () => void, finishUpload!: () => void;
+  const inputGate = new Promise<void>((resolve) => {
+    accept = resolve;
+  });
+  const uploadGate = new Promise<void>((resolve) => {
+    finishUpload = resolve;
+  });
+  let inputStarted = false,
+    uploadStarted = false;
+  await prepare(page, async (route) => {
+    inputStarted = true;
+    await inputGate;
+    await route.fulfill({ status: 202, json: { id: "1" } });
+  });
+  await attach(page);
+  const draft = page.getByRole("textbox", { name: "Message input" });
+  await draft.fill("keep");
+  await page.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => inputStarted).toBe(true);
+  await page.route("**/api/chats/1/attachments", async (route) => {
+    uploadStarted = true;
+    await uploadGate;
+    await route.fulfill({
+      status: 201,
+      json: {
+        id: ids[1],
+        mimeType: "image/png",
+        size: png.length,
+        prepared: { mimeType: "image/png", changed: false, resized: false, converted: false },
+      },
+    });
+  });
+  const chooser = page.waitForEvent("filechooser");
+  await page.getByRole("button", { name: "Add Attachment" }).click();
+  await (await chooser).setFiles({ name: "new.png", mimeType: "image/png", buffer: png });
+  await expect.poll(() => uploadStarted).toBe(true);
+  accept();
+  await expect(draft).toHaveValue("keep");
+  finishUpload();
+  await expect(page.getByRole("button", { name: "Remove new.png" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Remove one.png" })).toBeVisible();
+});
 test("removing and readding an identical server ID cannot clear the newer draft", async ({
   page,
 }) => {
@@ -258,6 +303,8 @@ test("saved and tool-result images use requesting-chat URLs and retain result or
                   name: "read",
                   arguments: {},
                   state: "complete",
+                  output:
+                    "first tool text\n[Non-text tool output is not displayed.]\nlast tool text",
                   resultParts: [
                     { type: "text", text: "first tool text" },
                     { type: "image", source: { entryId: 6, modelIndex: 0, partIndex: 1 } },
@@ -273,11 +320,16 @@ test("saved and tool-result images use requesting-chat URLs and retain result or
   );
   await expect.poll(() => requested.includes("/api/chats/1/images/5/0/1")).toBe(true);
   await page.getByRole("button", { name: "1 tool call" }).click();
+  const tool = page.getByRole("button", { name: /Used tool: read/ });
+  await expect(page.getByText("first tool text")).toBeHidden();
+  await expect(page.locator('img[src="/api/chats/1/images/6/0/1"]')).toBeHidden();
+  await tool.click();
   await expect.poll(() => requested.includes("/api/chats/1/images/6/0/1")).toBe(true);
   const first = page.getByText("first tool text"),
     last = page.getByText("last tool text");
   await expect(first).toBeVisible();
   await expect(last).toBeVisible();
+  await expect(first).toHaveCount(1);
   expect(
     await first.evaluate(
       (e) =>
@@ -285,6 +337,9 @@ test("saved and tool-result images use requesting-chat URLs and retain result or
         Node.DOCUMENT_POSITION_FOLLOWING,
     ),
   ).toBeTruthy();
+  await tool.click();
+  await expect(first).toBeHidden();
+  await expect(page.locator('img[src="/api/chats/1/images/6/0/1"]')).toBeHidden();
 });
 
 test("navigation keeps attachment drafts isolated without resubmitting", async ({ page }) => {
@@ -354,4 +409,39 @@ test("archived chat shows saved images without upload or send controls", async (
   );
   await expect(page.locator('img[src="/api/chats/1/images/5/0/0"]')).toBeVisible();
   await expect(page.getByRole("button", { name: "Add Attachment" })).toHaveCount(0);
+});
+
+test("delayed native attachment completion does not restore refs after a newer draft was cleared", async ({
+  page,
+}) => {
+  await prepare(page, async (route) => route.abort());
+  await page.evaluate(async () => {
+    const path = "/tests/attachment-race-harness.tsx";
+    await import(/* @vite-ignore */ path);
+  });
+  const scope = page.locator("#controlled-native-composer");
+  await expect(scope.getByRole("textbox", { name: "Message input" })).toBeVisible();
+  async function add(name: string) {
+    const chooser = page.waitForEvent("filechooser");
+    await scope.getByRole("button", { name: "Add Attachment" }).click();
+    await (await chooser).setFiles({ name, mimeType: "image/png", buffer: png });
+    await expect(scope.getByRole("button", { name: `Remove ${name}` })).toBeVisible();
+  }
+  await add("first.png");
+  await add("second.png");
+  const text = scope.getByRole("textbox", { name: "Message input" });
+  await text.fill("submitted text");
+  await scope.getByRole("button", { name: "Send message" }).click();
+  await text.fill("newer text");
+  await text.fill("");
+  await add("new.png");
+  await scope.getByRole("button", { name: "Remove new.png" }).click();
+  await page.evaluate(() => (Reflect.get(window, "__releaseAttachmentSend") as () => void)());
+  await expect
+    .poll(async () => page.evaluate(() => Reflect.get(window, "__raceSent") as unknown))
+    .toEqual([ids[0], ids[1]]);
+  await expect(text).toHaveValue("");
+  await expect(scope.getByRole("button", { name: /Remove (first|second|new)\.png/ })).toHaveCount(
+    0,
+  );
 });

@@ -15,7 +15,10 @@ import {
   prepareImage,
   IMAGE_PREPARATION_LIMITS,
 } from "../src/server/attachments.ts";
-import { createImageAttachmentAdapter } from "../src/client/attachment-adapter.ts";
+import {
+  createImageAttachmentAdapter,
+  restoreDetachedImages,
+} from "../src/client/attachment-adapter.ts";
 import { IMAGE_MAX_BYTES } from "../src/shared/attachments.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
@@ -91,6 +94,75 @@ function rotatedJpeg() {
 }
 
 describe("image transport foundations", () => {
+  it("does not restore text or removed refs after an edit while native insertion promises settle", async () => {
+    let revision = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const state = { text: "", attachments: [] as { id: string }[] };
+    const composer = {
+      getState: () => state,
+      addAttachment: (attachment: { id?: string }) => {
+        state.attachments.push({ id: attachment.id! });
+        revision++;
+        return gate;
+      },
+      setText: (text: string) => {
+        state.text = text;
+        revision++;
+      },
+    };
+    const source = ["a", "b"].map((id) => ({
+      id,
+      type: "image" as const,
+      name: `${id}.png`,
+      status: { type: "complete" as const },
+      content: [{ type: "image" as const, image: "/api/test" }],
+    }));
+    const restoring = restoreDetachedImages(composer, source, "original", revision, () => revision);
+    expect(state.attachments.map((item) => item.id)).toEqual(["a", "b"]);
+    state.attachments.splice(0, 1);
+    revision++;
+    state.attachments.push({ id: "new" });
+    revision++;
+    state.text = "new text";
+    revision++;
+    state.text = "";
+    revision++;
+    release();
+    await restoring;
+    expect(state).toEqual({ text: "", attachments: [{ id: "b" }, { id: "new" }] });
+  });
+  it("stops restoring subsequent refs after a reentrant native composer change", async () => {
+    let revision = 0;
+    const state = { text: "", attachments: [] as { id: string }[] };
+    const calls: string[] = [];
+    const composer = {
+      getState: () => state,
+      addAttachment: async (attachment: { id?: string }) => {
+        calls.push(attachment.id!);
+        state.attachments.push({ id: attachment.id! });
+        revision++;
+        state.attachments = [{ id: "new" }];
+        revision++;
+      },
+      setText: (text: string) => {
+        state.text = text;
+        revision++;
+      },
+    };
+    const source = ["a", "b"].map((id) => ({
+      id,
+      type: "image" as const,
+      name: `${id}.png`,
+      status: { type: "complete" as const },
+      content: [{ type: "image" as const, image: "/api/test" }],
+    }));
+    await restoreDetachedImages(composer, source, "original", revision, () => revision);
+    expect(calls).toEqual(["a"]);
+    expect(state).toEqual({ text: "", attachments: [{ id: "new" }] });
+  });
   it("uses the public Photon processor for PNG, JPEG, orientation, resizing and base64 limits", async () => {
     expect((await prepareImage(processor, png, "image/png")).data).toBe(png.toString("base64"));
     expect((await prepareImage(processor, jpeg, "image/jpeg")).data).toBe(jpeg.toString("base64"));

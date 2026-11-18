@@ -1,4 +1,5 @@
 import { createContext, useContext } from "react";
+import type { AttachmentAdapter } from "@assistant-ui/react";
 import type { ChatState, SendMode, HistoryGap } from "../shared/chat.ts";
 
 export interface ChatProps {
@@ -24,6 +25,7 @@ export interface ChatProps {
   onLoadEarlier?: () => Promise<void>;
   onFillGap?: (gap: HistoryGap) => Promise<void>;
   onSend?: (text: string, mode?: SendMode, images?: string[]) => Promise<boolean>;
+  attachmentAdapter?: AttachmentAdapter;
   onStop?: () => Promise<void>;
   onContinue?: () => Promise<boolean>;
   onReset?: (handoff: string) => Promise<boolean>;

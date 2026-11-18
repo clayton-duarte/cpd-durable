@@ -12,7 +12,10 @@ import {
 } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
-import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import {
+  ToolFallback,
+  ToolFallbackWithResult,
+} from "@/components/assistant-ui/elements/tool-fallback.aui";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { Image } from "@/components/assistant-ui/elements/image";
 import {
@@ -23,7 +26,7 @@ import {
 } from "../shared/chat.ts";
 import { AttachmentIdSchema } from "../shared/attachments.ts";
 import { z } from "zod";
-import { createImageAttachmentAdapter } from "./attachment-adapter.ts";
+import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachment-adapter.ts";
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
@@ -59,15 +62,15 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
                 error: "Result is unavailable in the retained history.",
               }
             : { type: "complete" as const };
+  if (!output.success) return <ToolFallback {...props} status={status} />;
   return (
-    <>
-      <ToolFallback {...props} status={status} {...(output.success ? { result: undefined } : {})} />
-      {output.success &&
+    <ToolFallbackWithResult
+      {...props}
+      status={status}
+      renderResult={() =>
         output.data.map((part, index) =>
           part.type === "text" ? (
-            <div key={index} className="whitespace-pre-wrap">
-              {part.text}
-            </div>
+            <ToolFallback.Result key={index} result={part.text} />
           ) : part.type === "image" && host.state?.conversationId ? (
             <Image
               key={index}
@@ -76,14 +79,11 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
               image={`/api/chats/${host.state.conversationId}/images/${part.source.entryId}/${part.source.modelIndex}/${part.source.partIndex}`}
             />
           ) : (
-            <AgentStatus
-              key={index}
-              state="waiting"
-              label="Unsupported tool output is not displayed."
-            />
+            <ToolFallback.Result key={index} result="Unsupported tool output is not displayed." />
           ),
-        )}
-    </>
+        )
+      }
+    />
   );
 }
 const threadComponents = { ComposerFooter: DurableControls, ToolFallback: DurableToolFallback };
@@ -146,6 +146,7 @@ const historyGapUI = {
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
   const revision = useRef(0);
+  const detached = useRef<{ revision: number } | null>(null);
   const submitted = useRef<{ text: string; ids: string[]; revision: number } | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const committedProjection = useRef<AssistantProjection | undefined>(undefined);
@@ -173,11 +174,15 @@ export function Chat(props: ChatProps) {
     !props.retryAction;
 
   const adapter = useMemo(() => {
+    if (props.onSend && props.attachmentAdapter) return props.attachmentAdapter;
     const id =
       props.chatId ??
       (props.state?.conversationId ? String(props.state.conversationId) : undefined);
     if (!id || !props.onSend) return undefined;
     return createImageAttachmentAdapter({
+      onAddStart: () => {
+        revision.current++;
+      },
       upload: async (file) => {
         try {
           const response = await fetch(`/api/chats/${id}/attachments`, {
@@ -194,7 +199,7 @@ export function Chat(props: ChatProps) {
       },
       previewUrl: (attachmentId) => `/api/chats/${id}/attachments/${attachmentId}`,
     });
-  }, [props.chatId, props.state?.conversationId, props.onSend]);
+  }, [props.chatId, props.state?.conversationId, props.onSend, props.attachmentAdapter]);
 
   const clearSubmitted = useCallback(() => {
     const composer = runtimeRef.current?.thread.composer;
@@ -207,23 +212,21 @@ export function Chat(props: ChatProps) {
       JSON.stringify(state.attachments.map((item) => item.id)) !== JSON.stringify(snapshot.ids)
     )
       return;
-    composer.setText("");
-    void composer.clearAttachments();
+    // In assistant-ui 0.15.36 clearAttachments empties the native array before
+    // its promise awaits adapter cleanup. Never call it after a newer add starts.
+    const before = revision.current;
+    const clearing = composer.clearAttachments();
+    const expected = before + (snapshot.ids.length ? 1 : 0);
+    const after = composer.getState();
+    if (revision.current === expected && after.text === snapshot.text && !after.attachments.length)
+      composer.setText("");
+    void clearing.catch(() => setLocalError("Attachment removal could not be confirmed."));
     submitted.current = null;
   }, []);
 
   const admit = useCallback(
     async (draft: string, mode: SendMode, nativeSend = false, ids?: string[]) => {
       const composer = runtimeRef.current?.thread.composer;
-      // The supplied composer detaches the draft on send. Return it immediately
-      // while admission is pending, unless the user has already written a new one.
-      if (
-        nativeSend &&
-        composer?.getState().text === "" &&
-        JSON.stringify(composer.getState().attachments.map((item) => item.id)) ===
-          JSON.stringify(ids ?? [])
-      )
-        composer.setText(draft);
       setLocalError(null);
       if (
         nativeSend &&
@@ -274,39 +277,58 @@ export function Chat(props: ChatProps) {
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
+      const conversationId =
+        props.chatId ?? (props.state?.conversationId ? String(props.state.conversationId) : "");
       if (
         message.role !== "user" ||
         message.content.some((part) => part.type !== "text") ||
         (message.attachments ?? []).some(
-          (attachment) => !AttachmentIdSchema.safeParse(attachment.id).success,
+          (attachment) =>
+            !AttachmentIdSchema.safeParse(attachment.id).success ||
+            attachment.type !== "image" ||
+            attachment.content.length !== 1 ||
+            attachment.content[0]?.type !== "image" ||
+            attachment.content[0].image !==
+              `/api/chats/${conversationId}/attachments/${attachment.id}`,
         )
       ) {
         setLocalError("Only PNG and JPEG attachments are supported.");
         return;
       }
       const composer = runtimeRef.current?.thread.composer;
+      const text = message.content
+        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .join("");
+      const mark = detached.current;
+      detached.current = null;
+      const expectedRevision = revision.current;
       if (
         composer &&
+        (mark ? mark.revision === expectedRevision : text === "") &&
         composer.getState().text === "" &&
         composer.getState().attachments.length === 0
       ) {
-        for (const attachment of message.attachments ?? [])
-          await composer.addAttachment({
-            id: attachment.id,
-            type: attachment.type,
-            name: attachment.name,
-            ...(attachment.contentType ? { contentType: attachment.contentType } : {}),
-            content: attachment.content,
-          });
+        try {
+          await restoreDetachedImages(
+            composer,
+            message.attachments ?? [],
+            text,
+            expectedRevision,
+            () => revision.current,
+          );
+        } catch {
+          setLocalError("Attachment restoration failed. Check the draft before retrying.");
+          return;
+        }
       }
       await admit(
-        message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+        text,
         "reject",
         true,
         (message.attachments ?? []).map((attachment) => attachment.id),
       );
     },
-    [admit],
+    [admit, props.chatId, props.state?.conversationId],
   );
 
   const runtime = useExternalStoreRuntime({
@@ -324,18 +346,31 @@ export function Chat(props: ChatProps) {
   runtimeRef.current = runtime;
   useLayoutEffect(() => {
     const composer = runtime.thread.composer;
+    let lastSubmission: string | undefined;
     let last = JSON.stringify([
       composer.getState().text,
       composer.getState().attachments.map((item) => item.id),
     ]);
-    return composer.subscribe(() => {
+    const unsubscribe = composer.subscribe(() => {
       const state = composer.getState();
       const next = JSON.stringify([state.text, state.attachments.map((item) => item.id)]);
       if (next !== last) {
         last = next;
         revision.current++;
       }
+      if (state.submission && state.submission.id !== lastSubmission) {
+        lastSubmission = state.submission.id;
+        detached.current = { revision: revision.current };
+      }
     });
+    const unsubscribeText = composer.unstable_on("textChange", (event) => {
+      if (event.origin === "send" && !detached.current)
+        detached.current = { revision: revision.current };
+    });
+    return () => {
+      unsubscribe();
+      unsubscribeText();
+    };
   }, [runtime]);
 
   return (
