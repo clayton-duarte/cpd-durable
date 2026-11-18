@@ -5,6 +5,7 @@ import { createRegistry, defineExtension, section } from "@earendil-works/pi-dur
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools, createPowerShellTool } from "@earendil-works/pi-durable/tools";
 import { createCodeMode } from "./codemode.ts";
+import { createSearchTools } from "./tools/search.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -18,6 +19,7 @@ export function createExecution(defaultCwd = workingDirectory()) {
   const codeMode = createCodeMode();
   registry.install(CodingTools);
   registry.install(codeMode.extension);
+  registry.install(createSearchTools());
   registry.install(defineExtension({ name: "powershell", tools: [createPowerShellTool()] }));
   registry.install(
     defineExtension({
