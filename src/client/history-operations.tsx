@@ -300,7 +300,7 @@ export function HistoryOperations() {
           </Button>
           {pending && (
             <>
-              <AgentStatus state="waiting" label="Reading saved history" />
+              <AgentStatus state="waiting" trailing={null} label="Reading saved history" />
               <Button
                 variant="ghost"
                 size="sm"
@@ -332,9 +332,12 @@ export function HistoryOperations() {
               <p>{result.hits.length} matches (maximum 100).</p>
               <ul>
                 {result.hits.map((hit) => (
-                  <li key={`${hit.conversationId}:${hit.messageId}:${hit.start}`}>
+                  <li key={`${hit.conversationId}:${hit.messageId}:${hit.partIndex}:${hit.start}`}>
                     Chat {hit.conversationId} · entry {hit.entryId} · message {hit.messageId} ·{" "}
-                    {hit.role} · origin chat {hit.originConversationId}: “{hit.match}”{" "}
+                    {hit.role} · part {hit.partIndex} · origin chat {hit.originConversationId}: “
+                    {hit.before}
+                    <mark>{hit.match}</mark>
+                    {hit.after}”{" "}
                     {hit.conversationId !== current && (
                       <Link to="/chats/{-$chatId}" params={{ chatId: hit.conversationId }}>
                         Open chat (not entry)

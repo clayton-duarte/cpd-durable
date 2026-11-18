@@ -78,7 +78,9 @@ function projectEntry(entry: EntryRecord, conversationId: string): TranscriptEnt
     messages.push({
       messageId: `${entry.id}:${index}`,
       role: message.role,
-      text: parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+      textParts: parts.flatMap((part, partIndex) =>
+        part.type === "text" ? [{ partIndex, text: part.text }] : [],
+      ),
       omittedContent: omitted,
     });
   }

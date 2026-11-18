@@ -67,6 +67,9 @@ describe("logical transcript operations", () => {
       start: 7,
       end: 13,
       match: "needle",
+      partIndex: 0,
+      before: "Turn 0 ",
+      after: " 😀",
     });
     expect(result.hits[0]!.messageId).toBe(`${result.hits[0]!.entryId}:0`);
     const exact = await search("😀", 130);
@@ -159,7 +162,7 @@ describe("logical transcript operations", () => {
       "assistant",
       "other",
     ]);
-    expect(result.entries[0]!.messages[0]!.text).toContain("Turn 0");
+    expect(result.entries[0]!.messages[0]!.textParts[0]!.text).toContain("Turn 0");
     const output = transcriptExportJson(result) + transcriptExportMarkdown(result);
     for (const secret of [
       "SECRET_ENTRY_DATA",
@@ -171,6 +174,79 @@ describe("logical transcript operations", () => {
       expect(output).not.toContain(secret);
     expect(output).toContain("````text");
     expect((await search("SECRET")).hits).toEqual([]);
+  });
+
+  it("preserves source part boundaries and limits snippets without leaking excluded content", async () => {
+    const entry = await chat.conversation.commit(
+      async (tx) =>
+        tx.appendEntry(chat.conversation.id, {
+          kind: "pi.assistant",
+          model: [
+            {
+              role: "assistant",
+              content: [
+                { type: "text", text: `${"😀".repeat(50)} foo` },
+                { type: "thinking", thinking: "PRIVATE_REASONING" },
+                { type: "text", text: `bar ${"🚀".repeat(50)}` },
+                {
+                  type: "toolCall",
+                  id: "call",
+                  name: "read",
+                  arguments: { path: "PRIVATE_ARGUMENT" },
+                },
+                { type: "text", text: "last" },
+              ],
+              api: "openai-completions",
+              provider: "test",
+              model: "test",
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                totalTokens: 0,
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+              },
+              stopReason: "stop",
+              timestamp: 0,
+            },
+          ],
+        }),
+      BACKGROUND_CONTEXT,
+    );
+    expect((await search("foobar")).hits).toEqual([]);
+    expect((await search("barlast")).hits).toEqual([]);
+    const foo = (await search("foo")).hits[0]!;
+    const bar = (await search("bar")).hits[0]!;
+    expect(foo).toMatchObject({
+      entryId: entry.id,
+      messageId: `${entry.id}:0`,
+      partIndex: 0,
+      start: 101,
+      end: 104,
+      after: "",
+    });
+    expect(bar).toMatchObject({
+      entryId: entry.id,
+      messageId: `${entry.id}:0`,
+      partIndex: 2,
+      start: 0,
+      end: 3,
+      before: "",
+    });
+    expect(Array.from(foo.before)).toHaveLength(40);
+    expect(Array.from(bar.after)).toHaveLength(40);
+    expect(foo.before).toBe(`${"😀".repeat(39)} `);
+    expect(bar.after).toBe(` ${"🚀".repeat(39)}`);
+    const exported = await exportTranscripts(scope, resolve);
+    expect(exported.entries[0]!.messages[0]!.textParts.map((part) => part.partIndex)).toEqual([
+      0, 2, 4,
+    ]);
+    const output = JSON.stringify([foo, bar, exported]) + transcriptExportMarkdown(exported);
+    expect(output).not.toContain("PRIVATE_REASONING");
+    expect(output).not.toContain("PRIVATE_ARGUMENT");
+    expect(transcriptExportMarkdown(exported)).toContain("Text part 2:");
+    expect(output).not.toContain("foobar");
   });
 
   it("freezes bounds before subsequent appends and never assumes entry IDs are contiguous", async () => {

@@ -26,7 +26,10 @@ export type TranscriptLimits = z.input<typeof TranscriptLimitsSchema>;
 export const TranscriptMessageSchema = z.strictObject({
   messageId: z.string(),
   role: z.enum(["user", "assistant"]),
-  text: z.string(),
+  // Index is the original model content-array index, or 0 for string content.
+  textParts: z.array(
+    z.strictObject({ partIndex: z.number().int().nonnegative(), text: z.string() }),
+  ),
   omittedContent: z.boolean(),
 });
 export const TranscriptEntrySchema = z.strictObject({
@@ -86,9 +89,13 @@ export const TranscriptSearchResultSchema = z.strictObject({
       entryId: IdSchema,
       messageId: z.string(),
       role: z.enum(["user", "assistant"]),
+      partIndex: z.number().int().nonnegative(),
+      // Offsets are relative to the original text part, in UTF-16 code units.
       start: z.number().int().nonnegative(),
       end: z.number().int().nonnegative(),
       match: z.string(),
+      before: z.string().max(80),
+      after: z.string().max(80),
     }),
   ),
 });

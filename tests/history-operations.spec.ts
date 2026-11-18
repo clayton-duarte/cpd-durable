@@ -82,9 +82,12 @@ test("search and logical export use explicit selected scope and preserve the com
             entryId: 42,
             messageId: "42:0",
             role: "user",
+            partIndex: 0,
             start: 0,
             end: 6,
             match: "needle",
+            before: "A helpful ",
+            after: " in context",
           },
         ],
       },
@@ -113,6 +116,7 @@ test("search and logical export use explicit selected scope and preserve the com
   await page.getByRole("button", { name: "Search saved history" }).click();
   await expect(page.getByText(/Status: capped/)).toBeVisible();
   await expect(page.getByText(/message 42:0/)).toContainText("entry 42");
+  await expect(page.getByText(/A helpful/)).toContainText("A helpful needle in context");
   expect(requests[0]).toMatchObject({
     scope: { conversationIds: ["1"], includeArchived: false },
     search: { query: "needle" },
@@ -150,9 +154,12 @@ test("multiple and catalog scopes explicitly include archived and label navigati
             entryId: 42,
             messageId: "42:0",
             role: "assistant",
+            partIndex: 0,
             start: 0,
             end: 6,
             match: "needle",
+            before: "",
+            after: "",
           },
         ],
       },

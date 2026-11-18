@@ -28,7 +28,11 @@ export async function exportTranscripts(
   const report = await scanTranscripts(
     frozen,
     (entry) => {
-      const next = entry.messages.reduce((count, message) => count + message.text.length, 0);
+      const next = entry.messages.reduce(
+        (count, message) =>
+          count + message.textParts.reduce((sum, part) => sum + part.text.length, 0),
+        0,
+      );
       if (characters + next > policy.maxTextCharacters) return false;
       characters += next;
       entries.push(entry);
@@ -78,19 +82,15 @@ export function transcriptExportMarkdown(value: TranscriptExport): string {
       if (entry.headEntryId !== undefined) lines.push("", `Context head: ${entry.headEntryId}.`);
       if (entry.omittedContent) lines.push("", "Non-text/private content omitted.");
       for (const message of entry.messages) {
-        // Literal fenced content prevents transcript text from escaping into export chrome.
-        let longest = 0;
-        for (const match of message.text.matchAll(/`+/g))
-          longest = Math.max(longest, match[0].length);
-        const fence = "`".repeat(Math.max(3, longest + 1));
-        lines.push(
-          "",
-          `#### ${message.role} (${message.messageId})`,
-          "",
-          `${fence}text`,
-          message.text,
-          fence,
-        );
+        lines.push("", `#### ${message.role} (${message.messageId})`);
+        for (const part of message.textParts) {
+          // Literal fenced content prevents transcript text from escaping into export chrome.
+          let longest = 0;
+          for (const match of part.text.matchAll(/`+/g))
+            longest = Math.max(longest, match[0].length);
+          const fence = "`".repeat(Math.max(3, longest + 1));
+          lines.push("", `Text part ${part.partIndex}:`, "", `${fence}text`, part.text, fence);
+        }
       }
     }
   }
