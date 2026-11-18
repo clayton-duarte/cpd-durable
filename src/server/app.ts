@@ -47,6 +47,9 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { AttachmentError, AttachmentNotFound } from "./attachments.ts";
 import { QuestionAnswerSchema } from "../shared/questions.ts";
 import { answerQuestion, questionProjection } from "./question-routes.ts";
+import { DirectShellRequestSchema } from "../shared/direct-shell.ts";
+import { admitDirectShell } from "./direct-shell.ts";
+import { z } from "zod";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -227,6 +230,13 @@ export function createApp(
               throw new Error("Configuration unavailable");
             },
             withdraw: chat.withdraw,
+            shellStatus: async () => undefined,
+            stopShell: async () => {
+              throw new Error("Shell unavailable.");
+            },
+            compact: async () => {
+              throw new Error("Transactional compaction unavailable.");
+            },
             admit: async (_draft: Parameters<ChatScope["admit"]>[0]) => {
               throw new Error("Transactional admission unavailable.");
             },
@@ -294,6 +304,56 @@ export function createApp(
       throw error;
     }
   });
+
+  routes.post("/shell", async (c) => {
+    if (c.req.param("chatId") === undefined || !chat.chats)
+      return c.json({ error: "Chat not found." }, 404);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const parsed = DirectShellRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!parsed.success) return c.json({ error: "Invalid shell request." }, 400);
+    const scope = c.get("scope");
+    try {
+      return c.json(
+        {
+          id: String(await admitDirectShell(scope.conversation, parsed.data, scope.assertWritable)),
+        },
+        202,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        [
+          "Conversation busy.",
+          "Request identity already used.",
+          "Shell request identity mismatch.",
+        ].includes(error.message)
+      )
+        return c.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
+  routes.get("/shell", async (c) => {
+    if (c.req.param("chatId") === undefined || !chat.chats)
+      return c.json({ error: "Chat not found." }, 404);
+    const requestId = z.uuid().safeParse(c.req.query("requestId"));
+    if (!requestId.success) return c.json({ error: "Invalid shell request." }, 400);
+    const status = await c.get("scope").shellStatus(requestId.data);
+    return status ? c.json(status) : c.json({ error: "Shell request not found." }, 404);
+  });
+  routes.post("/shell/stop", async (c) => {
+    if (c.req.param("chatId") === undefined || !chat.chats)
+      return c.json({ error: "Chat not found." }, 404);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const request = z
+      .strictObject({ requestId: z.uuid() })
+      .safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!request.success) return c.json({ error: "Invalid shell request." }, 400);
+    return c.json({ status: await c.get("scope").stopShell(request.data.requestId) });
+  });
   routes.get("/questions", async (c) => {
     if (c.req.param("chatId") === undefined) return c.json({ error: "Chat not found." }, 404);
     return c.json(await questionProjection(c.get("scope")));
@@ -324,9 +384,7 @@ export function createApp(
       return c.json({ error: "Expected application/json." }, 415);
     const result = CompactSchema.safeParse(await c.req.json<unknown>().catch(() => null));
     if (!result.success) return c.json({ error: "Invalid compaction request." }, 400);
-    const taskId = await c
-      .get("scope")
-      .conversation.compact(result.data.instructions || undefined, BACKGROUND_CONTEXT);
+    const taskId = await c.get("scope").compact(result.data.instructions || undefined);
     return c.json({ taskId: String(taskId) }, 202);
   });
 

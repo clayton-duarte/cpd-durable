@@ -32,6 +32,7 @@ export const DirectShellEntry = defineEntry<{
 export const DirectShellDoc = defineDoc<{
   requests: Stored[];
   active: number | null;
+  compactIntent?: { id: string; taskId?: number };
   progress?: {
     taskId: number;
     command: string;
@@ -54,6 +55,14 @@ export async function directShellHasUnsettled(tx: Tx, id: ConversationId): Promi
   if (state.active === null) return false;
   const task = await tx.task(state.active as TaskId);
   return task === undefined || task.state.status !== "terminal";
+}
+
+export async function compactIntentUnsettled(tx: Tx, id: ConversationId): Promise<boolean> {
+  const intent = (await tx.doc(DirectShellDoc, id)).compactIntent;
+  if (!intent) return false;
+  if (intent.taskId === undefined) return true;
+  const task = await tx.task(intent.taskId as TaskId);
+  return !task || task.state.status !== "terminal";
 }
 
 export async function directShellRequestExists(
@@ -226,6 +235,7 @@ export async function admitDirectShell(
       live.run ||
       live.compactions?.length ||
       inbox.items.length ||
+      (await compactIntentUnsettled(tx, conversation.id)) ||
       (await directShellHasUnsettled(tx, conversation.id))
     )
       throw new Error("Conversation busy.");

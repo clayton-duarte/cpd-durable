@@ -1,4 +1,5 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { randomUUID } from "node:crypto";
 import {
   configure,
   AgentDoc,
@@ -22,7 +23,17 @@ import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
-import { directShellHasUnsettled, directShellRequestExists } from "./direct-shell.ts";
+import {
+  compactIntentUnsettled,
+  DirectShellDoc,
+  directShellHasUnsettled,
+  directShellRequestExists,
+} from "./direct-shell.ts";
+import {
+  DirectShellRequestSchema,
+  DirectShellResultSchema,
+  DirectShellStatusSchema,
+} from "../shared/direct-shell.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -59,7 +70,13 @@ export class ChatLifecycleError extends Error {
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
-  return live.run === undefined && !live.compactions?.length && inbox.items.length === 0;
+  return (
+    live.run === undefined &&
+    !live.compactions?.length &&
+    inbox.items.length === 0 &&
+    !(await directShellHasUnsettled(tx, id as ConversationId)) &&
+    !(await compactIntentUnsettled(tx, id as ConversationId))
+  );
 }
 async function empty(tx: Tx, item: CatalogItem) {
   return (
@@ -131,6 +148,8 @@ export async function openChats(
           const item = catalog.items.find((item) => item.id === conversation.id);
           if (!item || item.status)
             throw new ChatLifecycleError("Restore this chat before changing configuration.", 409);
+          if (await directShellHasUnsettled(tx, conversation.id))
+            throw new ChatLifecycleError("A direct shell command is running.", 409);
           const agent = await tx.doc(AgentDoc, conversation.id);
           const current = selection(agent);
           if (sameSelection(current, next)) return;
@@ -146,6 +165,79 @@ export async function openChats(
         }, BACKGROUND_CONTEXT);
       },
       archived: item.status === "archived",
+      shellStatus: async (requestId: string) => {
+        if (!(await harness.snapshot(DirectShellDoc, conversation.id, BACKGROUND_CONTEXT)))
+          return undefined;
+        return harness.commit(async (tx) => {
+          const catalog = await tx.doc(CatalogDoc);
+          if (
+            !catalog.items.some((item) => item.id === conversation.id && item.status !== "deleted")
+          )
+            return undefined;
+          const state = await tx.doc(DirectShellDoc, conversation.id);
+          const record = state.requests.find((request) => request.requestId === requestId);
+          if (!record) return undefined;
+          const task = await tx.task(record.taskId as import("@earendil-works/pi-durable").TaskId);
+          if (!task || task.conversationId !== conversation.id || task.kind !== "cpd.direct-shell")
+            return undefined;
+          const input = DirectShellRequestSchema.safeParse(task.input);
+          if (!input.success || input.data.requestId !== requestId) return undefined;
+          const settled =
+            task.state.status === "terminal"
+              ? DirectShellResultSchema.safeParse(task.state.outcome.result)
+              : undefined;
+          const progress = state?.progress?.taskId === task.id ? state.progress : undefined;
+          const result = settled?.success
+            ? settled.data
+            : {
+                status:
+                  task.state.status === "terminal"
+                    ? ("unavailable" as const)
+                    : ("running" as const),
+                output: progress?.output ?? "",
+                truncated: progress?.truncated ?? false,
+              };
+          return DirectShellStatusSchema.parse({
+            taskId: String(task.id),
+            ...input.data,
+            ...result,
+          });
+        }, BACKGROUND_CONTEXT);
+      },
+      stopShell: async (requestId: string) => {
+        const id = await conversation.commit(async (tx) => {
+          await assertWritable(tx);
+          const record = (await tx.doc(DirectShellDoc, conversation.id)).requests.find(
+            (request) => request.requestId === requestId,
+          );
+          if (!record) throw new ChatLifecycleError("Shell request not found.", 404);
+          const task = await tx.task(record.taskId as import("@earendil-works/pi-durable").TaskId);
+          if (!task || task.conversationId !== conversation.id || task.kind !== "cpd.direct-shell")
+            throw new ChatLifecycleError("Shell task unavailable.", 409);
+          return task.id;
+        }, BACKGROUND_CONTEXT);
+        return harness.abortTask(id, BACKGROUND_CONTEXT);
+      },
+      compact: async (instructions?: string) => {
+        const reservation = randomUUID();
+        await conversation.commit(async (tx) => {
+          await assertWritable(tx);
+          if (
+            (await directShellHasUnsettled(tx, conversation.id)) ||
+            (await compactIntentUnsettled(tx, conversation.id))
+          )
+            throw new ChatLifecycleError("Shell or compaction admission is pending.", 409);
+          (await tx.doc(DirectShellDoc, conversation.id)).compactIntent = { id: reservation };
+        }, BACKGROUND_CONTEXT);
+        const taskId = await conversation.compact(instructions, BACKGROUND_CONTEXT);
+        await conversation.commit(async (tx) => {
+          const doc = await tx.doc(DirectShellDoc, conversation.id);
+          if (doc.compactIntent?.id !== reservation)
+            throw new Error("Compaction reservation changed.");
+          doc.compactIntent.taskId = taskId;
+        }, BACKGROUND_CONTEXT);
+        return taskId;
+      },
       withdraw: (submissionId: SubmissionId) =>
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
       admit: (
