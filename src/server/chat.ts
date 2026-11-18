@@ -11,13 +11,26 @@ import { modelKey, openChats } from "./chats.ts";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
+import { readConfiguredExtensions } from "./extensions/config.ts";
+import { loadConfiguredExtensions } from "./extensions/loader.ts";
 
-export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
+export async function openChat(
+  dataDir: string,
+  models: Models,
+  cwd = workingDirectory(),
+  options: { extensionsConfig?: string } = {},
+) {
   const execution = createExecution(cwd);
+  let configured: Awaited<ReturnType<typeof loadConfiguredExtensions>> | undefined;
+  let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   try {
+    configured = await loadConfiguredExtensions(
+      execution.registry,
+      await readConfiguredExtensions(options.extensionsConfig),
+    );
+    await mkdir(dataDir, { recursive: true, mode: 0o700 });
+    storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
     harness = await Harness.open(
       storage,
       {
@@ -90,16 +103,24 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
         try {
           await harness!.close(BACKGROUND_CONTEXT);
         } finally {
-          await execution.close();
+          try {
+            await configured!.close();
+          } finally {
+            await execution.close();
+          }
         }
       },
     };
   } catch (error) {
     try {
       if (harness) await harness.close(BACKGROUND_CONTEXT);
-      else await storage.close(BACKGROUND_CONTEXT);
+      else await storage?.close(BACKGROUND_CONTEXT);
     } finally {
-      await execution.close();
+      try {
+        await configured?.close();
+      } finally {
+        await execution.close();
+      }
     }
     throw error;
   }

@@ -1,4 +1,4 @@
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,10 +9,13 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { readConfiguredExtensions } from "../src/server/extensions/config.ts";
 import { loadConfiguredExtensions } from "../src/server/extensions/loader.ts";
+import { openChat } from "../src/server/chat.ts";
+import { createApp } from "../src/server/app.ts";
 import { testModels } from "./models.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 async function fixture() {
@@ -36,7 +39,160 @@ export default defineExtension({ name: ${JSON.stringify(name)}, tools: [defineTo
 export async function dispose() { await appendFile(${JSON.stringify(log)}, ${JSON.stringify(name + "\n")}); }
 `;
 }
+function taskSource(extensionName: string, taskName: string, version: number) {
+  return `
+import { defineExtension, defineTask } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-durable"))};
+const task = defineTask({ name: ${JSON.stringify(taskName)}, version: ${version},
+ initial: () => ({ phase: "run" }), phases: { run: async () => {} } });
+export default defineExtension({name: ${JSON.stringify(extensionName)}, tasks: [task]});
+`;
+}
 describe("configured extension foundation", () => {
+  it("loads a configured tool in production openChat, and closes it only after the SDK harness", async () => {
+    const dir = await fixture();
+    const log = join(dir, "cleanup.txt");
+    const marker = join(dir, "harness-closed");
+    const sdk = import.meta.resolve("@earendil-works/pi-durable");
+    await writeFile(
+      join(dir, "production.mjs"),
+      `
+import { defineExtension, defineTool } from ${JSON.stringify(sdk)};
+import { access, appendFile } from "node:fs/promises";
+export default defineExtension({name:"production", tools:[defineTool({
+ name:"production_tool", description:"Synthetic", parameters:{type:"object",properties:{},additionalProperties:false},
+ async execute(){ return {output:[{type:"text",text:"production-tool-result"}]}; }
+})]});
+export async function dispose(){ await access(${JSON.stringify(marker)}); await appendFile(${JSON.stringify(log)}, "disposed\\n"); }
+`,
+    );
+    const path = join(dir, "extensions.json");
+    await writeFile(path, JSON.stringify({ modules: ["./production.mjs"] }));
+    const originalOpen = Harness.open.bind(Harness);
+    const spy = vi.spyOn(Harness, "open").mockImplementation(async (storage, options, context) => {
+      const harness = await originalOpen(storage, options, context);
+      const close = harness.close.bind(harness);
+      vi.spyOn(harness, "close").mockImplementation(async (closeContext) => {
+        await close(closeContext);
+        await writeFile(marker, "closed");
+      });
+      return harness;
+    });
+    const provider = testModels();
+    const chat = await openChat(join(dir, "data"), provider.models, dir, {
+      extensionsConfig: path,
+    });
+    try {
+      const app = createApp(chat);
+      const response = await app.request(
+        `http://localhost:3000/api/chats/${chat.conversation.id}/input`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: "Synthetic", requestId: crypto.randomUUID() }),
+        },
+      );
+      expect(response.status).toBe(202);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.tools([{ id: "tool", name: "production_tool", arguments: {} }]);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+      expect(JSON.stringify(provider.calls[1]!.context.messages)).toContain(
+        "production-tool-result",
+      );
+      provider.calls[1]!.finish("Done");
+      await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await chat.close();
+      await chat.close();
+      spy.mockRestore();
+    }
+    expect(await readFile(log, "utf8")).toBe("disposed\n");
+  });
+  it("cleans acquired modules on storage or Harness.open failure and does not load by default", async () => {
+    const dir = await fixture();
+    const provider = testModels();
+    const marker = join(dir, "imported");
+    const log = join(dir, "cleanup.txt");
+    const source = moduleSource("failure-fixture", "failure_tool", log);
+    await writeFile(
+      join(dir, "failure.mjs"),
+      `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)},"yes");\n${source}`,
+    );
+    const path = join(dir, "extensions.json");
+    await writeFile(path, JSON.stringify({ modules: ["./failure.mjs"] }));
+    const ordinary = await openChat(join(dir, "default"), provider.models, dir);
+    await ordinary.close();
+    await expect(access(marker)).rejects.toThrow();
+    const blocked = join(dir, "not-a-directory");
+    await writeFile(blocked, "file");
+    await expect(
+      openChat(blocked, provider.models, dir, { extensionsConfig: path }),
+    ).rejects.toThrow();
+    expect(await readFile(log, "utf8")).toBe("failure-fixture\n");
+    await mkdir(join(dir, "fail-storage", "session.sqlite"), { recursive: true });
+    await expect(
+      openChat(join(dir, "fail-storage"), provider.models, dir, { extensionsConfig: path }),
+    ).rejects.toThrow();
+    expect(await readFile(log, "utf8")).toBe("failure-fixture\nfailure-fixture\n");
+    vi.spyOn(Harness, "open").mockRejectedValueOnce(new Error("synthetic internal error"));
+    await expect(
+      openChat(join(dir, "fail-harness"), provider.models, dir, { extensionsConfig: path }),
+    ).rejects.toThrow();
+    expect(await readFile(log, "utf8")).toBe("failure-fixture\nfailure-fixture\nfailure-fixture\n");
+  });
+  it("rejects task namespace collisions irrespective of version against native and configured definitions", async () => {
+    const dir = await fixture();
+    const registry = createRegistry();
+    const native = registry.snapshot().tasks()[0]!.definition;
+    for (const version of [native.version, native.version + 1]) {
+      await writeFile(
+        join(dir, `native-${version}.mjs`),
+        taskSource("native-conflict", native.name, version),
+      );
+      await expect(
+        loadConfiguredExtensions(registry, await config(dir, [`./native-${version}.mjs`])),
+      ).rejects.toThrow("could not be loaded");
+    }
+    await writeFile(join(dir, "first.mjs"), taskSource("first-task", "sample.task", 1));
+    await writeFile(join(dir, "same.mjs"), taskSource("same-task", "sample.task", 1));
+    await writeFile(join(dir, "other.mjs"), taskSource("other-task", "sample.task", 2));
+    for (const conflict of ["./same.mjs", "./other.mjs"])
+      await expect(
+        loadConfiguredExtensions(registry, await config(dir, ["./first.mjs", conflict])),
+      ).rejects.toThrow("could not be loaded");
+    expect(registry.snapshot().installed()).toHaveLength(0);
+  });
+  it("rejects symlink aliases before a second import and disposes the first only once", async () => {
+    const dir = await fixture();
+    const log = join(dir, "cleanup.txt");
+    await writeFile(join(dir, "a.mjs"), moduleSource("a", "one", log));
+    await symlink(join(dir, "a.mjs"), join(dir, "alias.mjs"));
+    await expect(
+      loadConfiguredExtensions(createRegistry(), await config(dir, ["./a.mjs", "./alias.mjs"])),
+    ).rejects.toThrow("could not be loaded");
+    expect(await readFile(log, "utf8")).toBe("a\n");
+  });
+  it("sanitizes production startup failure and continues reverse cleanup for an invalid module", async () => {
+    const dir = await fixture();
+    const log = join(dir, "cleanup.txt");
+    await writeFile(join(dir, "first.mjs"), moduleSource("first", "one", log));
+    await writeFile(
+      join(dir, "invalid.mjs"),
+      `
+import { appendFile } from "node:fs/promises";
+export default { name: "invalid", tools: [{}] };
+export async function dispose(){ await appendFile(${JSON.stringify(log)}, "invalid\\n"); throw new Error("sensitive synthetic"); }
+`,
+    );
+    const path = join(dir, "extensions.json");
+    await writeFile(path, JSON.stringify({ modules: ["./first.mjs", "./invalid.mjs"] }));
+    const result = await openChat(join(dir, "data"), testModels().models, dir, {
+      extensionsConfig: path,
+    }).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect(String(result)).toContain("Configured extensions could not be loaded.");
+    expect(String(result)).not.toContain("sensitive synthetic");
+    expect(await readFile(log, "utf8")).toBe("invalid\nfirst\n");
+  });
   it("loads exact paths and packages from the config directory and runs an SDK tool", async () => {
     const dir = await fixture();
     const log = join(dir, "cleanup.txt");

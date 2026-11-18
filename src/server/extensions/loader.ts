@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -52,7 +52,7 @@ async function modulePath(specifier: string, baseDirectory: string): Promise<str
     !(await stat(path)).isFile()
   )
     throw new Error();
-  return path;
+  return realpath(path);
 }
 
 function checkCollisions(registry: Registry, extension: Extension) {

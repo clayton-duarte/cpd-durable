@@ -13,6 +13,7 @@ const ConfigSchema = z.object({
   OPENCODE_API_KEY: z.string().trim().min(1),
   CPD_DATA_DIR: z.string().min(1).default("./data"),
   CPD_CWD: z.string().min(1).default("~"),
+  CPD_EXTENSIONS_CONFIG: z.string().min(1).optional(),
 });
 const config = ConfigSchema.safeParse(process.env);
 if (!config.success) {
@@ -57,6 +58,9 @@ if (!config.success) {
         resolve(config.data.CPD_DATA_DIR),
         models,
         workingDirectory(config.data.CPD_CWD),
+        config.data.CPD_EXTENSIONS_CONFIG
+          ? { extensionsConfig: config.data.CPD_EXTENSIONS_CONFIG }
+          : {},
       );
       if (stopping) {
         await chat.close();
