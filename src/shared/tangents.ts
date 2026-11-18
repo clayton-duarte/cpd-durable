@@ -31,6 +31,10 @@ export const CreateTangentSchema = z.strictObject({
   start: z.boolean(),
   handoff: HandoffSchema,
 });
+export const StartTangentSchema = z.strictObject({
+  requestId: z.string().min(1).max(120),
+  expectedHandoffRevision: z.number().int().positive().safe(),
+});
 export const ReturnHandoffSchema = z.strictObject({
   requestId: z.string().min(1).max(120),
   tangentId: z.number().int().positive().safe(),

@@ -83,6 +83,48 @@ async function setup(configured = true) {
   };
 }
 describe("tangent HTTP and catalog composition", () => {
+  it("requires explicit retry-safe handoff admission before ordinary tangent input", async () => {
+    const f = await setup();
+    try {
+      const created = TangentViewSchema.parse(
+        (
+          (await (await f.post(f.base, f.create("create-only-start"))).json()) as {
+            tangent: unknown;
+          }
+        ).tangent,
+      );
+      const input = { requestId: crypto.randomUUID(), text: "Do not lose context", mode: "reject" };
+      const denied = await f.post(`http://localhost:3000/api/chats/${created.id}/input`, input);
+      expect(denied.status).toBe(409);
+      expect(JSON.stringify(await denied.json())).toContain("Start tangent with its handoff first");
+      expect(f.provider.calls).toHaveLength(0);
+      const start = { requestId: "explicit-start", expectedHandoffRevision: 1 };
+      expect(
+        (await f.post(`http://localhost:3000/api/chats/999/tangents/${created.id}/start`, start))
+          .status,
+      ).not.toBe(202);
+      expect(
+        (await f.post(`${f.base}/${created.id}/start`, { ...start, expectedHandoffRevision: 2 }))
+          .status,
+      ).toBe(409);
+      const response = await f.post(`${f.base}/${created.id}/start`, start);
+      expect(response.status).toBe(202);
+      expect(
+        TangentViewSchema.parse(((await response.json()) as { tangent: unknown }).tangent)
+          .startState,
+      ).toBe("admitted");
+      expect((await f.post(`${f.base}/${created.id}/start`, start)).status).toBe(202);
+      expect(
+        (await f.post(`${f.base}/${created.id}/start`, { ...start, requestId: "different-start" }))
+          .status,
+      ).toBe(409);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(1));
+      expect(JSON.stringify(f.provider.calls[0]!.context.messages)).toContain("Synthetic goal");
+      f.provider.calls[0]!.finish("started");
+    } finally {
+      await f.chat.close();
+    }
+  });
   it("reopens a registered tangent without reconfiguring its pinned selection", async () => {
     const f = await setup();
     let reopened: Awaited<ReturnType<typeof openChat>> | undefined;

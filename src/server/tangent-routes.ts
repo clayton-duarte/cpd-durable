@@ -3,7 +3,12 @@ import { z, ZodError } from "zod";
 import { type ConversationId, type Harness } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { ChatIdSchema } from "../shared/chats.ts";
-import { CreateTangentSchema, ReturnHandoffSchema, TangentViewSchema } from "../shared/tangents.ts";
+import {
+  CreateTangentSchema,
+  ReturnHandoffSchema,
+  StartTangentSchema,
+  TangentViewSchema,
+} from "../shared/tangents.ts";
 import {
   acceptReturn,
   admitTangentStart,
@@ -12,6 +17,7 @@ import {
   recordReturn,
   returnDeliveryStatus,
   setTangentLifecycle,
+  startPreparedTangent,
   type TangentHooks,
 } from "./tangents/index.ts";
 import { ChatLifecycleError } from "./chats.ts";
@@ -52,11 +58,12 @@ export function createTangentRoutes(harness: Harness, hooks: TangentHooks, model
           activity,
           attention: tangent.attention,
           handoffRevision: tangent.versions.length,
-          startState: !tangent.start
-            ? "create-only"
-            : tangent.startSubmissionId === undefined
-              ? "prepared"
-              : "admitted",
+          startState:
+            tangent.startSubmissionId !== undefined
+              ? "admitted"
+              : tangent.start
+                ? "prepared"
+                : "create-only",
           latestHandoff: {
             revision: tangent.versions.at(-1)!.revision,
             kind: tangent.versions.at(-1)!.kind,
@@ -94,6 +101,22 @@ export function createTangentRoutes(harness: Harness, hooks: TangentHooks, model
       tangent = id(c.req.param("tangentId"));
     const item = (await view(parent)).find((entry) => entry.id === tangent);
     return item ? c.json({ tangent: item }) : c.json({ error: "Tangent not found." }, 404);
+  });
+  routes.post(`${base}/:tangentId/start`, async (c) => {
+    const parent = id(c.req.param("mainId"));
+    const tangent = id(c.req.param("tangentId"));
+    const request = StartTangentSchema.parse(await body(c.req.raw));
+    await startPreparedTangent(
+      harness,
+      parent,
+      tangent,
+      request.requestId,
+      request.expectedHandoffRevision,
+      hooks,
+    );
+    const item = (await view(parent)).find((entry) => entry.id === tangent);
+    if (!item) throw new Error("Tangent unavailable");
+    return c.json({ tangent: item }, 202);
   });
   routes.post(`${base}/:tangentId/lifecycle`, async (c) => {
     const parent = id(c.req.param("mainId")),

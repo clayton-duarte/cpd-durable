@@ -23,7 +23,7 @@ import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
 import { assertMainModelDecisionTx, type createModelPolicy } from "./model-policy.ts";
-import { inspectParentTangents, type TangentHooks } from "./tangents/index.ts";
+import { inspectParentTangents, TangentsDoc, type TangentHooks } from "./tangents/index.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
 import { helperHasUnsettled } from "./helpers.ts";
 
@@ -283,6 +283,13 @@ export async function openChats(
           const metadata = await tx.doc(CatalogDoc);
           const item = metadata.items.find((entry) => entry.id === conversation.id);
           await assertWritable(tx);
+          if (item?.kind === "tangent") {
+            const tangent = (await tx.doc(TangentsDoc)).tangents.find(
+              (entry) => entry.id === conversation.id && entry.parentId === item.tangentParentId,
+            );
+            if (!tangent || tangent.startSubmissionId === undefined)
+              throw new ChatLifecycleError("Start tangent with its handoff first.", 409);
+          }
           if (options?.expectedModelKey !== undefined) {
             const current = selection(await tx.doc(AgentDoc, conversation.id));
             if (modelKey(current) !== options.expectedModelKey)

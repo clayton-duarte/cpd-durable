@@ -243,4 +243,30 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(page.getByRole("region", { name: /Tangent chat:/ })).toHaveCount(0);
   await page.goto("/chats/1?tangent=wrong");
   await expect(page.getByText("Tangent not found", { exact: true })).toBeVisible();
+  const starts: unknown[] = [];
+  const unstarted = { ...tangent(3, "Idle child", "idle"), startState: "create-only" };
+  await page.route("**/api/chats/1/tangents", (route) =>
+    route.fulfill({ json: { tangents: [unstarted] } }),
+  );
+  await page.route("**/api/chats/1/tangents/3/start", (route) => {
+    starts.push(route.request().postDataJSON());
+    return starts.length === 1
+      ? route.abort()
+      : route.fulfill({ status: 202, json: { tangent: { ...unstarted, startState: "admitted" } } });
+  });
+  await page.goto("/chats/1?tangent=3");
+  const unstartedPane = page.getByRole("region", { name: "Tangent chat: Idle child" });
+  await expect(unstartedPane.getByRole("textbox", { name: "Initial handoff" })).toHaveValue(
+    /Investigate/,
+  );
+  await input(unstartedPane).fill("keep this draft");
+  await expect(unstartedPane.getByRole("button", { name: "Send message" })).toBeDisabled();
+  expect(starts).toEqual([]);
+  await unstartedPane.getByRole("button", { name: "Start tangent" }).click();
+  await expect(unstartedPane.getByText(/Start could not be confirmed/)).toBeVisible();
+  await unstartedPane.getByRole("button", { name: "Start tangent" }).click();
+  await expect(unstartedPane.getByRole("button", { name: "Send message" })).toBeEnabled();
+  await expect(input(unstartedPane)).toHaveValue("keep this draft");
+  expect(starts).toHaveLength(2);
+  expect(starts[1]).toEqual(starts[0]);
 });

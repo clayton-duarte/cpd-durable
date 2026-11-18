@@ -51,6 +51,7 @@ type Tangent = {
   attention: "unread" | "needs-answer" | "report-ready" | "none";
   start: boolean;
   startSubmissionId?: number;
+  startRequestId?: string;
   versions: HandoffVersion[];
 };
 type State = { tangents: Tangent[] };
@@ -80,7 +81,7 @@ export type TangentHooks = {
     caller: ConversationId,
     parent: ConversationId,
     tangent: ConversationId,
-    action: "return" | "deliver" | "accept" | "lifecycle" | "read",
+    action: "return" | "deliver" | "accept" | "lifecycle" | "read" | "start",
   ): Promise<void>;
   assertNoUnsettled?(tx: Tx, tangent: ConversationId): Promise<void>;
   onLifecycle?(
@@ -217,15 +218,47 @@ export async function admitTangentStart(
   const parsed = CreateTangentSchema.parse(request);
   const prepared = await prepareTangent(driver, parsed, hooks, context);
   if (!prepared.start) return prepared;
-  const child = await driver.conversation(prepared.id as ConversationId, context);
+  return startPreparedTangent(
+    driver,
+    parsed.parentId as ConversationId,
+    prepared.id as ConversationId,
+    `create:${parsed.requestId}`,
+    1,
+    hooks,
+    context,
+  );
+}
+
+/** Start a previously prepared tangent without changing its creation identity. */
+export async function startPreparedTangent(
+  driver: Driver,
+  parentId: ConversationId,
+  tangentId: ConversationId,
+  requestId: string,
+  expectedRevision: number,
+  hooks: TangentHooks,
+  context: Context = BACKGROUND_CONTEXT,
+) {
+  const child = await driver.conversation(tangentId, context);
   if (!child) throw new Error("Prepared tangent unavailable");
   return driver.commit(async (tx) => {
-    await hooks.assertMain(tx, parsed.parentId as ConversationId);
+    await hooks.assertMain(tx, parentId);
+    await hooks.assertCaller(tx, parentId, parentId, tangentId, "start");
     const state = await tx.doc(TangentsDoc);
-    const item = state.tangents.find((t) => t.id === prepared.id);
-    if (!item || item.fingerprint !== JSON.stringify(parsed) || item.lifecycle !== "open")
+    const item = state.tangents.find((t) => t.id === tangentId && t.parentId === parentId);
+    if (
+      !item ||
+      item.lifecycle !== "open" ||
+      item.versions[0]?.revision !== expectedRevision ||
+      item.versions[0]?.kind !== "delegate"
+    )
       throw new Error("Prepared tangent changed");
-    if (item.startSubmissionId !== undefined) return copy(item);
+    if (item.startSubmissionId !== undefined) {
+      if (item.startRequestId !== undefined && item.startRequestId !== requestId)
+        throw new Error("Tangent start identity conflicts with prior request");
+      return copy(item);
+    }
+    await hooks.assertResolvedModel(tx, item.model);
     const childId = item.id as ConversationId;
     const agent = await tx.doc(AgentDoc, childId);
     const inbox = await tx.doc(InboxDoc, childId);
@@ -253,6 +286,7 @@ export async function admitTangentStart(
     const submission = await child.submit(tx, draft);
     record();
     item.startSubmissionId = submission;
+    item.startRequestId = requestId;
     item.versions[0]!.delivery = "admitted";
     item.versions[0]!.submissionId = submission;
     return copy(item);

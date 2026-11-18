@@ -32,13 +32,15 @@ export function DurableControls() {
   const queue = host.state?.controls?.queue ?? [];
   const locked = !host.available;
   const error = host.localError ?? host.error ?? host.state?.failure;
-  const status = !host.onSend
-    ? "Read-only"
-    : !host.connected
-      ? host.state
-        ? "Reconnecting…"
-        : "Connecting…"
-      : null;
+  const status = host.inputBlockedReason
+    ? host.inputBlockedReason
+    : !host.onSend
+      ? "Read-only"
+      : !host.connected
+        ? host.state
+          ? "Reconnecting…"
+          : "Connecting…"
+        : null;
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {

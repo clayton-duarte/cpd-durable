@@ -166,6 +166,7 @@ export function Chat(props: ChatProps) {
   });
   const available =
     !!props.onSend &&
+    !props.inputBlockedReason &&
     props.connected &&
     props.state !== null &&
     !props.pending &&

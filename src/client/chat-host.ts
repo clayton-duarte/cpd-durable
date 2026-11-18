@@ -7,6 +7,7 @@ export interface ChatProps {
   active?: boolean;
   readOnly?: boolean;
   canRequestTangent?: boolean;
+  inputBlockedReason?: string | undefined;
   onFork?: ((entryId: number) => void) | undefined;
   title: string;
   description?: string;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { TangentViewSchema, type TangentView } from "../../shared/tangents.ts";
@@ -7,8 +7,87 @@ import { tangentChildView } from "./adapter.ts";
 import { TangentWorkspace } from "./workspace.tsx";
 import { WorkerPanel } from "../workers/panel.tsx";
 import { ModelPolicyViewSchema } from "../../shared/model-policy.ts";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 const ResponseSchema = z.strictObject({ tangents: z.array(TangentViewSchema) });
+const StartResponseSchema = z.strictObject({ tangent: TangentViewSchema });
+
+function StartPanel({
+  parentId,
+  item,
+  disabled,
+  onStarted,
+}: {
+  parentId: string;
+  item: TangentView;
+  disabled: boolean;
+  onStarted: (item: TangentView) => void;
+}) {
+  const request = useRef<string | null>(null);
+  const pending = useRef(false);
+  const [waiting, setWaiting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (item.startState === "admitted") return null;
+  async function start() {
+    if (pending.current || disabled || item.latestHandoff.kind !== "delegate") return;
+    pending.current = true;
+    setWaiting(true);
+    request.current ??= crypto.randomUUID();
+    try {
+      const response = await fetch(`/api/chats/${parentId}/tangents/${item.id}/start`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requestId: request.current,
+          expectedHandoffRevision: item.latestHandoff.revision,
+        }),
+      });
+      if (!response.ok) throw new Error();
+      const result = StartResponseSchema.parse(await response.json()).tangent;
+      if (
+        result.id !== item.id ||
+        String(result.parentId) !== parentId ||
+        result.startState !== "admitted"
+      )
+        throw new Error();
+      onStarted(result);
+      setError(null);
+    } catch {
+      setError(
+        "Start could not be confirmed. Retry uses the same request identity; check settings or preparation if it remains unavailable.",
+      );
+    } finally {
+      pending.current = false;
+      setWaiting(false);
+    }
+  }
+  return (
+    <section aria-label="Initial tangent handoff">
+      <p>
+        Start the tangent with its selected handoff before sending a message. Your draft will remain
+        here.
+      </p>
+      {item.latestHandoff.kind === "delegate" && (
+        <Textarea
+          readOnly
+          aria-label="Initial handoff"
+          value={JSON.stringify(item.latestHandoff.handoff, null, 2)}
+        />
+      )}
+      {error && <p role="alert">{error}</p>}
+      <Button
+        type="button"
+        disabled={disabled || waiting || item.latestHandoff.kind !== "delegate"}
+        onClick={() => {
+          void start();
+        }}
+      >
+        {waiting ? "Starting…" : "Start tangent"}
+      </Button>
+    </section>
+  );
+}
 
 export function MainThreadView({
   mainId,
@@ -82,7 +161,13 @@ export function MainThreadView({
         )
           throw new Error("Invalid ownership");
         if (alive) {
-          setItems(result.tangents);
+          setItems((current) =>
+            result.tangents.map((item) =>
+              current.some((prior) => prior.id === item.id && prior.startState === "admitted")
+                ? { ...item, startState: "admitted" }
+                : item,
+            ),
+          );
           setLoaded(true);
           setError(false);
         }
@@ -153,6 +238,21 @@ export function MainThreadView({
         )}
         renderTangent={(tangent, visible) => (
           <div className="flex min-h-0 flex-1 flex-col">
+            {items
+              .filter((item) => String(item.id) === tangent.id)
+              .map((item) => (
+                <StartPanel
+                  key={item.id}
+                  parentId={mainId}
+                  item={item}
+                  disabled={readOnly || item.readOnly || error}
+                  onStarted={(started) =>
+                    setItems((current) =>
+                      current.map((entry) => (entry.id === started.id ? started : entry)),
+                    )
+                  }
+                />
+              ))}
             <WorkerPanel
               chatId={tangent.id}
               active={active && visible}
@@ -165,6 +265,11 @@ export function MainThreadView({
               active={active && visible}
               readOnly={
                 readOnly || (items.find((item) => String(item.id) === tangent.id)?.readOnly ?? true)
+              }
+              inputBlockedReason={
+                items.find((item) => String(item.id) === tangent.id)?.startState === "admitted"
+                  ? undefined
+                  : "Start tangent with its handoff first."
               }
             />
           </div>
