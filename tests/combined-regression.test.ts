@@ -106,6 +106,66 @@ async function fixture(configured = true) {
 }
 
 describe("combined production regression", () => {
+  it("preserves the prepared tangent snapshot across controls and global policy changes", async () => {
+    const f = await fixture();
+    try {
+      const child = await f.create();
+      const scope = (await f.host.chats.resolve(child))!;
+      const before = await scope.configuration();
+      const alternate = before.choices
+        .flatMap((choice) =>
+          choice.thinkingLevels.map((thinkingLevel) => ({
+            provider: choice.provider,
+            modelId: choice.modelId,
+            thinkingLevel,
+          })),
+        )
+        .find((selection) => JSON.stringify(selection) !== JSON.stringify(before.selection))!;
+      expect(alternate).toBeDefined();
+      expect(
+        (
+          await f.post(`/api/chats/${child}/configuration`, {
+            expected: before.selection,
+            selection: alternate,
+          })
+        ).status,
+      ).toBe(409);
+      expect((await f.post(`/api/chats/${child}/compact`, { instructions: "" })).status).toBe(409);
+      expect(await scope.compactReservation()).toBeNull();
+      expect((await scope.configuration()).selection).toEqual(before.selection);
+      expect((await scope.conversation.context(BACKGROUND_CONTEXT)).messages).toHaveLength(0);
+      for (const assignments of [
+        { worker: alternate, tangent: f.mid },
+        { worker: alternate, tangent: alternate },
+        { worker: f.economical, tangent: f.mid },
+      ]) {
+        const policy = await f.host.modelPolicy.read();
+        await f.host.modelPolicy.save({
+          expected: { revision: policy.revision, assignments: policy.assignments },
+          assignments: { ...policy.assignments, ...assignments },
+        });
+      }
+      expect(f.provider.calls).toHaveLength(0);
+      const start = { requestId: "start-pinned", expectedHandoffRevision: 1 };
+      const path = `/api/chats/${f.main}/tangents/${child}/start`;
+      expect((await f.post(path, start)).status).toBe(202);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(1));
+      expect((await scope.configuration()).selection).toEqual(before.selection);
+      expect(JSON.stringify(f.provider.calls[0]!.context.messages)).toContain(handoff.goal);
+      const policy = await f.host.modelPolicy.read();
+      await f.host.modelPolicy.save({
+        expected: { revision: policy.revision, assignments: policy.assignments },
+        assignments: policy.assignments,
+      });
+      expect((await f.post(path, start)).status).toBe(202);
+      expect(f.provider.calls).toHaveLength(1);
+      f.provider.calls[0]!.finish("done");
+      await scope.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await f.done();
+    }
+  });
+
   it("keeps direct shell and model input mutually exclusive in main and started tangent", async () => {
     const f = await fixture();
     try {

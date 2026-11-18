@@ -267,7 +267,7 @@ export async function startPreparedTangent(
         throw new Error("Tangent start identity conflicts with prior request");
       return copy(item);
     }
-    await hooks.assertResolvedModel(tx, item.model);
+    // Creation pinned this agent; subsequent global defaults apply only to new tangents.
     const childId = item.id as ConversationId;
     const agent = await tx.doc(AgentDoc, childId);
     const inbox = await tx.doc(InboxDoc, childId);

@@ -11,7 +11,12 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { JsonRepresentation } from "@earendil-works/chord/json";
-import { assertInteractiveChat, CatalogDoc, ChatLifecycleError } from "./chats.ts";
+import {
+  assertInteractiveChat,
+  assertTangentStarted,
+  CatalogDoc,
+  ChatLifecycleError,
+} from "./chats.ts";
 import { BackgroundHelperTask, ForegroundHelperTask, HelpersDoc } from "./helpers.ts";
 import { TangentsDoc } from "./tangents/index.ts";
 import {
@@ -395,6 +400,7 @@ export async function deliverHandoff(
       throw new HandoffHeadChanged(parentHead, childHead);
     const destination = record.kind === "delegate" || record.kind === "update" ? child : parent;
     const handle = destination === parent ? parentHandle : childHandle;
+    await assertTangentStarted(tx, destination);
     if (destination === child) {
       const childRecord = await tx.conversation(child);
       if (childRecord?.owner) {

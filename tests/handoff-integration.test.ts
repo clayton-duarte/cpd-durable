@@ -78,6 +78,171 @@ describe("production handoff routes and SDK tools", () => {
     await rm(directory, { recursive: true, force: true });
   });
 
+  it("rejects general delegation to an unstarted tangent before its original handoff", async () => {
+    const app = createApp(chat);
+    const parentId = chat.conversation.id;
+    const base = `http://localhost:3000/api/chats/${parentId}`;
+    const created = await app.request(
+      `${base}/tangents`,
+      post({
+        requestId: "prepared",
+        parentId,
+        sourceId: parentId,
+        sourceEntryId: null,
+        title: "Prepared",
+        start: false,
+        handoff: legacy,
+      }),
+    );
+    const childId = ((await created.json()) as { tangent: { id: number } }).tangent.id;
+    const record = {
+      assignmentId: "alternate",
+      parentId,
+      childId,
+      content,
+      delivery: "notify-only",
+    };
+    for (const [kind, revision] of [
+      ["delegate", 0],
+      ["update", 1],
+    ] as const) {
+      expect(
+        (
+          await app.request(
+            `${base}/handoffs/record`,
+            post({
+              ...record,
+              kind,
+              operationId: `record-${kind}`,
+              expectedRevision: revision,
+            }),
+          )
+        ).status,
+      ).toBe(201);
+      expect(
+        (
+          await app.request(
+            `${base}/handoffs/deliver`,
+            post({
+              assignmentId: record.assignmentId,
+              parentId,
+              childId,
+              revision: revision + 1,
+              operationId: `deliver-${kind}`,
+              mode: "reject",
+              expectedParentHead: null,
+              expectedChildHead: null,
+              acknowledgeRetired: false,
+            }),
+          )
+        ).status,
+      ).toBe(409);
+    }
+    const scope = (await chat.chats.resolve(String(childId)))!;
+    expect((await scope.conversation.context(BACKGROUND_CONTEXT)).messages).toHaveLength(0);
+    expect(provider.calls).toHaveLength(0);
+    const view = await app.request(`${base}/tangents/${childId}`);
+    expect(((await view.json()) as { tangent: { startState: string } }).tangent.startState).toBe(
+      "create-only",
+    );
+    expect(
+      (
+        await app.request(
+          `${base}/tangents/${childId}/start`,
+          post({
+            requestId: "start",
+            expectedHandoffRevision: 1,
+          }),
+        )
+      ).status,
+    ).toBe(202);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    expect(JSON.stringify(provider.calls[0]!.context.messages)).toContain(legacy.goal);
+    provider.calls[0]!.finish("done");
+    await scope.conversation.waitForIdle(BACKGROUND_CONTEXT);
+  });
+
+  it("rejects the registered deliver tool for an unstarted tangent", async () => {
+    const app = createApp(chat);
+    const parentId = chat.conversation.id;
+    const base = `http://localhost:3000/api/chats/${parentId}`;
+    const created = await app.request(
+      `${base}/tangents`,
+      post({
+        requestId: "tool-prepared",
+        parentId,
+        sourceId: parentId,
+        sourceEntryId: null,
+        title: "Prepared",
+        start: false,
+        handoff: legacy,
+      }),
+    );
+    const childId = ((await created.json()) as { tangent: { id: number } }).tangent.id;
+    expect(
+      (
+        await app.request(
+          `${base}/handoffs/record`,
+          post({
+            assignmentId: "tool-delegate",
+            parentId,
+            childId,
+            content,
+            delivery: "notify-only",
+            operationId: "tool-record",
+            expectedRevision: 0,
+            kind: "delegate",
+          }),
+        )
+      ).status,
+    ).toBe(201);
+    await chat.conversation.submit(
+      { type: "input", content: "Try the delivery tool" },
+      BACKGROUND_CONTEXT,
+    );
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+    provider.calls[0]!.tools([
+      {
+        id: "deliver-prepared",
+        name: "deliver_handoff",
+        arguments: {
+          childId,
+          assignmentId: "tool-delegate",
+          revision: 1,
+          mode: "reject",
+          expectedParentHead: null,
+          expectedChildHead: null,
+          acknowledgeRetired: false,
+        },
+      },
+    ]);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
+    expect(
+      provider.calls[1]!.context.messages.some(
+        (message) => message.role === "toolResult" && message.isError,
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(provider.calls[1]!.context.messages)).toContain(
+      "Start tangent with its handoff first",
+    );
+    const scope = (await chat.chats.resolve(String(childId)))!;
+    expect((await scope.conversation.context(BACKGROUND_CONTEXT)).messages).toHaveLength(0);
+    provider.calls[1]!.finish("Delivery rejected");
+    await chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    expect(
+      (
+        await app.request(
+          `${base}/tangents/${childId}/start`,
+          post({ requestId: "tool-start", expectedHandoffRevision: 1 }),
+        )
+      ).status,
+    ).toBe(202);
+    await vi.waitFor(() => expect(provider.calls).toHaveLength(3));
+    expect(JSON.stringify(provider.calls[2]!.context.messages)).toContain(legacy.goal);
+    provider.calls[2]!.finish("done");
+    await scope.conversation.waitForIdle(BACKGROUND_CONTEXT);
+  });
+
   it("exposes caller-scoped notify-only records and child report tools for a real tangent", async () => {
     const app = createApp(chat);
     const parentId = chat.conversation.id;
