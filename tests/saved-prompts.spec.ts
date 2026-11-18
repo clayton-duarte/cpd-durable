@@ -62,8 +62,15 @@ async function syntheticSources(page: Page) {
 test("inserting a prompt autosaves through the native draft writer and survives reopen", async ({
   page,
 }) => {
-  let saved = { revision: 0, content: { text: "", images: [] as unknown[] } };
-  let sends = 0;
+  const image = {
+    id: uploadIds[0]!,
+    name: "retained.png",
+    mimeType: "image/png",
+    size: png.length,
+  };
+  let saved = { revision: 1, content: { text: "", images: [image] } };
+  let sends = 0,
+    uploads = 0;
   await syntheticSources(page);
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -89,18 +96,25 @@ test("inserting a prompt autosaves through the native draft writer and survives 
       saved = { revision: saved.revision + 1, content: body.content };
       return route.fulfill({ json: saved });
     }
+    if (url.pathname.includes("/attachments/"))
+      return route.fulfill({ contentType: "image/png", body: png });
+    if (url.pathname.endsWith("/attachments") && method === "POST") uploads++;
     if (url.pathname.endsWith("/input")) sends++;
     return route.abort();
   });
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeEnabled();
+  await expect(page.getByRole("button", { name: "Remove retained.png" })).toBeVisible();
   const draft = await openPicker(page, "draft");
   await page.getByRole("option", { name: "Example" }).click();
   await page.getByRole("button", { name: "Append to draft" }).click();
   await expect(draft).toHaveValue("draft\nSaved literal");
   await expect.poll(() => saved.content.text).toBe("draft\nSaved literal");
+  expect(saved.content.images).toEqual([image]);
   await page.reload();
   await expect(draft).toHaveValue("draft\nSaved literal");
+  await expect(page.getByRole("button", { name: "Remove retained.png" })).toBeVisible();
+  expect(uploads).toBe(0);
   expect(sends).toBe(0);
 });
 

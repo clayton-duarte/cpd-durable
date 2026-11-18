@@ -11,6 +11,7 @@ import { modelKey, openChats } from "./chats.ts";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
+import { createModelPolicy } from "./model-policy.ts";
 import { readConfiguredExtensions } from "./extensions/config.ts";
 import { loadConfiguredExtensions } from "./extensions/loader.ts";
 import { openConfiguredMcp } from "./mcp/config.ts";
@@ -66,7 +67,8 @@ export async function openChat(
       modelTools: null,
       maxTurns: null,
     };
-    const chats = await openChats(harness, conversation, defaults, models);
+    const modelPolicy = createModelPolicy(harness, models);
+    const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({
       harness,
@@ -110,6 +112,7 @@ export async function openChat(
     return {
       conversation,
       chats,
+      modelPolicy,
       attachments,
       savedPrompts: createSavedPrompts(harness),
       withdraw: (id: SubmissionId) =>
