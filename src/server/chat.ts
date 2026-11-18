@@ -12,13 +12,24 @@ import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
 import { createModelPolicy } from "./model-policy.ts";
+import { openConfiguredMcp } from "./mcp/config.ts";
 
-export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
+export async function openChat(
+  dataDir: string,
+  models: Models,
+  cwd = workingDirectory(),
+  options: { mcpConfigPath?: string } = {},
+) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
-  const execution = createExecution(cwd);
+  const mcp = await openConfiguredMcp(
+    options.mcpConfigPath !== undefined ? { path: options.mcpConfigPath } : {},
+  );
+  let storage: Awaited<ReturnType<typeof openNodeSqliteStorage>> | undefined;
+  let execution: ReturnType<typeof createExecution> | undefined;
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
   try {
+    storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
+    execution = createExecution(cwd, mcp);
     harness = await Harness.open(
       storage,
       {
@@ -93,16 +104,24 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
         try {
           await harness!.close(BACKGROUND_CONTEXT);
         } finally {
-          await execution.close();
+          try {
+            await execution!.close();
+          } finally {
+            await mcp.close();
+          }
         }
       },
     };
   } catch (error) {
     try {
       if (harness) await harness.close(BACKGROUND_CONTEXT);
-      else await storage.close(BACKGROUND_CONTEXT);
+      else if (storage) await storage.close(BACKGROUND_CONTEXT);
     } finally {
-      await execution.close();
+      try {
+        await execution?.close();
+      } finally {
+        await mcp.close();
+      }
     }
     throw error;
   }

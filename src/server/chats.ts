@@ -23,6 +23,11 @@ import type { Selection } from "../shared/configuration.ts";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
 import { assertMainModelDecisionTx, type createModelPolicy } from "./model-policy.ts";
+import {
+  createBranchOperations,
+  BranchOperationError,
+  editableUserEntry,
+} from "./branch-operations.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -94,6 +99,32 @@ export async function openChats(
       }
     }
   }, BACKGROUND_CONTEXT);
+
+  const branchOperations = createBranchOperations(harness, {
+    async requireActive(tx, id) {
+      const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
+      if (!item || item.status)
+        throw new BranchOperationError("Chat is archived or unavailable.", item ? 409 : 404);
+    },
+    async registerEdit(tx, { sourceId, branchId, forkEntryId }) {
+      const catalog = await tx.doc(CatalogDoc);
+      const source = catalog.items.find((item) => item.id === sourceId);
+      if (!source || source.status) throw new BranchOperationError("Source chat unavailable.", 409);
+      catalog.items.push({
+        id: branchId,
+        title: `Edit of ${source.title}`.slice(0, 80),
+        named: true,
+        requestId: null,
+        ...(forkEntryId === null
+          ? {}
+          : {
+              parentId: sourceId,
+              forkEntryId,
+              branchRootId: source.branchRootId ?? sourceId,
+            }),
+      });
+    },
+  });
 
   async function resolve(id: string) {
     const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
@@ -185,6 +216,22 @@ export async function openChats(
   }
 
   return {
+    editBranch: branchOperations.edit,
+    recentEditOperations(id: string, at: string) {
+      return branchOperations.recent(Number(id) as ConversationId, Number(at) as EntryId);
+    },
+    async canEdit(id: string, at: string) {
+      const scoped = await resolve(id);
+      if (!scoped || scoped.archived) return false;
+      const entryId = Number(at) as EntryId;
+      const page = await scoped.conversation.entries(
+        { minEntryId: entryId, maxEntryId: entryId },
+        1,
+        undefined,
+        BACKGROUND_CONTEXT,
+      );
+      return page.items[0]?.id === entryId && editableUserEntry(page.items[0]);
+    },
     resolve,
     async list(): Promise<ChatCatalog> {
       const catalog = await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT);
