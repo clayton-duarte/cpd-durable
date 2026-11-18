@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalMessageConverter,
@@ -30,7 +30,18 @@ import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachmen
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
-import { parseDirectShell } from "../shared/direct-shell.ts";
+import { Button } from "@/components/ui/button";
+import {
+  CollapsibleRoot,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/assistant-ui/elements/collapsible-root";
+import {
+  createDraftAutosave,
+  useDraftRecovery,
+  useDraftRestoration,
+} from "./draft-persistence.tsx";
+import { modelInputText, parseDirectShell } from "../shared/direct-shell.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
@@ -143,10 +154,179 @@ const historyGapUI = {
   },
 };
 
+type DraftWriter = ReturnType<typeof createDraftAutosave>;
+function PersistenceBridge({
+  runtime,
+  chatId,
+  enabled,
+  readOnly,
+  writer,
+  localRevision,
+  hasPendingUploads,
+  onReady,
+  onRetry,
+  onUnsavedDraft,
+}: {
+  runtime: AssistantRuntime;
+  chatId: string;
+  enabled: boolean;
+  readOnly: boolean;
+  writer: React.RefObject<DraftWriter | null>;
+  localRevision: () => number;
+  hasPendingUploads: () => boolean;
+  onReady: (ready: boolean) => void;
+  onUnsavedDraft?: (chatId: string) => void;
+  onRetry: (record: {
+    requestId: string;
+    draftRevision: number;
+    text: string;
+    images: string[];
+    mode: SendMode;
+  }) => Promise<boolean>;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [confirmed, setConfirmed] = useState<string[]>([]);
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
+  const unsavedRef = useRef(onUnsavedDraft);
+  unsavedRef.current = onUnsavedDraft;
+  const conflictHandler = useRef<(saved: import("../shared/drafts.ts").DraftView) => void>(
+    () => {},
+  );
+  const recovery = useDraftRecovery(chatId, enabled);
+  const restoration = useDraftRestoration({
+    runtime,
+    chatId,
+    enabled,
+    readOnly,
+    localRevision,
+    onResolved: (saved, choice) => {
+      if (readOnly) {
+        onReady(true);
+        return;
+      }
+      if (writer.current) {
+        if (choice === "mine") writer.current.keepMine(saved);
+        else writer.current.useSaved(saved);
+      } else {
+        writer.current = createDraftAutosave({
+          runtime,
+          chatId,
+          initial: saved,
+          onConflict: (remote) => {
+            setError(null);
+            conflictHandler.current(remote);
+          },
+          onError: setError,
+          onSaved: () => setError(null),
+        });
+        if (choice !== "saved") void writer.current.flush();
+      }
+      onReady(true);
+    },
+  });
+  conflictHandler.current = restoration.offerConflict;
+  useEffect(() => {
+    if (readOnly && restoration.error) onReady(true);
+  }, [onReady, readOnly, restoration.error]);
+  useEffect(
+    () => () => {
+      if (
+        !readOnly &&
+        readOnlyRef.current &&
+        (hasPendingUploads() ||
+          (writer.current?.hasUnsaved() ??
+            (runtime.thread.composer.getState().text !== "" ||
+              runtime.thread.composer.getState().attachments.length > 0 ||
+              localRevision() > 0)))
+      )
+        unsavedRef.current?.(chatId);
+      writer.current?.stop();
+      writer.current = null;
+      onReady(false);
+    },
+    [chatId, enabled, hasPendingUploads, localRevision, onReady, readOnly, runtime, writer],
+  );
+  return (
+    <>
+      {restoration.conflict && (
+        <div role="alert">
+          Draft changed in another session.
+          <Button type="button" variant="outline" onClick={() => void restoration.useSaved()}>
+            Use saved
+          </Button>
+          <Button type="button" variant="outline" onClick={restoration.keepMine}>
+            Keep mine
+          </Button>
+        </div>
+      )}
+      {(error || restoration.error || recovery.error) && (
+        <AgentStatus state="failed" label={error ?? restoration.error ?? recovery.error ?? ""} />
+      )}
+      {error && !readOnly && (
+        <Button type="button" variant="outline" onClick={() => void writer.current?.retrySave()}>
+          Retry saving draft
+        </Button>
+      )}
+      {recovery.attempts.map((attempt) => {
+        const { record } = attempt;
+        const admitted = attempt.admission === "admitted" || confirmed.includes(record.requestId);
+        return (
+          <div role="status" key={record.requestId}>
+            <p>
+              {admitted ? "Admitted" : "Delivery unconfirmed"} — request {record.requestId}
+            </p>
+            <p>
+              Draft revision {record.draftRevision}; mode {record.mode}.
+            </p>
+            <p>
+              {record.text.slice(0, 160)}
+              {record.text.length > 160 ? "…" : ""}
+            </p>
+            {record.text.length > 160 && (
+              <CollapsibleRoot>
+                <CollapsibleTrigger>View full original text</CollapsibleTrigger>
+                <CollapsibleContent>
+                  <pre className="whitespace-pre-wrap break-words">{record.text}</pre>
+                </CollapsibleContent>
+              </CollapsibleRoot>
+            )}
+            <p>{record.images.length ? `Images: ${record.images.join(", ")}` : "No images"}</p>
+            {attempt.admission === "admitted" && <p>Submission {attempt.submissionId}</p>}
+            {!admitted && !readOnly && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  void onRetry(record).then((admitted) => {
+                    if (admitted) setConfirmed((previous) => [...previous, record.requestId]);
+                  });
+                }}
+              >
+                Retry original
+              </Button>
+            )}
+          </div>
+        );
+      })}
+      {recovery.capped && (
+        <Button type="button" variant="outline" onClick={() => void recovery.loadMore()}>
+          Load older attempts
+        </Button>
+      )}
+    </>
+  );
+}
+
 // Application code adapts host behavior; the official Thread owns presentation.
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
   const revision = useRef(0);
+  const pendingUploads = useRef(0);
+  const persistence = useRef<DraftWriter | null>(null);
+  const [persistenceReady, setPersistenceReady] = useState(false);
+  const localRevision = useCallback(() => revision.current, []);
+  const hasPendingUploads = useCallback(() => pendingUploads.current > 0, []);
   const detached = useRef<{ revision: number } | null>(null);
   const submitted = useRef<{ text: string; ids: string[]; revision: number } | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -208,7 +388,8 @@ export function Chat(props: ChatProps) {
     !props.pending &&
     !props.uncertain &&
     props.retryText == null &&
-    !props.retryAction;
+    !props.retryAction &&
+    (!props.chatId || persistenceReady);
 
   const adapter = useMemo(() => {
     if (props.onSend && props.attachmentAdapter) return props.attachmentAdapter;
@@ -219,6 +400,10 @@ export function Chat(props: ChatProps) {
     return createImageAttachmentAdapter({
       onAddStart: () => {
         revision.current++;
+        pendingUploads.current++;
+      },
+      onAddEnd: () => {
+        pendingUploads.current--;
       },
       upload: async (file) => {
         try {
@@ -283,7 +468,7 @@ export function Chat(props: ChatProps) {
         (mode === "steer" && !props.state?.busy)
       )
         return false;
-      const text = (draft.startsWith("\\!") ? draft.slice(1) : draft).trim();
+      const text = modelInputText(draft);
       const images = ids ?? composer?.getState().attachments.map((item) => item.id) ?? [];
       if (shell && images.length) {
         setLocalError("Direct shell commands cannot include image attachments.");
@@ -308,21 +493,42 @@ export function Chat(props: ChatProps) {
         JSON.stringify(state.attachments.map((item) => item.id)) === JSON.stringify(images)
           ? { text: draft, ids: [...images], revision: revision.current }
           : null;
+      const writer = persistence.current;
+      if (props.chatId && !writer) return false;
+      writer?.beginSend();
       try {
-        const admitted =
-          shell && props.onShell
-            ? await props.onShell(shell.command, shell.includeInContext)
-            : await props.onSend(text, mode, images);
+        if (shell && props.onShell) {
+          // Shell execution has its own durable identity; retain the draft on
+          // both success and uncertainty until shell-specific clearing exists.
+          submitted.current = null;
+          return await props.onShell(shell.command, shell.includeInContext);
+        }
+        const prepared = writer
+          ? await writer.prepareSend(draft, images, mode, crypto.randomUUID())
+          : undefined;
+        const admitted = await props.onSend(
+          text,
+          mode,
+          images,
+          prepared && writer
+            ? {
+                ...prepared,
+                onClear: (nextRevision) => writer.acknowledgeClear(prepared.draft, nextRevision),
+              }
+            : undefined,
+        );
         if (admitted) clearSubmitted();
         return admitted;
       } catch {
         setLocalError(
-          "Message delivery could not be confirmed. Check the conversation before sending again.",
+          "Draft preparation or delivery could not be confirmed. Inspect the conversation before retrying.",
         );
         return false;
+      } finally {
+        writer?.endSend();
       }
     },
-    [available, props.onSend, props.onShell, props.state, clearSubmitted],
+    [available, props.onSend, props.onShell, props.state, props.chatId, clearSubmitted],
   );
 
   const onNew = useCallback(
@@ -343,6 +549,7 @@ export function Chat(props: ChatProps) {
         )
       ) {
         setLocalError("Only PNG and JPEG attachments are supported.");
+        persistence.current?.endSend();
         return;
       }
       const composer = runtimeRef.current?.thread.composer;
@@ -368,6 +575,7 @@ export function Chat(props: ChatProps) {
           );
         } catch {
           setLocalError("Attachment restoration failed. Check the draft before retrying.");
+          persistence.current?.endSend();
           return;
         }
       }
@@ -377,6 +585,7 @@ export function Chat(props: ChatProps) {
         true,
         (message.attachments ?? []).map((attachment) => attachment.id),
       );
+      persistence.current?.endSend();
     },
     [admit, props.chatId, props.state?.conversationId],
   );
@@ -407,7 +616,9 @@ export function Chat(props: ChatProps) {
       : {}),
     isRunning: (props.state?.busy ?? false) || !!props.shell,
     isLoading: props.state === null,
-    isDisabled: !props.onSend,
+    // Hydration needs native attachment insertion; the read-only thread is inert
+    // until restoration finishes, then the runtime itself becomes disabled.
+    isDisabled: !props.onSend && (!props.chatId || persistenceReady),
     isSendDisabled: !available || (props.state?.busy ?? false) || !!props.shell,
     ...(adapter ? { adapters: { attachments: adapter } } : {}),
     hasEarlier: !!props.onLoadEarlier && props.connected && (props.state?.hasEarlier ?? false),
@@ -419,6 +630,27 @@ export function Chat(props: ChatProps) {
         : {}),
   });
   runtimeRef.current = runtime;
+  useLayoutEffect(() => {
+    const id = props.chatId;
+    const guards = props.draftGuards?.current;
+    if (!id || !guards) return;
+    const guard = async () => {
+      const writer = persistence.current;
+      if (!writer || pendingUploads.current) return false;
+      const version = revision.current;
+      const settled = await writer.settleForArchive();
+      return (
+        settled &&
+        persistence.current === writer &&
+        pendingUploads.current === 0 &&
+        revision.current === version
+      );
+    };
+    guards.set(id, guard);
+    return () => {
+      if (guards.get(id) === guard) guards.delete(id);
+    };
+  }, [props.chatId, props.draftGuards]);
   useLayoutEffect(() => {
     const composer = runtime.thread.composer;
     let lastSubmission: string | undefined;
@@ -435,12 +667,15 @@ export function Chat(props: ChatProps) {
       }
       if (state.submission && state.submission.id !== lastSubmission) {
         lastSubmission = state.submission.id;
+        persistence.current?.beginSend();
         detached.current = { revision: revision.current };
       }
     });
     const unsubscribeText = composer.unstable_on("textChange", (event) => {
-      if (event.origin === "send" && !detached.current)
-        detached.current = { revision: revision.current };
+      if (event.origin === "send") {
+        persistence.current?.beginSend();
+        if (!detached.current) detached.current = { revision: revision.current };
+      }
     });
     return () => {
       unsubscribe();
@@ -468,7 +703,70 @@ export function Chat(props: ChatProps) {
       }}
     >
       <AssistantRuntimeProvider runtime={runtime}>
-        <OfficialThread />
+        {props.chatId && (
+          <PersistenceBridge
+            key={props.chatId}
+            runtime={runtime}
+            chatId={props.chatId}
+            enabled
+            readOnly={!props.onSend}
+            writer={persistence}
+            localRevision={localRevision}
+            hasPendingUploads={hasPendingUploads}
+            onReady={setPersistenceReady}
+            {...(props.onUnsavedDraft ? { onUnsavedDraft: props.onUnsavedDraft } : {})}
+            onRetry={async (record) => {
+              if (!props.connected || props.pending || !props.onSend || !persistence.current)
+                return false;
+              const state = runtime.thread.composer.getState();
+              const original =
+                !hasPendingUploads() &&
+                state.text === record.text &&
+                JSON.stringify(state.attachments.map((item) => item.id)) ===
+                  JSON.stringify(record.images)
+                  ? { text: record.text, ids: [...record.images], revision: revision.current }
+                  : null;
+              const writer = persistence.current;
+              const draft = {
+                revision: record.draftRevision,
+                text: record.text,
+                images: [...record.images],
+                attempt: true as const,
+              };
+              let confirmedClear = false;
+              const admitted = await props.onSend(
+                modelInputText(record.text),
+                record.mode,
+                record.images,
+                {
+                  requestId: record.requestId,
+                  draft,
+                  onClear: (nextRevision) => {
+                    if (nextRevision !== draft.revision + 1) return;
+                    confirmedClear = writer?.acknowledgeClear(draft, nextRevision) ?? false;
+                  },
+                },
+              );
+              if (admitted && confirmedClear && original && !hasPendingUploads()) {
+                writer?.beginSend();
+                submitted.current = original;
+                clearSubmitted();
+                writer?.endSend();
+              }
+              // The native snapshot may have been retained without emitting a
+              // composer event (for example, a pending upload can fail). Save
+              // it against the adopted clear revision, after any native clear.
+              if (confirmedClear) writer.reconcile();
+              return admitted;
+            }}
+          />
+        )}
+        <div
+          className="h-full min-h-0"
+          inert={!props.onSend && !!props.chatId && !persistenceReady}
+        >
+          <OfficialThread />
+        </div>
       </AssistantRuntimeProvider>
     </ChatHostContext.Provider>
   );

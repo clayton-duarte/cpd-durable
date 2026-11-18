@@ -1,5 +1,6 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 import {
   configure,
   AgentDoc,
@@ -21,8 +22,15 @@ import { inspectContext } from "./context.ts";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
-import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
+import {
+  admissionDigest,
+  checkAdmissionRequest,
+  imageRequestDigest,
+} from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
+import { DraftDoc } from "./drafts.ts";
+import type { DraftAdmission } from "../shared/drafts.ts";
+import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
 import { assertBranchIdentityAvailable, reserveBranchIdentity } from "./branch-identity.ts";
 import { createRegeneration, regenerableAnswer, RegenerationError } from "./regeneration.ts";
 import {
@@ -35,6 +43,7 @@ import {
   DirectShellRequestSchema,
   DirectShellResultSchema,
   DirectShellStatusSchema,
+  modelInputText,
 } from "../shared/direct-shell.ts";
 import {
   createBranchOperations,
@@ -366,7 +375,12 @@ export async function openChats(
         harness.abortSubmission(submissionId, BACKGROUND_CONTEXT, conversation.id),
       admit: (
         draft: SubmissionDraft,
-        options?: { digest?: string; expectedModelKey?: string | null; title?: string },
+        options?: {
+          digest?: string;
+          expectedModelKey?: string | null;
+          title?: string;
+          draft?: DraftAdmission;
+        },
       ) =>
         harness.commit(async (tx) => {
           const metadata = await tx.doc(CatalogDoc);
@@ -379,11 +393,51 @@ export async function openChats(
             throw new ChatLifecycleError("Request identity already used.", 409);
           if (await directShellHasUnsettled(tx, conversation.id))
             throw new ChatLifecycleError("A direct shell command is running.", 409);
+          const attempt =
+            draft.requestId && z.uuid().safeParse(draft.requestId).success
+              ? await readDraftAttempt(tx, conversation.id, draft.requestId)
+              : undefined;
+          if (options?.draft?.attempt && !attempt) throw new DraftAttemptConflict();
+          if (attempt) {
+            const original = attempt.record;
+            const submittedText =
+              draft.type !== "input"
+                ? undefined
+                : typeof draft.content === "string"
+                  ? draft.content
+                  : draft.content
+                      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+                      .join("");
+            if (
+              draft.type !== "input" ||
+              submittedText !== modelInputText(original.text) ||
+              (draft.whenBusy ?? "reject") !== original.mode ||
+              (original.mode === "steer" && draft.whenIdle !== "reject") ||
+              !options?.draft ||
+              options.draft.revision !== original.draftRevision ||
+              options.draft.text !== original.text ||
+              JSON.stringify(options.draft.images) !== JSON.stringify(original.images) ||
+              options.digest !==
+                imageRequestDigest({
+                  text: modelInputText(original.text),
+                  images: original.images,
+                  mode: original.mode,
+                })
+            )
+              throw new DraftAttemptConflict();
+          }
           if (options?.expectedModelKey !== undefined) {
             const current = selection(await tx.doc(AgentDoc, conversation.id));
             if (modelKey(current) !== options.expectedModelKey)
               throw new ChatLifecycleError("Model changed. Refresh and try again.", 409);
           }
+          const prior = draft.requestId
+            ? await tx.submissionByRequest(conversation.id, draft.requestId)
+            : undefined;
+          const savedDraft =
+            attempt && options?.draft && !prior && draft.type === "input"
+              ? await tx.doc(DraftDoc, conversation.id)
+              : undefined;
           const record = draft.requestId
             ? await checkAdmissionRequest(
                 tx,
@@ -394,6 +448,20 @@ export async function openChats(
             : undefined;
           const submission = await conversation.submit(tx, draft);
           record?.();
+          let clearedDraftRevision: number | undefined;
+          if (
+            savedDraft &&
+            options?.draft &&
+            savedDraft.revision === options.draft.revision &&
+            savedDraft.revision < Number.MAX_SAFE_INTEGER &&
+            savedDraft.content.text === options.draft.text &&
+            JSON.stringify(savedDraft.content.images.map((image) => image.id)) ===
+              JSON.stringify(options.draft.images)
+          ) {
+            savedDraft.content = { text: "", images: [] };
+            savedDraft.revision++;
+            clearedDraftRevision = savedDraft.revision;
+          }
           const title =
             options?.title ??
             (draft.type === "input" && typeof draft.content === "string" ? draft.content : "");
@@ -401,7 +469,10 @@ export async function openChats(
             item.title = title.trim().replace(/\s+/g, " ").slice(0, 80);
             item.named = true;
           }
-          return { id: submission };
+          return {
+            id: submission,
+            ...(clearedDraftRevision === undefined ? {} : { clearedDraftRevision }),
+          };
         }, BACKGROUND_CONTEXT),
     };
   }

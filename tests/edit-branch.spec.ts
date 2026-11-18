@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 test("edit uses the native composer, safely retries the same operation and keeps the source draft", async ({
   page,
@@ -7,6 +8,7 @@ test("edit uses the native composer, safely retries the same operation and keeps
   let recoveredRequestId = "";
   const requests: unknown[] = [];
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {
@@ -153,6 +155,7 @@ test("prepared recovery requires explicit matching text and rejects wrong-scope 
   const requests: { requestId: string; text: string }[] = [];
   let reads = 0;
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {

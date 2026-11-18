@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
 const ids = [
   "11111111-1111-4111-8111-111111111111",
@@ -73,6 +74,7 @@ async function prepare(
     if (url.pathname.endsWith("/input")) return input(route);
     return route.abort();
   });
+  await syntheticDrafts(page);
   await page.goto("/");
   await expect(page.getByRole("textbox", { name: "Message input" })).toBeVisible();
   return () => uploads;

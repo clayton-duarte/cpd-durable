@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 import { readFile } from "node:fs/promises";
 
 const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
@@ -12,6 +13,7 @@ test("assistant action confirms and recovers an uncertain regeneration with the 
     release = resolve;
   });
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {

@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import { readDraftAttempt } from "./draft-attempts.ts";
+import { z } from "zod";
 import {
   defineDoc,
   defineEntry,
@@ -239,6 +241,11 @@ export async function admitDirectShell(
       return prior.taskId as TaskId<Result>;
     }
     if (await tx.submissionByRequest(conversation.id, input.requestId))
+      throw new Error("Request identity already used.");
+    if (
+      z.uuid().safeParse(input.requestId).success &&
+      (await readDraftAttempt(tx, conversation.id, input.requestId))
+    )
       throw new Error("Request identity already used.");
     const recordAdmission = await checkAdmissionRequest(
       tx,

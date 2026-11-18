@@ -76,15 +76,25 @@ export async function openChat(
         );
         return model ? { key: modelKey(current), input: model.input } : null;
       },
-      admit: async (scope, draft, expectedModelKey, digest) => {
+      admit: async (scope, draft, expectedModelKey, digest, savedDraft) => {
         const current = await chats.resolve(String(scope.conversation.id));
         if (!current) throw new AttachmentAccessError(404);
         const title = Array.isArray(draft.content)
           ? draft.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("") ||
             "Image attachment"
           : draft.content;
-        const result = await current.admit(draft, { digest, expectedModelKey, title });
-        return { id: String(result.id) };
+        const result = await current.admit(draft, {
+          digest,
+          expectedModelKey,
+          title,
+          ...(savedDraft ? { draft: savedDraft } : {}),
+        });
+        return {
+          id: String(result.id),
+          ...(result.clearedDraftRevision === undefined
+            ? {}
+            : { clearedDraftRevision: result.clearedDraftRevision }),
+        };
       },
     });
     harness.resume();

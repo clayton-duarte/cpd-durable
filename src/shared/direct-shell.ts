@@ -8,6 +8,10 @@ export function parseDirectShell(
   const command = text.slice(excluded ? 2 : 1).trim();
   return command ? { command, includeInContext: !excluded } : undefined;
 }
+/** Escape a fresh leading bang for model input while retaining its literal draft. */
+export function modelInputText(text: string): string {
+  return (text.startsWith("\\!") ? text.slice(1) : text).trim();
+}
 import { z } from "zod";
 
 export const DirectShellRequestSchema = z.strictObject({

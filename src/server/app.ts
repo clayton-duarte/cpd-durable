@@ -18,6 +18,10 @@ import {
   HistoryLoadSchema,
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
+import { readAttempt, readAttempts, readDraft, saveAttempt, saveDraft } from "./drafts.ts";
+import { DraftAttemptRequestSchema, DraftUpdateSchema } from "../shared/drafts.ts";
+import { DraftAttemptConflict } from "./draft-attempts.ts";
+import { z } from "zod";
 import type { openChat } from "./chat.ts";
 import {
   ChatIdSchema,
@@ -52,7 +56,6 @@ import { RegenerationError } from "./regeneration.ts";
 import { RegenerationRequestSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
 import { DirectShellRequestSchema } from "../shared/direct-shell.ts";
 import { admitDirectShell } from "./direct-shell.ts";
-import { z } from "zod";
 import { BranchOperationError } from "./branch-operations.ts";
 import {
   EditBranchRequestSchema,
@@ -323,6 +326,46 @@ export function createApp(
     return;
   });
 
+  routes.get("/draft", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    return c.json(await readDraft(c.get("scope")));
+  });
+  routes.put("/draft", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const input = DraftUpdateSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!input.success) return c.json({ error: "Invalid draft." }, 400);
+    return c.json(await saveDraft(c.get("scope"), input.data));
+  });
+  routes.post("/draft/attempt", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const input = DraftAttemptRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!input.success) return c.json({ error: "Invalid draft attempt." }, 400);
+    return c.json(await saveAttempt(c.get("scope"), input.data));
+  });
+  routes.get("/draft/attempts", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    const params = c.req.queries();
+    if (Object.keys(params).some((key) => key !== "cursor") || (params["cursor"]?.length ?? 0) > 1)
+      return c.json({ error: "Invalid recovery cursor." }, 400);
+    const cursor = z.uuid().optional().safeParse(c.req.query("cursor"));
+    if (!cursor.success) return c.json({ error: "Invalid recovery cursor." }, 400);
+    const page = await readAttempts(c.get("scope"), cursor.data);
+    return page ? c.json(page) : c.json({ error: "Invalid recovery cursor." }, 400);
+  });
+  routes.get("/draft/attempt/:requestId", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    const id = z.uuid().safeParse(c.req.param("requestId"));
+    if (!id.success) return c.json({ error: "Not found." }, 404);
+    const result = await readAttempt(c.get("scope"), id.data);
+    return result ? c.json(result) : c.json({ error: "Not found." }, 404);
+  });
+
   routes.post("/input", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json")) {
       return c.json({ error: "Expected application/json." }, 415);
@@ -354,9 +397,18 @@ export function createApp(
             images: [],
             mode: result.data.mode ?? "reject",
           }),
+          ...(result.data.draft ? { draft: result.data.draft } : {}),
         },
       );
-      return c.json({ id: String(submission.id) }, 202);
+      return c.json(
+        {
+          id: String(submission.id),
+          ...(submission.clearedDraftRevision === undefined
+            ? {}
+            : { clearedDraftRevision: submission.clearedDraftRevision }),
+        },
+        202,
+      );
     } catch (error) {
       if (error instanceof ConversationBusy) {
         return c.json({ error: "The conversation is busy." }, 409);
@@ -591,6 +643,7 @@ export function createApp(
   app.onError((error, c) =>
     error instanceof ChatLifecycleError ||
     error instanceof AttachmentAccessError ||
+    error instanceof DraftAttemptConflict ||
     error instanceof RegenerationError ||
     error instanceof BranchOperationError
       ? c.json({ error: error.message }, error.status)

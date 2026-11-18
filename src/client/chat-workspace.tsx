@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import {
   AssistantRuntimeProvider,
@@ -52,6 +52,13 @@ function Workspace() {
   const [visited, setVisited] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [managing, setManaging] = useState(false);
+  const [archiving, setArchiving] = useState<string | null>(null);
+  const draftGuards = useRef(new Map<string, () => Promise<boolean>>());
+  const onUnsavedDraft = useCallback((id: string) => {
+    setError(
+      `Chat ${id} was archived elsewhere with unsaved draft changes. Restore it to resolve the draft.`,
+    );
+  }, []);
   const [forking, setForking] = useState<{
     sourceId: string;
     at: string;
@@ -246,6 +253,14 @@ function Workspace() {
     setManaging(true);
     setError(null);
     try {
+      if (action === "archive") {
+        setArchiving(id);
+        const guard = draftGuards.current.get(id);
+        if ((mounted.includes(id) && !guard) || (guard && !(await guard())))
+          throw new Error(
+            "Draft could not be saved before archiving. Open the chat, resolve the draft or retry saving, then try again.",
+          );
+      }
       const response = await fetch(`/api/chats/${id}/manage`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -274,6 +289,7 @@ function Workspace() {
     } finally {
       managementInFlight.current = false;
       setManaging(false);
+      setArchiving(null);
     }
   }
   async function rename(id: string, title: string) {
@@ -585,13 +601,15 @@ function Workspace() {
           {mounted.map((id) => (
             <div
               key={id}
-              inert={id !== selected?.id}
+              inert={id !== selected?.id || archiving === id}
               aria-hidden={id !== selected?.id}
               className="absolute inset-0 flex min-h-0 flex-col"
               style={{ visibility: id === selected?.id ? "visible" : "hidden" }}
             >
               <ChatPage
                 chatId={id}
+                draftGuards={draftGuards}
+                onUnsavedDraft={onUnsavedDraft}
                 active={id === selected?.id}
                 readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
                 onFork={(entryId) => {
