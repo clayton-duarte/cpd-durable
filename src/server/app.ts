@@ -52,7 +52,7 @@ import { ModelPolicyError } from "./model-policy.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
-    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments" | "modelPolicy">>,
+    Partial<Pick<Awaited<ReturnType<typeof openChat>>, "chats" | "attachments" | "modelPolicy" | "tangents">>,
 ) {
   const app = new Hono();
   const histories = new Map<string, ReturnType<typeof createHistory>>();
@@ -95,6 +95,7 @@ export function createApp(
   );
   app.use("/api/*", limitRequests);
   if (chat.attachments) app.route("/", chat.attachments.routes);
+  if (chat.tangents) app.route("/", chat.tangents.routes);
 
   app.get("/api/model-policy", async (c) => {
     if (!chat.modelPolicy) return c.json({ error: "Model settings unavailable." }, 503);
@@ -125,8 +126,9 @@ export function createApp(
   async function authorizedResolver(ids: string[]): Promise<ResolveTranscript | undefined> {
     const chats = chat.chats;
     if (!chats) return undefined;
-    const catalog = await chats.list();
-    if (ids.some((id) => !catalog.chats.some((item) => item.id === id))) return undefined;
+    // An explicit, validated scope may name a tangent even though the main sidebar omits it.
+    const scopes = await Promise.all(ids.map((id) => chats.resolve(id)));
+    if (scopes.some((scope) => !scope)) return undefined;
     return async (id) => {
       if (!ids.includes(id)) return undefined;
       const resolved = await chats.resolve(id);
@@ -137,13 +139,15 @@ export function createApp(
   // publish its result if a selected chat was deleted or changed archive state.
   async function stillAuthorized(report: TranscriptReport): Promise<boolean> {
     if (!chat.chats) return false;
-    const catalog = await chat.chats.list();
-    return report.conversations.every((item) => {
-      const current = catalog.chats.find((entry) => entry.id === item.conversationId);
+    const currentScopes = await Promise.all(
+      report.conversations.map((item) => chat.chats!.resolve(item.conversationId)),
+    );
+    return report.conversations.every((item, index) => {
+      const current = currentScopes[index];
       return (
         current !== undefined &&
-        (current.status === "archived") === item.archived &&
-        (report.scope.includeArchived || current.status !== "archived")
+        current.archived === item.archived &&
+        (report.scope.includeArchived || !current.archived)
       );
     });
   }

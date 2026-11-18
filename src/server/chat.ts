@@ -7,13 +7,31 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
-import { modelKey, openChats } from "./chats.ts";
+import { createTangentCatalogHooks, modelKey, openChats } from "./chats.ts";
+import { createTangentRoutes, TangentPolicyUnavailable } from "./tangent-routes.ts";
+import type { ResolvedTangentModel } from "../shared/tangents.ts";
+import type { Tx } from "@earendil-works/pi-durable";
 import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
 import { createModelPolicy } from "./model-policy.ts";
 
-export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
+export type TangentPolicy = {
+  resolveModel(): Promise<ResolvedTangentModel>;
+  assertResolvedModel(tx: Tx, resolved: ResolvedTangentModel): Promise<void>;
+};
+export async function openChat(
+  dataDir: string,
+  models: Models,
+  cwd = workingDirectory(),
+  options: {
+    tangentPolicy?: (harness: Harness, models: Models) => TangentPolicy;
+    assertNoUnsettledTangent?: (
+      tx: Tx,
+      tangent: import("@earendil-works/pi-durable").ConversationId,
+    ) => Promise<void>;
+  } = {},
+) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
   const execution = createExecution(cwd);
@@ -50,6 +68,22 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
     };
     const modelPolicy = createModelPolicy(harness, models);
     const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
+    const policy = options.tangentPolicy?.(harness, models);
+    const tangentHooks = createTangentCatalogHooks({
+      resolveModel: async () => {
+        if (!policy) throw new TangentPolicyUnavailable();
+        return policy.resolveModel();
+      },
+      assertResolvedModel: async (tx, resolved) => {
+        if (!policy) throw new TangentPolicyUnavailable();
+        await policy.assertResolvedModel(tx, resolved);
+      },
+      cwd: (source) => workingDirectory(source ?? cwd),
+      ...(options.assertNoUnsettledTangent
+        ? { assertNoUnsettled: options.assertNoUnsettledTangent }
+        : {}),
+    });
+    const tangents = { routes: createTangentRoutes(harness, tangentHooks, models) };
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({
       harness,
@@ -85,6 +119,7 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
       chats,
       modelPolicy,
       attachments,
+      tangents,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {
