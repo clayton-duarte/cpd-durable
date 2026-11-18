@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { NestedToolDisplaySchema } from "./nested-tools.ts";
 import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts";
+import { DraftAdmissionSchema } from "./drafts.ts";
+import { modelInputText } from "./direct-shell.ts";
 
 export const PROVIDER_ID = "opencode-go";
 export const MODEL_ID = "deepseek-v4.1-flash";
@@ -13,11 +15,15 @@ export const InputSchema = z
     text: z.string().trim().max(32_000),
     images: z.array(AttachmentIdSchema).max(4).optional(),
     mode: SendModeSchema.optional(),
+    draft: DraftAdmissionSchema.optional(),
   })
   .refine(
     (input) =>
       (!!input.text || !!input.images?.length) &&
-      new Set(input.images).size === (input.images?.length ?? 0),
+      new Set(input.images).size === (input.images?.length ?? 0) &&
+      (!input.draft ||
+        (modelInputText(input.draft.text) === input.text &&
+          JSON.stringify(input.draft.images) === JSON.stringify(input.images ?? []))),
   );
 export type ChatInput = z.infer<typeof InputSchema>;
 
@@ -188,5 +194,8 @@ export type ChatState = z.infer<typeof ChatStateSchema>;
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 export type ChatPart = z.infer<typeof ChatPartSchema>;
 
-export const SubmissionSchema = z.strictObject({ id: z.string() });
+export const SubmissionSchema = z.strictObject({
+  id: z.string(),
+  clearedDraftRevision: z.number().int().nonnegative().safe().optional(),
+});
 export const ApiErrorSchema = z.strictObject({ error: z.string() });

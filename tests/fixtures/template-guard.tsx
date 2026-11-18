@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Chat } from "../../src/client/chat.tsx";
 
 function Fixture() {
-  const [state, setState] = useState({ chatId: "1", readOnly: true, connected: true });
+  const [state, setState] = useState({ chatId: "1", readOnly: false, connected: true });
   Reflect.set(window, "__setTemplateFixture", setState);
   return (
     <Chat

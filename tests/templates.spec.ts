@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 test("templates insert into native drafts only after explicit append or replace", async ({
   page,
@@ -19,6 +20,14 @@ test("templates insert into native drafts only after explicit append or replace"
   await page.route("**/api/**", (route) => {
     if (route.request().url().endsWith("/input")) inputs++;
     return route.abort();
+  });
+  await syntheticDrafts(page);
+  const savedTexts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PUT" && new URL(request.url()).pathname.endsWith("/draft")) {
+      const body = request.postDataJSON() as { content: { text: string } };
+      savedTexts.push(body.content.text);
+    }
   });
   await page.route("**/api/chats", (route) =>
     route.fulfill({
@@ -127,6 +136,7 @@ test("templates insert into native drafts only after explicit append or replace"
   await page.getByRole("button", { name: "Append to draft" }).click();
   releaseUpload();
   await expect(draft).toHaveValue("Newer text\nLiteral $1 <b>text</b>");
+  await expect.poll(() => savedTexts).toContain("Newer text\nLiteral $1 <b>text</b>");
   await expect(page.getByRole("button", { name: "Remove one.png" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove two.png" })).toBeVisible();
   await draft.fill("Discard only by choice /");
@@ -134,6 +144,7 @@ test("templates insert into native drafts only after explicit append or replace"
   await page.getByRole("option", { name: /queue.*project/ }).click();
   await page.getByRole("button", { name: "Replace draft text" }).click();
   await expect(draft).toHaveValue("Literal $1 <b>text</b>");
+  await expect.poll(() => savedTexts).toContain("Literal $1 <b>text</b>");
   await expect(page.getByRole("button", { name: "Remove one.png" })).toBeVisible();
   expect(inputs).toBe(0);
 });
@@ -150,6 +161,7 @@ test("a delayed template read cannot cross navigation into an archived chat", as
   };
   let release: (() => void) | undefined;
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats", (route) =>
     route.fulfill({
       json: {
@@ -223,6 +235,7 @@ test("preview cannot insert when read-only, disconnected, or the retained chat c
     truncated: false,
   };
   await page.route("**/api/**", (route) => route.abort());
+  await syntheticDrafts(page);
   await page.route("**/api/chats/1/templates", (route) =>
     route.fulfill({
       json: { conversationId: "1", templates: [template], issues: [], omitted: 0 },
@@ -243,7 +256,6 @@ test("preview cannot insert when read-only, disconnected, or the retained chat c
   );
   await expect(page.locator("img[src^='https://invalid.example']")).toHaveCount(0);
   const insert = page.getByRole("button", { name: "Replace draft text" });
-  await expect(insert).toBeDisabled();
   async function setHost(chatId: string, readOnly: boolean, connected: boolean) {
     await page.evaluate(
       (value) => {
@@ -253,6 +265,8 @@ test("preview cannot insert when read-only, disconnected, or the retained chat c
       { chatId, readOnly, connected },
     );
   }
+  await setHost("1", true, true);
+  await expect(insert).toBeDisabled();
   await setHost("1", false, true);
   await expect(insert).toBeEnabled();
   await setHost("1", true, true);

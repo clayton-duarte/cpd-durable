@@ -3,7 +3,7 @@ import { env } from "node:process";
 
 const baseURL = env["CPD_PRESENTATION_URL"] ?? "http://127.0.0.1:5173";
 const port = Number(new URL(baseURL).port);
-// Presentation tests intercept all API traffic; safe against the live development client.
+// Presentation tests intercept API traffic and use an isolated client.
 export default defineConfig({
   testDir: "./tests",
   testMatch: [
@@ -16,12 +16,14 @@ export default defineConfig({
     "edit-branch.spec.ts",
     "questions.spec.ts",
     "templates.spec.ts",
+    "regeneration.spec.ts",
+    "attachment-browser.spec.ts",
   ],
   workers: 1,
   use: { baseURL },
   webServer: {
-    command: `pnpm exec vp dev --port ${port}`,
+    command: `pnpm exec vp dev --host 127.0.0.1 --port ${port} --strictPort`,
     url: baseURL,
-    reuseExistingServer: true,
+    reuseExistingServer: false,
   },
 });
