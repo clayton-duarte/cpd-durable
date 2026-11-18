@@ -29,6 +29,13 @@ import { ChatLifecycleError } from "./chats.ts";
 import type { ChatScope } from "./chats.ts";
 import { CompactSchema } from "../shared/context.ts";
 import { ConfigurationChangeSchema } from "../shared/configuration.ts";
+import {
+  HistorySearchRequestSchema,
+  HistoryExportRequestSchema,
+} from "../shared/history-operations.ts";
+import { searchTranscripts } from "./search.ts";
+import { exportTranscripts, transcriptExportJson, transcriptExportMarkdown } from "./export.ts";
+import type { ResolveTranscript } from "./transcript-reader.ts";
 
 export function createApp(
   chat: Pick<Awaited<ReturnType<typeof openChat>>, "conversation" | "withdraw"> &
@@ -83,6 +90,54 @@ export function createApp(
     if (!result.success) return c.json({ error: "Invalid chat request." }, 400);
     if (!chat.chats) return c.json({ error: "Chat catalog unavailable." }, 503);
     return c.json(await chat.chats.create(result.data.requestId), 201);
+  });
+  // These POST endpoints are read-only: no submission, task admission, or transcript writes.
+  // The explicit allowlist is checked against the catalog before resolving any conversation.
+  async function authorizedResolver(ids: string[]): Promise<ResolveTranscript | undefined> {
+    const chats = chat.chats;
+    if (!chats) return undefined;
+    const catalog = await chats.list();
+    if (ids.some((id) => !catalog.chats.some((item) => item.id === id))) return undefined;
+    return async (id) => {
+      if (!ids.includes(id)) return undefined;
+      const resolved = await chats.resolve(id);
+      return resolved && { conversation: resolved.conversation, archived: resolved.archived };
+    };
+  }
+  app.post("/api/history-operations/search", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const request = HistorySearchRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!request.success) return c.json({ error: "Invalid history search." }, 400);
+    const resolver = await authorizedResolver(request.data.scope.conversationIds);
+    if (!resolver) return c.json({ error: "History scope unavailable." }, 404);
+    const result = await searchTranscripts(request.data.scope, resolver, request.data.search, {
+      signal: c.req.raw.signal,
+    });
+    return c.json(result);
+  });
+  app.post("/api/history-operations/export", async (c) => {
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const request = HistoryExportRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!request.success) return c.json({ error: "Invalid history export." }, 400);
+    const resolver = await authorizedResolver(request.data.scope.conversationIds);
+    if (!resolver) return c.json({ error: "History scope unavailable." }, 404);
+    const result = await exportTranscripts(request.data.scope, resolver, {
+      signal: c.req.raw.signal,
+    });
+    return c.json({
+      format: request.data.format,
+      content:
+        request.data.format === "json"
+          ? transcriptExportJson(result)
+          : transcriptExportMarkdown(result),
+      report: result.report,
+    });
   });
   app.post("/api/chats/:chatId/manage", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json"))

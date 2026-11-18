@@ -5,6 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { CompactionEntry, ResetEntry, UserEntry } from "@earendil-works/pi-durable";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { openChat } from "../src/server/chat.ts";
+import { createApp } from "../src/server/app.ts";
 import {
   exportTranscripts,
   transcriptExportJson,
@@ -261,5 +262,58 @@ describe("logical transcript operations", () => {
         caseSensitive: true,
       }),
     ).rejects.toThrow("unavailable");
+  });
+
+  it("serves read-only scoped endpoints with catalog, archive, host and request validation", async () => {
+    await seed(2);
+    const app = createApp(chat);
+    const post = (path: string, body: unknown, origin = "http://localhost:3000") =>
+      app.request(`http://localhost:3000/api/history-operations/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(body),
+      });
+    const searchRequest = {
+      scope,
+      search: { query: "needle", caseSensitive: false, maxResults: 100 },
+    };
+    const response = await post("search", searchRequest);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(((await response.json()) as { hits: unknown[] }).hits).toHaveLength(2);
+    const download = await post("export", { scope, format: "markdown" });
+    expect(await download.json()).toMatchObject({
+      format: "markdown",
+      report: { status: "complete" },
+    });
+    expect((await post("search", { ...searchRequest, extra: true })).status).toBe(400);
+    expect((await post("search", searchRequest, "https://attacker.example")).status).toBe(403);
+    expect(
+      (
+        await post("search", {
+          ...searchRequest,
+          scope: { conversationIds: ["999999"], includeArchived: true },
+        })
+      ).status,
+    ).toBe(404);
+    await chat.chats.change(root, "archive");
+    expect((await post("search", searchRequest)).status).not.toBe(200);
+    expect(
+      (
+        await post("search", {
+          ...searchRequest,
+          scope: { conversationIds: [root], includeArchived: true },
+        })
+      ).status,
+    ).toBe(200);
+    await chat.chats.change(root, "delete");
+    expect(
+      (
+        await post("search", {
+          ...searchRequest,
+          scope: { conversationIds: [root], includeArchived: true },
+        })
+      ).status,
+    ).toBe(404);
   });
 });

@@ -107,3 +107,17 @@ export const TranscriptExportSchema = z.strictObject({
   entries: z.array(TranscriptEntrySchema),
 });
 export type TranscriptExport = z.infer<typeof TranscriptExportSchema>;
+
+export const HistorySearchRequestSchema = z.strictObject({
+  scope: TranscriptScopeSchema,
+  search: TranscriptSearchSchema,
+});
+export const HistoryExportRequestSchema = z.strictObject({
+  scope: TranscriptScopeSchema,
+  format: z.enum(["json", "markdown"]),
+});
+export const HistoryDownloadSchema = z.strictObject({
+  format: z.enum(["json", "markdown"]),
+  content: z.string(),
+  report: TranscriptReportSchema,
+});
