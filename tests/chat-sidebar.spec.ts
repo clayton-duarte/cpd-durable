@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { RenameChatSchema, ForkChatSchema, type ChatSummary } from "../src/shared/chats.ts";
 
-async function workspace(page: Page, withHistory = false) {
+async function workspace(page: Page, withHistory = false, mockEvents = true) {
   await page.route("**/api/**", (route) => route.abort());
   await page.route("**/api/chats", (route) =>
     route.fulfill({
@@ -14,46 +14,224 @@ async function workspace(page: Page, withHistory = false) {
       },
     }),
   );
-  await page.addInitScript((withHistory) => {
+  if (mockEvents)
+    await page.addInitScript((withHistory) => {
+      class Source extends EventTarget {
+        onerror: (() => void) | null = null;
+        closed = false;
+        constructor(url: string) {
+          super();
+          const id = new URL(url, location.href).pathname.split("/")[3]!;
+          queueMicrotask(() => {
+            if (!this.closed)
+              this.dispatchEvent(
+                new MessageEvent("state", {
+                  data: JSON.stringify({
+                    conversationId: Number(id),
+                    messages: withHistory
+                      ? Array.from({ length: 80 }, (_, index) => ({
+                          id: `${index + 1}:0`,
+                          role: "user",
+                          text: `Historical turn ${index + 1}\nLine two\nLine three`,
+                          interrupted: false,
+                          source: { entryId: index + 1 },
+                        }))
+                      : [],
+                    partial: "",
+                    busy: id === "1",
+                    hasEarlier: false,
+                    failure: null,
+                    controls: { canContinue: false, resetPending: false, queue: [] },
+                  }),
+                }),
+              );
+          });
+        }
+        close() {
+          this.closed = true;
+        }
+      }
+      Object.defineProperty(window, "EventSource", { value: Source, configurable: true });
+    }, withHistory);
+}
+const draft = (page: Page) => page.getByRole("textbox", { name: "Message input", exact: true });
+
+test("private feedback targets committed messages and retries an uncertain save across chat navigation", async ({
+  page,
+}) => {
+  await workspace(page, false, false);
+  await page.addInitScript(() => {
     class Source extends EventTarget {
       onerror: (() => void) | null = null;
-      closed = false;
+      disconnect = () => this.onerror?.();
       constructor(url: string) {
         super();
-        const id = new URL(url, location.href).pathname.split("/")[3]!;
-        queueMicrotask(() => {
-          if (!this.closed)
-            this.dispatchEvent(
-              new MessageEvent("state", {
-                data: JSON.stringify({
-                  conversationId: Number(id),
-                  messages: withHistory
-                    ? Array.from({ length: 80 }, (_, index) => ({
-                        id: `${index + 1}:0`,
-                        role: "user",
-                        text: `Historical turn ${index + 1}\nLine two\nLine three`,
-                        interrupted: false,
-                        source: { entryId: index + 1 },
-                      }))
-                    : [],
-                  partial: "",
-                  busy: id === "1",
-                  hasEarlier: false,
-                  failure: null,
-                  controls: { canContinue: false, resetPending: false, queue: [] },
-                }),
+        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        window.addEventListener("feedback-disconnect", this.disconnect);
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: id,
+                messages: [
+                  {
+                    id: "10:0",
+                    role: "user",
+                    text: "Question",
+                    interrupted: false,
+                    source: { entryId: 10 },
+                  },
+                  {
+                    id: "11:2",
+                    role: "assistant",
+                    text: "Saved answer",
+                    interrupted: false,
+                    source: { entryId: 11, feedbackModelIndex: 2 },
+                  },
+                  {
+                    id: "12:0",
+                    role: "assistant",
+                    text: "",
+                    interrupted: false,
+                    source: { entryId: 12 },
+                    parts: [
+                      {
+                        id: "12:0:0",
+                        type: "tool-call",
+                        callId: "test-call",
+                        name: "test-tool",
+                        arguments: {},
+                        state: "complete",
+                      },
+                    ],
+                  },
+                ],
+                partial: "",
+                busy: false,
+                hasEarlier: false,
+                failure: null,
+                history: {
+                  view: new URL(url, location.href).searchParams.get("view"),
+                  epoch: "11111111-1111-4111-8111-111111111111",
+                  revision: 1,
+                  oldest: 10,
+                  gaps: [{ after: 10, upTo: 11 }],
+                },
+                live: {
+                  id: "generation:1",
+                  taskId: 5,
+                  afterEntryId: 12,
+                  text: "Live answer",
+                  parts: [{ id: "live:0", type: "text", text: "Live answer" }],
+                },
+                controls: { canContinue: false, resetPending: false, queue: [] },
               }),
-            );
-        });
+            }),
+          ),
+        );
       }
       close() {
-        this.closed = true;
+        window.removeEventListener("feedback-disconnect", this.disconnect);
       }
     }
     Object.defineProperty(window, "EventSource", { value: Source });
-  }, withHistory);
-}
-const draft = (page: Page) => page.getByRole("textbox", { name: "Message input", exact: true });
+  });
+  const requests: {
+    requestId: string;
+    expectedRevision: number;
+    value: { vote: string; comment: string | null } | null;
+  }[] = [];
+  let release: (() => void) | undefined;
+  let value: { vote: string; comment: string | null } | null = null;
+  let revision = 0;
+  await page.route("**/api/chats/*/feedback/*/*", async (route) => {
+    const chat = new URL(route.request().url()).pathname.split("/")[3]!;
+    const view = () => ({
+      conversationId: chat,
+      target: { entryId: 11, modelIndex: 2 },
+      revision: chat === "1" ? revision : 0,
+      value: chat === "1" ? value : null,
+      readOnly: chat === "2",
+    });
+    expect(new URL(route.request().url()).pathname).toBe(`/api/chats/${chat}/feedback/11/2`);
+    if (route.request().method() === "GET") return route.fulfill({ json: view() });
+    expect(chat).toBe("1");
+    const body = route.request().postDataJSON() as (typeof requests)[number];
+    requests.push(body);
+    if (requests.length === 2) return route.abort();
+    if (requests.length === 3)
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    revision = body.expectedRevision + 1;
+    value = body.value;
+    return route.fulfill({ json: view() });
+  });
+  await page.goto("/chats/1");
+  const saved = page.locator('[aria-hidden="false"] [data-durable-id="11:2"]');
+  await saved.hover();
+  await expect(saved.getByRole("button", { name: "Helpful", exact: true })).toBeVisible();
+  await expect(
+    page.locator('[data-durable-id="10:0"]').getByRole("button", { name: "Helpful" }),
+  ).toHaveCount(0);
+  await expect(
+    page.locator('[data-durable-id="12:0"]').getByRole("button", { name: "Helpful" }),
+  ).toHaveCount(0);
+  const gap = page.locator('[data-message-id^="history-gap:"]');
+  await expect(gap).toHaveCount(1);
+  await expect(gap.getByRole("button", { name: "Helpful" })).toHaveCount(0);
+  await expect(page.locator('[data-message-status="running"]')).toHaveCount(1);
+  await expect(
+    page.locator('[data-message-status="running"]').getByRole("button", { name: "Helpful" }),
+  ).toHaveCount(0);
+  await saved.getByRole("button", { name: "Helpful", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText(
+    "Private feedback, stored with this chat—not sent to provider",
+  );
+  await dialog.getByLabel("Optional comment").fill("First comment");
+  await dialog.getByRole("button", { name: "Save feedback" }).click();
+  await expect(dialog).toContainText("Saved revision 1.");
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await saved.hover();
+  await expect(saved.getByRole("button", { name: "Helpful", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await saved.getByRole("button", { name: "Not helpful" }).click();
+  await dialog.getByLabel("Optional comment").fill("Original retry comment");
+  await dialog.getByRole("button", { name: "Save feedback" }).click();
+  await expect(dialog).toContainText("Save unconfirmed");
+  await dialog.getByLabel("Optional comment").fill("Newer draft");
+  await dialog.getByRole("button", { name: "Retry same save" }).click();
+  await expect.poll(() => requests.length).toBe(3);
+  await dialog.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Second chat", exact: true }).click();
+  const other = page.locator('[aria-hidden="false"] [data-durable-id="11:2"]');
+  await other.hover();
+  await expect(other.getByRole("button", { name: "Helpful", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  await expect(other.getByRole("button", { name: "Helpful", exact: true })).toBeDisabled();
+  release?.();
+  await page.getByRole("button", { name: /Original chat/ }).click();
+  await saved.hover();
+  await saved.getByRole("button", { name: "Not helpful" }).click();
+  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Newer draft");
+  expect(requests[2]).toEqual(requests[1]);
+  expect(requests[0]).toMatchObject({
+    expectedRevision: 0,
+    value: { vote: "helpful", comment: "First comment" },
+  });
+  expect(requests[1]).toMatchObject({
+    expectedRevision: 1,
+    value: { vote: "unhelpful", comment: "Original retry comment" },
+  });
+  await page.evaluate(() => window.dispatchEvent(new Event("feedback-disconnect")));
+  await expect(dialog.getByRole("button", { name: "Retry same save" })).toBeDisabled();
+  expect(requests).toHaveLength(3);
+});
 
 test("supplied inline rename persists a title without changing route or unsent draft", async ({
   page,

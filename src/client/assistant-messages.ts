@@ -66,6 +66,11 @@ function committedMessage(
       custom: {
         durableId: message.id,
         ...(message.source ? { sourceEntryId: message.source.entryId } : {}),
+        ...(message.role === "assistant" &&
+        parts.some((part) => part.type === "text" && part.text.length > 0) &&
+        message.source?.feedbackModelIndex !== undefined
+          ? { feedbackModelIndex: message.source.feedbackModelIndex }
+          : {}),
         partIds: parts.map((part) => part.id),
         interrupted: outcome === "interrupted",
         toolStates: Object.fromEntries(

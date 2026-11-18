@@ -352,6 +352,11 @@ export function present(
         source: {
           entryId: entry.id,
           ...(entry.kind === "pi.assistant" &&
+          message.role === "assistant" &&
+          parts.some((part) => part.type === "text" && part.text.length > 0)
+            ? { feedbackModelIndex: index }
+            : {}),
+          ...(entry.kind === "pi.assistant" &&
           entry.model?.length === 1 &&
           index === 0 &&
           message.role === "assistant" &&

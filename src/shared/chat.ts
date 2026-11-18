@@ -109,6 +109,7 @@ export const ChatMessageSchema = z.strictObject({
   source: z
     .strictObject({
       entryId: RecordIdSchema,
+      feedbackModelIndex: z.number().int().nonnegative().safe().optional(),
       // Known SDK assistant entries and direct-shell result entries carry task attribution.
       taskId: RecordIdSchema.optional(),
     })
