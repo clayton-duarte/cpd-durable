@@ -27,6 +27,7 @@ export const HelperViewSchema = z.strictObject({
   childId: z.string().nullable(),
   mode: z.enum(["foreground", "background"]),
   model: z.strictObject({ provider: z.string(), modelId: z.string() }).nullable(),
+  modelName: z.string().nullable(),
   status: z.enum(["pending", "running", "success", "failure", "cancelled", "unknown"]),
   answerEntryId: z.string().nullable(),
   delivery: z.literal("notify-only"),

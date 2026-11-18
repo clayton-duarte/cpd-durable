@@ -136,7 +136,7 @@ export const HelpersExtension = defineExtension({
 
 /** Admission is atomic with the request identity and saved parent agent snapshot. */
 export async function launchHelper(
-  conversation: Conversation,
+  conversation: Pick<Conversation, "id" | "commit">,
   raw: unknown,
   dependencies: WorkerDependencies,
 ) {
@@ -229,6 +229,7 @@ export async function inspectHelpers(harness: Harness, conversation: Conversatio
         childId: item.childId === null ? null : String(item.childId),
         mode: item.request.mode,
         model: item.model ?? null,
+        modelName: null,
         status,
         answerEntryId:
           status === "success" && item.receipt?.answerEntryId !== null
@@ -254,6 +255,14 @@ export async function collectHelperResult(
     (candidate) => candidate.taskId === taskId,
   );
   if (helper?.status !== "success" || !helper.childId || !helper.answerEntryId) return null;
+  const owned = await conversation.commit(async (tx) => {
+    const record = await tx.conversation(Number(helper.childId) as ConversationId);
+    return (
+      record?.owner?.conversationId === conversation.id &&
+      String(record.owner.taskId) === helper.taskId
+    );
+  }, BACKGROUND_CONTEXT);
+  if (!owned) return null;
   const child = await harness.conversation(
     Number(helper.childId) as ConversationId,
     BACKGROUND_CONTEXT,
