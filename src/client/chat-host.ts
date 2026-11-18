@@ -4,6 +4,7 @@ import type { ChatState, SendMode, HistoryGap } from "../shared/chat.ts";
 export interface ChatProps {
   chatId?: string | undefined;
   active?: boolean;
+  readOnly?: boolean;
   title: string;
   description?: string;
   state: ChatState | null;

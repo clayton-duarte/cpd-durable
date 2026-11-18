@@ -13,6 +13,7 @@ import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { useChatHost } from "./chat-host.ts";
 import { AccountingSchema, type Accounting } from "../shared/accounting.ts";
+import { ChatContext } from "./chat-context.tsx";
 
 const dollars = (value: number) =>
   new Intl.NumberFormat("en-US", {
@@ -72,6 +73,7 @@ export function ChatDetails() {
             USD totals may be estimates, not an invoice. Not active-context occupancy.
           </DialogDescription>
         </DialogHeader>
+        {open && host.active !== false && <ChatContext />}
         {error && (
           <ErrorState
             title="Details unavailable"

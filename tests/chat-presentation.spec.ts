@@ -196,6 +196,22 @@ test("details use chat/session SDK scopes and read retries never resend the draf
 }) => {
   await connect(page);
   let reads = 0;
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        headId: null,
+        entryCount: 0,
+        messageCount: 0,
+        roles: [],
+        entries: [],
+        truncated: false,
+        compactions: [],
+        failure: null,
+      },
+    }),
+  );
   await page.route("**/api/chats/1/accounting", async (route) => {
     if (++reads === 1) return route.abort();
     return route.fulfill({
@@ -243,6 +259,56 @@ test("details use chat/session SDK scopes and read retries never resend the draf
   await expect(dialog).not.toContainText("this run");
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(draft).toHaveValue("Unsent accounting draft");
+});
+
+test("context compaction reports admission rather than placement and never retries uncertain writes", async ({
+  page,
+}) => {
+  await connect(page);
+  const posts: unknown[] = [];
+  await page.route("**/api/chats/1/context", (route) =>
+    route.fulfill({
+      json: {
+        conversationId: "1",
+        observedAt: 1000,
+        headId: "3",
+        entryCount: 2,
+        messageCount: 2,
+        roles: [
+          { role: "user", count: 1 },
+          { role: "assistant", count: 1 },
+        ],
+        entries: [{ id: "3", kind: "pi.compaction", messages: 1 }],
+        truncated: false,
+        compactions: [
+          { taskId: "5", trigger: "threshold", blocking: false, attempt: 1, retryAt: null },
+        ],
+        failure: null,
+      },
+    }),
+  );
+  await page.route("**/api/chats/1/compact", (route) => {
+    posts.push(route.request().postDataJSON());
+    return route.abort();
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Preserve compact draft");
+  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  const context = page.getByRole("region", { name: "Active context" });
+  await expect(context).toContainText("Token occupancy and headroom are unknown");
+  await expect(context).toContainText("threshold compaction 5");
+  await context
+    .getByRole("textbox", { name: "Optional summary instructions" })
+    .fill("Keep decisions");
+  await context.getByRole("button", { name: "Compact context", exact: true }).click();
+  await expect(context).toContainText("Admission unconfirmed");
+  await expect(
+    context.getByRole("button", { name: "Compact context", exact: true }),
+  ).toBeDisabled();
+  expect(posts).toEqual([{ instructions: "Keep decisions" }]);
+  await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  await expect(draft).toHaveValue("Preserve compact draft");
 });
 
 test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
