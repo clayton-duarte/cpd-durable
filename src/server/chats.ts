@@ -28,6 +28,7 @@ import {
   imageRequestDigest,
 } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
+import { assertMainModelDecisionTx, type createModelPolicy } from "./model-policy.ts";
 import { DraftDoc } from "./drafts.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
 import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
@@ -108,6 +109,7 @@ export async function openChats(
   root: Conversation,
   defaults: AgentChange,
   models: Models,
+  modelPolicy?: ReturnType<typeof createModelPolicy>,
 ) {
   await harness.commit(async (tx) => {
     const catalog = await tx.doc(CatalogDoc);
@@ -643,6 +645,12 @@ export async function openChats(
       }, BACKGROUND_CONTEXT);
     },
     async create(requestId: string): Promise<ChatSummary> {
+      // Preparation can fail even when an existing empty chat is reusable. Defer
+      // that failure until the transaction establishes that creation is needed.
+      const prepared = await modelPolicy?.prepareMainCreation().then(
+        (decision) => ({ decision }),
+        (error: unknown) => ({ error }),
+      );
       const item = await harness.commit(async (tx) => {
         await assertBranchIdentityAvailable(tx, requestId);
         const catalog = await tx.doc(CatalogDoc);
@@ -665,8 +673,20 @@ export async function openChats(
             return { id: item.id, title: item.title };
           }
         }
+        if (prepared && "error" in prepared) throw prepared.error;
+        if (prepared && "decision" in prepared)
+          await assertMainModelDecisionTx(tx, prepared.decision);
         const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
-        await configure(tx, record.id, defaults);
+        const chosen = prepared && "decision" in prepared ? prepared.decision.selection : null;
+        await configure(tx, record.id, {
+          ...defaults,
+          ...(chosen
+            ? {
+                model: { provider: chosen.provider, modelId: chosen.modelId },
+                thinkingLevel: chosen.thinkingLevel,
+              }
+            : {}),
+        });
         const created: CatalogItem = { id: record.id, title: "New chat", named: false, requestId };
         catalog.items.push(created);
         return { id: created.id, title: created.title };

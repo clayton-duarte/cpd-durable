@@ -16,6 +16,15 @@ import { Button } from "@/components/ui/button";
 import { RegenerationReceiptSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
 import type { z } from "zod";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import { Settings } from "./settings.tsx";
+import {
   EditBranchReceiptSchema,
   RecentEditOperationsSchema,
   type RecentEditOperation,
@@ -216,6 +225,7 @@ function Workspace() {
     creation.current ??= crypto.randomUUID();
     setCreating(true);
     setError(null);
+    let rejection: string | undefined;
     try {
       const response = await fetch("/api/chats", {
         method: "POST",
@@ -223,7 +233,11 @@ function Workspace() {
         body: JSON.stringify({ requestId: creation.current }),
       });
       if (!response.ok) {
-        if (response.status < 500) creation.current = null;
+        if (response.status < 500) {
+          creation.current = null;
+          const result = ApiErrorSchema.safeParse(await response.json().catch(() => null));
+          if (result.success) rejection = result.data.error;
+        }
         throw new Error("Creation unavailable");
       }
       const created = ChatSummarySchema.parse(await response.json());
@@ -240,7 +254,7 @@ function Workspace() {
       switchChat(created.id);
       setReload((value) => value + 1);
     } catch {
-      setError("Chat creation could not be confirmed. Retry safely.");
+      setError(rejection ?? "Chat creation could not be confirmed. Retry safely.");
     } finally {
       inFlight.current = false;
       setCreating(false);
@@ -540,6 +554,18 @@ function Workspace() {
         <header className="flex h-12 shrink-0 items-center gap-2 px-3">
           <SidebarTrigger />
           <span className="truncate text-sm">{selected?.title ?? "Chats"}</span>
+          <Dialog>
+            <DialogTrigger render={<Button variant="ghost" size="sm" />}>Settings</DialogTrigger>
+            <DialogContent className="max-h-[90vh] overflow-y-auto">
+              <DialogHeader>
+                <DialogTitle>Settings</DialogTitle>
+                <DialogDescription>
+                  Application-wide defaults for future conversations and workers.
+                </DialogDescription>
+              </DialogHeader>
+              <Settings />
+            </DialogContent>
+          </Dialog>
           {selected?.parentId && (
             <span className="truncate text-xs text-muted-foreground">
               Entry {selected.forkEntryId} from {parent?.title ?? "unavailable source"}
