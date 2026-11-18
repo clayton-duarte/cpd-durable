@@ -26,6 +26,35 @@ const ImageRequestsDoc = defineDoc<{ requests: { id: string; digest: string }[] 
   initial: () => ({ requests: [] }),
   checkpointWhen: () => true,
 });
+
+const AdmissionRequestsDoc = defineDoc<{ requests: { id: string; digest: string }[] }>({
+  kind: "cpd.admission-requests",
+  version: 1,
+  scope: "conversation",
+  history: "latest",
+  fork: "initial",
+  initial: () => ({ requests: [] }),
+  checkpointWhen: () => true,
+});
+
+/** Check all host input and control kinds against one request-ID namespace.
+ * A legacy SDK submission without matching host metadata is rejected rather than
+ * silently treating a different action as its retry. Read before SDK submit;
+ * invoke the recorder only after submit succeeds, in the same transaction. */
+export async function checkAdmissionRequest(
+  tx: Tx,
+  conversationId: ConversationId,
+  id: string,
+  digest: string,
+): Promise<() => void> {
+  const doc = await tx.doc(AdmissionRequestsDoc, conversationId);
+  const previous = doc.requests.find((request) => request.id === id);
+  if (previous ? previous.digest !== digest : await tx.submissionByRequest(conversationId, id))
+    throw new Error("Request ID does not match its original action.");
+  return () => {
+    if (!previous) doc.requests.push({ id, digest });
+  };
+}
 export function imageRequestDigest(input: {
   text: string;
   images: readonly string[];

@@ -11,7 +11,11 @@ import { MemoryStorage } from "@earendil-works/pi-durable/storage/memory";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createCodingTools } from "@earendil-works/pi-durable/tools";
 import { createAttachmentBackend, type ImageAdmission } from "../src/server/attachment-routes.ts";
-import { checkImageRequest, createPendingImageCatalog } from "../src/server/attachment-catalog.ts";
+import {
+  checkAdmissionRequest,
+  checkImageRequest,
+  createPendingImageCatalog,
+} from "../src/server/attachment-catalog.ts";
 import { createAttachmentService } from "../src/server/attachments.ts";
 import { CatalogDoc } from "../src/server/chats.ts";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
@@ -145,6 +149,42 @@ async function setup() {
 }
 
 describe("attachment HTTP and durable catalog", () => {
+  it("detects cross-kind request-ID collisions before SDK admission and rejects unverifiable legacy IDs", async () => {
+    const t = await setup();
+    try {
+      const id = crypto.randomUUID();
+      const draft = { type: "input" as const, content: "text", requestId: id };
+      const admit = (fingerprint: string) =>
+        t.harness.commit(async (tx) => {
+          const record = await checkAdmissionRequest(tx, t.conversation.id, id, fingerprint);
+          const submission = await t.conversation.submit(tx, draft);
+          record();
+          return submission;
+        }, BACKGROUND_CONTEXT);
+      const first = await admit("text-input");
+      await vi.waitFor(() => expect(t.provider.calls).toHaveLength(1));
+      expect(await admit("text-input")).toBe(first);
+      await expect(admit("image-input")).rejects.toThrow();
+      await expect(admit("control-reset")).rejects.toThrow();
+      t.provider.calls[0]!.finish("done");
+      await t.conversation.waitForIdle(BACKGROUND_CONTEXT);
+      const legacy = crypto.randomUUID();
+      await t.conversation.submit(
+        { type: "input", content: "legacy", requestId: legacy },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(t.provider.calls).toHaveLength(2));
+      await expect(
+        t.harness.commit(async (tx) => {
+          await checkAdmissionRequest(tx, t.conversation.id, legacy, "image-input");
+        }, BACKGROUND_CONTEXT),
+      ).rejects.toThrow();
+      t.provider.calls[1]!.finish("done");
+      await t.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await t.close();
+    }
+  });
   it("reopens pending SDK document bindings and original files from temporary SQLite storage", async () => {
     const root = await mkdtemp(join(tmpdir(), "cpd-attachment-reopen-"));
     roots.push(root);
