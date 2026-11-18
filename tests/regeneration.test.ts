@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -28,6 +28,7 @@ import {
   imageRequestDigest,
 } from "../src/server/attachment-catalog.ts";
 import type { Conversation } from "@earendil-works/pi-durable";
+import { openChat } from "../src/server/chat.ts";
 
 it("forks before a final answer, admits once, and recovers without replay", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cpd-regen-"));
@@ -569,6 +570,48 @@ describe("regeneration durable identity and recovery", () => {
     },
   );
 
+  it.each(["edit-first", "regeneration-first"])(
+    "rejects actual edit/regeneration identity collisions: %s",
+    async (order) => {
+      const request = input();
+      const chats = await openChats(harness, root, {}, provider.models);
+      const app = createApp({
+        conversation: root,
+        chats,
+        withdraw: (id) => harness.abortSubmission(id, BACKGROUND_CONTEXT, root.id),
+      });
+      const entries = await root.entries({}, 20, undefined, BACKGROUND_CONTEXT);
+      const user = entries.items.find((item) => item.kind === "pi.user")!;
+      const base = `http://localhost:3000/api/chats/${root.id}`;
+      const post = (path: string, payload: unknown) =>
+        app.request(`${base}/${path}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+      const edit = () =>
+        post("edit-branch", {
+          sourceId: String(root.id),
+          entryId: String(user.id),
+          text: "Edited",
+          requestId: request.requestId,
+        });
+      const regen = () => post("regenerate", request);
+      if (order === "edit-first") {
+        expect((await edit()).status).toBe(202);
+        expect((await regen()).status).toBe(409);
+      } else {
+        expect((await regen()).status).toBe(202);
+        expect((await edit()).status).toBe(409);
+      }
+      expect((await chats.list()).chats).toHaveLength(2);
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.finish("Answer");
+      await harness.waitForIdle(BACKGROUND_CONTEXT);
+      expect(provider.calls).toHaveLength(1);
+    },
+  );
+
   it("linearizes concurrent configuration and admission without bypassing the guard", async () => {
     const request = input();
     const service = createRegeneration(harness, hooks);
@@ -668,3 +711,96 @@ describe("regeneration durable identity and recovery", () => {
     await harness.waitForIdle(BACKGROUND_CONTEXT);
   });
 });
+
+it.each(["image-first", "regeneration-first"])(
+  "rejects actual image/regeneration request-ID collisions: %s",
+  async (order) => {
+    const directory = await mkdtemp(join(tmpdir(), "cpd-regen-images-"));
+    const provider = testModels();
+    const getAvailable = provider.models.getAvailable.bind(provider.models);
+    vi.spyOn(provider.models, "getAvailable").mockImplementation(async (...args) =>
+      (await getAvailable(...args)).map((model) =>
+        model.id === MODEL_ID ? { ...model, input: ["text", "image"] } : model,
+      ),
+    );
+    const chat = await openChat(directory, provider.models, directory);
+    try {
+      const conversation = chat.conversation;
+      await conversation.commit(
+        (tx) =>
+          tx.appendEntry(UserEntry, conversation.id, {
+            model: [{ role: "user", content: "Question", timestamp: 0 }],
+          }),
+        BACKGROUND_CONTEXT,
+      );
+      const answer = await conversation.commit(
+        (tx) =>
+          tx.appendEntry(AssistantEntry, conversation.id, {
+            model: [
+              {
+                role: "assistant",
+                content: [{ type: "text", text: "Answer" }],
+                api: "openai-completions",
+                provider: PROVIDER_ID,
+                model: MODEL_ID,
+                stopReason: "stop",
+                timestamp: 0,
+                usage: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  totalTokens: 0,
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+                },
+              },
+            ],
+          }),
+        BACKGROUND_CONTEXT,
+      );
+      const app = createApp(chat);
+      const base = `http://localhost:3000/api/chats/${conversation.id}`;
+      const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
+      const upload = await app.request(`${base}/attachments`, {
+        method: "POST",
+        headers: { "Content-Type": "image/png" },
+        body: Uint8Array.from(png),
+      });
+      expect(upload.status).toBe(201);
+      const ref = (await upload.json()) as { id: string };
+      const requestId = crypto.randomUUID();
+      const post = (suffix: string, body: unknown) =>
+        app.request(`${base}/${suffix}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const image = () => post("input", { requestId, text: "Image", images: [ref.id] });
+      const regenerate = () =>
+        post("regenerate", {
+          sourceId: String(conversation.id),
+          entryId: String(answer.id),
+          requestId,
+        });
+      if (order === "image-first") {
+        expect((await image()).status).toBe(202);
+        expect((await regenerate()).status).toBe(409);
+        expect((await chat.chats.list()).chats).toHaveLength(1);
+      } else {
+        expect((await regenerate()).status).toBe(202);
+        expect((await image()).status).toBe(409);
+        expect((await chat.chats.list()).chats).toHaveLength(2);
+      }
+      await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+      provider.calls[0]!.finish("Completed");
+      await vi.waitFor(async () =>
+        expect((await chat.chats.list()).chats.every((item) => !item.running)).toBe(true),
+      );
+      expect(provider.calls).toHaveLength(1);
+    } finally {
+      await chat.close();
+      await rm(directory, { recursive: true, force: true });
+      vi.restoreAllMocks();
+    }
+  },
+);

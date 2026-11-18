@@ -12,6 +12,7 @@ export default defineConfig({
     "theme.spec.ts",
     "codemode.spec.ts",
     "history-operations.spec.ts",
+    "edit-branch.spec.ts",
     "questions.spec.ts",
     "regeneration.spec.ts",
   ],

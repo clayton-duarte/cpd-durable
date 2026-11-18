@@ -1,5 +1,6 @@
 import { defineDoc, type Tx } from "@earendil-works/pi-durable";
 import { CatalogDoc } from "./chats.ts";
+import { BranchOperationsDoc } from "./branch-operations.ts";
 
 // This is only one half of the integration: create/fork/edit must consult the
 // same document before their own writes, or reverse-direction collisions remain.
@@ -15,18 +16,24 @@ export class BranchIdentityError extends Error {}
 
 export async function assertBranchIdentityAvailable(tx: Tx, id: string) {
   const identities = await tx.doc(BranchIdentityDoc);
-  if (identities.requests.some((item) => item.id === id))
+  const edits = await tx.doc(BranchOperationsDoc);
+  if (
+    identities.requests.some((item) => item.id === id) ||
+    edits.edits.some((item) => item.requestId === id)
+  )
     throw new BranchIdentityError("Branch request identity already in use.");
 }
 
 export async function reserveBranchIdentity(tx: Tx, id: string, action: string) {
   const catalog = await tx.doc(CatalogDoc);
   const identities = await tx.doc(BranchIdentityDoc);
+  const edits = await tx.doc(BranchOperationsDoc);
   if (
     catalog.requests?.some((item) => item.requestId === id) ||
     catalog.items.some((item) => item.requestId === id) ||
     catalog.forks?.some((item) => item.requestId === id) ||
-    identities.requests.some((item) => item.id === id)
+    identities.requests.some((item) => item.id === id) ||
+    edits.edits.some((item) => item.requestId === id)
   )
     throw new BranchIdentityError("Branch request identity already in use.");
   return () => identities.requests.push({ id, action });
