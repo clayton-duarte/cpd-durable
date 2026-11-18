@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   useExternalMessageConverter,
@@ -11,7 +11,7 @@ import {
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import type { SendMode } from "../shared/chat.ts";
-import { assistantMessages } from "./assistant-messages.ts";
+import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
 import { ChatHostContext, type ChatProps } from "./chat-host.ts";
 export type { ChatProps } from "./chat-host.ts";
@@ -23,9 +23,26 @@ const interruptionUI = {
   name: "interruption",
   render: () => <AgentStatus state="waiting" label="Response interrupted." />,
 };
+const omittedLabels = {
+  reasoning: "Reasoning content is not shown in this text-only chat.",
+  tool: "Tool content is not shown in this text-only chat.",
+  image: "Image content is not shown in this text-only chat.",
+  other: "Unsupported content is not shown in this text-only chat.",
+};
+const omittedUI = {
+  name: "omitted",
+  render: ({ data }: { data: { kind: keyof typeof omittedLabels } }) => (
+    <AgentStatus
+      state="waiting"
+      label={omittedLabels[data.kind]}
+      title={omittedLabels[data.kind]}
+    />
+  ),
+};
 
 function OfficialThread() {
   useAssistantDataUI(interruptionUI);
+  useAssistantDataUI(omittedUI);
   return <Thread components={threadComponents} autoFocus={false} />;
 }
 
@@ -33,12 +50,20 @@ function OfficialThread() {
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  const projected = useMemo(() => assistantMessages(props.state), [props.state]);
+  const committedProjection = useRef<AssistantProjection | undefined>(undefined);
+  const projection = useMemo(
+    () => projectAssistantMessages(props.state, committedProjection.current),
+    [props.state],
+  );
+  // Only committed React renders advance the identity cache.
+  useLayoutEffect(() => {
+    committedProjection.current = projection;
+  }, [projection]);
   const messages = useExternalMessageConverter({
-    messages: projected,
+    messages: projection.messages,
     callback: convertMessage,
     joinStrategy: "none",
-    isRunning: props.state?.busy ?? false,
+    isRunning: projection.streaming,
   });
   const available =
     !!props.onSend &&

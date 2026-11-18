@@ -6,6 +6,8 @@ const controls = { canContinue: false, resetPending: false, queue: [] };
 async function connect(page: Page, state: ChatState = { ...empty, controls }) {
   await page.addInitScript((initial) => {
     class TestEventSource extends EventTarget {
+      onerror: (() => void) | null = null;
+      disconnect = () => this.onerror?.();
       update = (event: Event) => {
         if (event instanceof CustomEvent)
           this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(event.detail) }));
@@ -13,12 +15,14 @@ async function connect(page: Page, state: ChatState = { ...empty, controls }) {
       constructor() {
         super();
         window.addEventListener("synthetic-chat-state", this.update);
+        window.addEventListener("synthetic-chat-disconnect", this.disconnect);
         queueMicrotask(() =>
           this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(initial) })),
         );
       }
       close() {
         window.removeEventListener("synthetic-chat-state", this.update);
+        window.removeEventListener("synthetic-chat-disconnect", this.disconnect);
       }
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource });
@@ -133,14 +137,15 @@ test("reset keyboard focus, Escape and field Enter preserve the unsent draft", a
     return route.abort();
   });
   await page.goto("/");
-  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  // The modal correctly removes the background composer from the accessibility tree.
+  const draft = page.locator('textarea[aria-label="Message input"]');
   await draft.fill("Keep this draft");
   await actions(page);
   await draft.pressSequentially("reset");
   await draft.press("Enter");
-  const form = page.getByRole("dialog", { name: "Reset model context", exact: true });
+  const form = page.getByRole("alertdialog", { name: "Reset model context?", exact: true });
   const handoff = form.getByRole("textbox", { name: "Handoff instructions (optional)" });
-  await expect(handoff).toBeFocused();
+  await expect(form.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
   await handoff.fill("Keep this handoff");
   await handoff.press("Enter");
   await expect(form).toBeVisible();
@@ -151,14 +156,13 @@ test("reset keyboard focus, Escape and field Enter preserve the unsent draft", a
   await expect(draft).toBeFocused();
   await expect(draft).toHaveValue("Keep this draft");
   await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
-  await expect(handoff).toHaveValue("Keep this handoff");
+  await expect(handoff).toHaveValue("Keep this handoff\n");
+  await handoff.focus();
   await handoff.press("Tab");
-  const confirm = form.getByRole("button", { name: "Reset model context", exact: true });
-  await expect(confirm).toBeFocused();
-  await confirm.press("Enter");
-  await expect(confirm).toHaveAttribute("aria-pressed", "true");
-  await form.getByRole("button", { name: "Send", exact: true }).focus();
-  await form.getByRole("button", { name: "Send", exact: true }).press("Enter");
+  await expect(form.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(form.getByRole("button", { name: "Reset context", exact: true })).toBeFocused();
+  await form.getByRole("button", { name: "Reset context", exact: true }).press("Enter");
   await expect(form).toHaveCount(0);
   expect(controlsSent).toHaveLength(1);
   expect(controlsSent[0]).toMatchObject({ type: "reset", handoff: "Keep this handoff" });
@@ -279,6 +283,8 @@ test("official ErrorState retries the original identity without consuming a newe
   await draft.fill("Original submission");
   await draft.press("Enter");
   await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await update(page, { ...empty, controls });
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
   await draft.fill("Newer unsent draft");
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "Retry", exact: true }).click();
@@ -398,7 +404,7 @@ test("native Stop retains the draft and does not advertise an unsafe request-ID 
   await expect(draft).toHaveValue("Keep this draft");
 });
 
-test("official ElicitationForm confirms reset, preserves drafts and retries the original payload", async ({
+test("compact AlertDialog confirms reset, preserves drafts and retries the original payload", async ({
   page,
 }) => {
   await connect(page);
@@ -412,18 +418,19 @@ test("official ElicitationForm confirms reset, preserves drafts and retries the 
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Keep this draft");
   await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
-  let form = page.getByRole("dialog", { name: "Reset model context", exact: true });
+  let form = page.getByRole("alertdialog", { name: "Reset model context?", exact: true });
   await expect(form).toContainText("Stored history is retained.");
-  await expect(form.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
-  await form.getByRole("button", { name: "Decline", exact: true }).click();
+  await expect(form.getByRole("button", { name: "Reset context", exact: true })).toBeEnabled();
+  await expect(form.getByRole("button")).toHaveCount(2);
+  await expect(form).not.toContainText("needs input");
+  await form.getByRole("button", { name: "Cancel", exact: true }).click();
   expect(requests).toHaveLength(0);
   await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
-  form = page.getByRole("dialog", { name: "Reset model context", exact: true });
+  form = page.getByRole("alertdialog", { name: "Reset model context?", exact: true });
   await form
     .getByRole("textbox", { name: "Handoff instructions (optional)", exact: true })
     .fill("Keep the approved direction");
-  await form.getByRole("button", { name: "Reset model context", exact: true }).click();
-  await form.getByRole("button", { name: "Send", exact: true }).click();
+  await form.getByRole("button", { name: "Reset context", exact: true }).click();
   await expect(form).toHaveCount(0);
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.getByRole("note")).toContainText("Context reset admitted.");
@@ -431,6 +438,61 @@ test("official ElicitationForm confirms reset, preserves drafts and retries the 
   expect(requests[0]).toEqual(requests[1]);
   expect(requests[0]).toMatchObject({ type: "reset", handoff: "Keep the approved direction" });
   await expect(draft).toHaveValue("Keep this draft");
+});
+
+test("reset dialog stays compact on mobile, traps focus and accepts an empty handoff", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await connect(page, { ...empty, busy: true, controls });
+  const requests: unknown[] = [];
+  await page.route("**/api/control", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "empty-handoff-reset" } });
+  });
+  await page.goto("/");
+  await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Reset model context?", exact: true });
+  const handoff = dialog.getByRole("textbox", { name: "Handoff instructions (optional)" });
+  const cancel = dialog.getByRole("button", { name: "Cancel", exact: true });
+  const confirm = dialog.getByRole("button", { name: "Reset context", exact: true });
+  await expect(dialog).toContainText(
+    "While busy, reset waits for a boundary; Stop does not cancel it.",
+  );
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(handoff).toBeFocused();
+  await handoff.fill("A long optional handoff.\n".repeat(100));
+  const bounds = await dialog.boundingBox();
+  expect(bounds).not.toBeNull();
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.y).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
+  expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(667);
+  await handoff.fill("");
+  await confirm.click();
+  await expect(dialog).toHaveCount(0);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ type: "reset", handoff: "" });
+});
+
+test("reset confirmation rechecks pending state before admitting an action", async ({ page }) => {
+  await connect(page);
+  const requests: unknown[] = [];
+  await page.route("**/api/control", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "must-not-reset" } });
+  });
+  await page.goto("/");
+  await (await actions(page)).getByRole("option", { name: /\/reset/ }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Reset model context?", exact: true });
+  await update(page, { ...empty, controls: { ...controls, resetPending: true } });
+  await expect(dialog.getByRole("button", { name: "Reset context", exact: true })).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  expect(requests).toEqual([]);
 });
 
 test("official messages render safe Markdown, code copy and native export", async ({ page }) => {
@@ -519,6 +581,199 @@ test("official runtime keeps separate messages and interrupted receipts through 
   await expect(page.getByLabel("Assistant is working", { exact: true })).toHaveCount(0);
 });
 
+function sourcedStream(): ChatState {
+  return {
+    ...empty,
+    controls,
+    conversationId: 1,
+    busy: true,
+    window: { entryIds: [1] },
+    messages: [
+      { id: "1:0", role: "user", text: "Request", interrupted: false, source: { entryId: 1 } },
+    ],
+    partial: "First chunk",
+    live: {
+      id: "generation:1:9:1",
+      taskId: 9,
+      afterEntryId: 1,
+      text: "First chunk",
+      parts: [{ id: "generation:1:9:1:0", type: "text", text: "First chunk" }],
+    },
+  };
+}
+
+for (const outcome of ["complete", "interrupted", "error"] as const) {
+  test(`source-backed ${outcome} keeps the same DOM row and part through reconnect`, async ({
+    page,
+  }) => {
+    const initial = sourcedStream();
+    await connect(page, initial);
+    await page.goto("/");
+    const row = page.locator('[data-slot="aui_assistant-message-root"]');
+    await expect(row).toHaveText("First chunk");
+    const key = await row.getAttribute("data-message-id");
+    await row.evaluate((element) => element.setAttribute("data-identity-probe", "original"));
+    await row
+      .locator(".aui-md")
+      .evaluate((element) => element.setAttribute("data-part-probe", "original"));
+    await update(page, {
+      ...initial,
+      partial: "Growing response",
+      live: {
+        ...initial.live!,
+        text: "Growing response",
+        parts: [{ id: "generation:1:9:1:0", type: "text", text: "Growing response" }],
+      },
+    });
+    await expect(row).toContainText("Growing response");
+    await expect(row).toHaveAttribute("data-message-id", key!);
+    await expect(row).toHaveAttribute("data-identity-probe", "original");
+    await page.evaluate(() => window.dispatchEvent(new Event("synthetic-chat-disconnect")));
+    await expect(page.getByText("Reconnecting…", { exact: true })).toBeVisible();
+    const done: ChatState = {
+      ...initial,
+      busy: false,
+      partial: "",
+      live: null,
+      window: { entryIds: [1, 2] },
+      messages: [
+        ...initial.messages,
+        {
+          id: "2:0",
+          role: "assistant",
+          text: "Corrected final answer",
+          interrupted: outcome === "interrupted",
+          outcome,
+          source: { entryId: 2, taskId: 9 },
+          parts: [{ id: "2:0:0", type: "text", text: "Corrected final answer" }],
+        },
+      ],
+    };
+    await update(page, done);
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("Corrected final answer");
+    await expect(row).toHaveAttribute("data-message-id", key!);
+    await expect(row).toHaveAttribute("data-durable-id", "2:0");
+    await expect(row).toHaveAttribute(
+      "data-message-status",
+      outcome === "complete" ? "complete" : "incomplete",
+    );
+    await expect(row).toHaveAttribute("data-identity-probe", "original");
+    await expect(row.locator(".aui-md")).toHaveAttribute("data-part-probe", "original");
+    await update(page, { ...done });
+    await expect(row).toHaveAttribute("data-identity-probe", "original");
+    await expect(page.getByLabel("Assistant is working", { exact: true })).toHaveCount(0);
+  });
+}
+
+test("ordered omission receipts preserve text boundaries and truthful failure outcomes", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    controls,
+    conversationId: 1,
+    live: null,
+    window: { entryIds: [1, 2, 3] },
+    messages: [
+      {
+        id: "1:0",
+        role: "assistant",
+        text: "PRIVATE_UNUSED_FALLBACK",
+        interrupted: false,
+        outcome: "error",
+        parts: [
+          { id: "1:0:0", type: "text", text: "Before" },
+          { id: "1:0:1", type: "omitted", kind: "other" },
+          { id: "1:0:2", type: "text", text: "After" },
+        ],
+      },
+      {
+        id: "2:0",
+        role: "assistant",
+        text: "Stopped output",
+        interrupted: true,
+        outcome: "interrupted",
+      },
+      {
+        id: "3:0",
+        role: "assistant",
+        text: "Limited output",
+        interrupted: false,
+        outcome: "length",
+      },
+    ],
+  });
+  await page.goto("/");
+  const rows = page.locator('[data-slot="aui_assistant-message-root"]');
+  await expect(rows).toHaveCount(3);
+  const first = rows.first();
+  await expect(
+    first.getByText("Unsupported content is not shown in this text-only chat.", { exact: true }),
+  ).toBeVisible();
+  await expect(first).toContainText("Response failed.");
+  const text = await first.innerText();
+  expect(text.indexOf("Before")).toBeLessThan(text.indexOf("Unsupported content"));
+  expect(text.indexOf("Unsupported content")).toBeLessThan(text.indexOf("After"));
+  await expect(page.getByText("Response interrupted.", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("PRIVATE_UNUSED_FALLBACK", { exact: true })).toHaveCount(0);
+  await expect(rows.nth(1)).toHaveAttribute("data-message-status", "incomplete");
+  await expect(rows.nth(2)).toHaveAttribute("data-message-status", "incomplete");
+  await expect(page.getByLabel("Assistant is working", { exact: true })).toHaveCount(0);
+});
+
+test("a busy run without a live message does not mark a settled answer as streaming", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    controls,
+    busy: true,
+    partial: "Stale legacy partial",
+    live: null,
+    messages: [
+      {
+        id: "1:0",
+        role: "assistant",
+        text: "Settled answer",
+        interrupted: false,
+        outcome: "complete",
+      },
+    ],
+  });
+  await page.goto("/");
+  const row = page.locator('[data-slot="aui_assistant-message-root"]');
+  await expect(row).toHaveCount(1);
+  await expect(row).toContainText("Settled answer");
+  await expect(row).toHaveAttribute("data-message-status", "complete");
+  await expect(page.getByText("Stale legacy partial", { exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Assistant is working", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Stop generating", exact: true })).toBeVisible();
+});
+
+test("invalid identity frames preserve history and draft, then recover without sending", async ({
+  page,
+}) => {
+  const initial: ChatState = {
+    ...empty,
+    controls,
+    messages: [{ id: "1:0", role: "assistant", text: "Retained history", interrupted: false }],
+  };
+  await connect(page, initial);
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Retained draft");
+  await update(page, { ...initial, messages: [initial.messages[0]!, initial.messages[0]!] });
+  await expect(page.getByRole("alert")).toContainText("Received an invalid conversation update.");
+  await expect(page.getByText("Retained history", { exact: true })).toHaveCount(1);
+  await expect(draft).toHaveValue("Retained draft");
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeDisabled();
+  await update(page, { ...initial });
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
+  await expect(draft).toHaveValue("Retained draft");
+});
+
 test("two official Threads keep their native drafts and action panels independent", async ({
   page,
   baseURL,
@@ -532,8 +787,9 @@ test("two official Threads keep their native drafts and action panels independen
     .getByRole("textbox", { name: "Message input", exact: true })
     .fill("Independent second draft");
   await (await actions(page, first)).getByRole("option", { name: /\/reset/ }).click();
-  await expect(second.getByRole("dialog")).toHaveCount(0);
-  await first.getByRole("button", { name: "Decline", exact: true }).click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(1);
+  await page.getByRole("alertdialog").getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(first.getByRole("textbox", { name: "Message input", exact: true })).toBeFocused();
   await first.getByRole("button", { name: "Send message", exact: true }).click();
   await expect(first.getByRole("textbox", { name: "Message input", exact: true })).toHaveValue("");
   await expect(second.getByRole("textbox", { name: "Message input", exact: true })).toHaveValue(

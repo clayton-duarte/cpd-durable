@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   useAui,
   unstable_useSlashCommandAdapter,
@@ -6,9 +6,19 @@ import {
 } from "@assistant-ui/react";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
-import { ElicitationForm } from "@/components/assistant-ui/elements/elicitation-form";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { MessageQueue } from "@/components/assistant-ui/elements/message-queue";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Textarea } from "@/components/ui/textarea";
 import { useChatHost } from "./chat-host.ts";
 
 // Host bindings only: the supplied elements own all visual presentation.
@@ -17,8 +27,9 @@ export function DurableControls() {
   const aui = useAui();
   const [resetOpen, setResetOpen] = useState(false);
   const [handoff, setHandoff] = useState("");
-  const [confirm, setConfirm] = useState("");
-  const formRef = useRef<HTMLDivElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  const resetInFlight = useRef(false);
   const busy = host.state?.busy ?? false;
   const queue = host.state?.controls?.queue ?? [];
   const locked = !host.available;
@@ -32,20 +43,8 @@ export function DurableControls() {
       : host.pending
         ? "Awaiting acknowledgement…"
         : busy
-          ? "Responding…"
+          ? "Working…"
           : null;
-
-  useEffect(() => {
-    if (resetOpen) formRef.current?.querySelector<HTMLInputElement>("input")?.focus();
-  }, [resetOpen]);
-
-  function closeReset() {
-    const input = formRef.current
-      ?.closest(".aui-thread-root")
-      ?.querySelector<HTMLTextAreaElement>("textarea");
-    setResetOpen(false);
-    input?.focus();
-  }
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
@@ -81,7 +80,10 @@ export function DurableControls() {
         description: "Confirm a fresh model context; stored history is retained",
         execute: () => {
           host.clearLocalError();
-          setConfirm("");
+          composerInputRef.current =
+            document.activeElement
+              ?.closest(".aui-thread-root")
+              ?.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message input"]') ?? null;
           setResetOpen(true);
         },
       });
@@ -168,62 +170,65 @@ export function DurableControls() {
             : {})}
         />
       )}
-      {resetOpen && (
-        <ElicitationForm
-          ref={formRef}
-          role="dialog"
-          aria-label="Reset model context"
-          server="Reset model context"
-          message="Stored history is retained. If busy, reset waits for a boundary; Stop does not withdraw it. Queued inputs may run in the new context. Optional handoff becomes a user message; reset alone does not request an answer."
-          fields={[
-            {
-              name: "handoff",
-              label: "Handoff instructions (optional)",
-              kind: "text",
-              value: handoff,
-            },
-            {
-              name: "confirm",
-              label: "Confirm context reset",
-              kind: "choice",
-              required: true,
-              value: confirm,
-              options: ["Reset model context"],
-            },
-          ]}
-          state="request"
-          inert={locked}
-          aria-busy={host.pending ?? false}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              closeReset();
-            }
-            // The supplied text field must not implicitly submit the parent composer.
-            if (event.key === "Enter" && event.target instanceof HTMLInputElement)
-              event.preventDefault();
-          }}
-          onFieldChange={(name, value) => {
-            if (name === "handoff") setHandoff(value.slice(0, 32_000));
-            else if (name === "confirm") setConfirm(value);
-          }}
-          onDecline={closeReset}
-          onAccept={() => {
-            if (
-              locked ||
-              host.state?.controls?.resetPending ||
-              confirm !== "Reset model context" ||
-              !host.onReset
-            )
-              return;
-            host.clearLocalError();
-            void host.onReset(handoff.trim()).then((admitted) => {
-              if (admitted) setHandoff("");
-              closeReset();
-            });
-          }}
-        />
-      )}
+      <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+        <AlertDialogContent
+          initialFocus={cancelRef}
+          finalFocus={composerInputRef}
+          className="max-h-[calc(100dvh-2rem)] overflow-y-auto"
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset model context?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Stored history is retained. Handoff becomes a user message; reset alone requests no
+              answer.
+              {busy && " While busy, reset waits for a boundary; Stop does not cancel it."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Textarea
+            aria-label="Handoff instructions (optional)"
+            placeholder="Handoff instructions (optional)"
+            rows={3}
+            className="max-h-40"
+            maxLength={32_000}
+            value={handoff}
+            disabled={host.pending ?? false}
+            onChange={(event) => setHandoff(event.currentTarget.value)}
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel ref={cancelRef} type="button">
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              type="button"
+              disabled={locked || host.state?.controls?.resetPending}
+              onClick={() => {
+                if (
+                  locked ||
+                  host.state?.controls?.resetPending ||
+                  resetInFlight.current ||
+                  !host.onReset
+                )
+                  return;
+                resetInFlight.current = true;
+                const submittedHandoff = handoff;
+                setResetOpen(false);
+                host.clearLocalError();
+                void host
+                  .onReset(submittedHandoff.trim())
+                  .then((admitted) => {
+                    if (admitted)
+                      setHandoff((current) => (current === submittedHandoff ? "" : current));
+                  })
+                  .finally(() => {
+                    resetInFlight.current = false;
+                  });
+              }}
+            >
+              Reset context
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

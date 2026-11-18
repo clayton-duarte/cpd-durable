@@ -42,7 +42,7 @@ The model is fixed to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native 
 
 The official assistant-ui Thread supplies the runtime composer, messages and actions. Native **Send** submits while idle. **Type `/` in the composer** for available commands: `/queue` sends the current draft after the response, `/steer` applies it at an eligible boundary, and `/continue` requests an answer from unresolved active context without sending the draft. For queue/steer, write the draft first, append the command and select it from the list; this is an action picker, not a `/command arguments` parser. Commands disappear when unavailable; reserved command text/prefixes are never silently sent as ordinary input. Queued inputs are visible below the composer with individual withdrawal buttons. Native **Stop** aborts foreground work and withdraws queued inputs.
 
-Select **`/reset`** to open confirmation and optional handoff input. Stored history remains; only active model context restarts. While busy, reset waits for a boundary. Stop does not withdraw a queued reset. Handoff text becomes a user message; reset alone does not request an answer. The idle Ready pill, nested ellipsis/palette and unavailable attachment/Refresh controls are omitted. See the [component mapping and semantics](docs/chat-components.md#2-composer-and-run-controls) for reuse and pending work.
+Select **`/reset`** for a compact confirmation dialog with optional multiline handoff and **Cancel / Reset context** actions. Stored history remains; only active model context restarts. While busy, reset waits for a boundary. Stop does not withdraw a queued reset. Handoff text becomes a user message; reset alone does not request an answer. The idle Ready pill, nested ellipsis/palette and unavailable attachment/Refresh controls are omitted. See the [component mapping and semantics](docs/chat-components.md#2-composer-and-run-controls) for reuse and pending work.
 
 ## Persistence and recovery
 
@@ -61,6 +61,8 @@ This repository is public; its package remains marked private to prevent acciden
 Provider credentials are server-only. Requests go to OpenCode Go and the selected model provider; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics. Consult [OpenCode Go's privacy settings](https://opencode.ai/docs/go/#privacy); access to DeepSeek may require the workspace to allow Global regions. The application does not change those settings.
 
 The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. Do not expose it through a LAN bind, tunnel, reverse proxy or public host without a separate access-control decision.
+
+Transcript projection preserves ordered text and safe omission receipts without exposing reasoning, tool or image payloads. Unambiguous live-to-entry handovers retain mounted row identity while keeping canonical durable IDs separate; cancellation, error and output limits differ. See [projection semantics and limits](docs/chat-components.md#transcript-identity-and-projection-batch-2).
 
 ## Checks
 

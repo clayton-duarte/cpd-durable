@@ -32,6 +32,10 @@ export function useChat() {
       try {
         setState(ChatStateSchema.parse(JSON.parse(event.data)));
         setConnected(true);
+        // Recover a rejected frame without erasing an uncertain operation's retry.
+        setError((current) =>
+          current === "Received an invalid conversation update." ? null : current,
+        );
       } catch {
         setConnected(false);
         setError("Received an invalid conversation update.");
