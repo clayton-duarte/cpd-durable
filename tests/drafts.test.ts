@@ -1,0 +1,99 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it } from "vite-plus/test";
+import { createApp } from "../src/server/app.ts";
+import { openChat } from "../src/server/chat.ts";
+import { testModels } from "./models.ts";
+
+describe("conversation draft service", () => {
+  it("accepts only pending images owned by the same chat", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "draft-images-"));
+    const provider = testModels();
+    const host = await openChat(dir, provider.models, dir);
+    try {
+      const app = createApp(host);
+      const main = String(host.conversation.id);
+      const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
+      const upload = await app.request(`http://localhost:3000/api/chats/${main}/attachments`, {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: png,
+      });
+      expect(upload.status).toBe(201);
+      const ref = (await upload.json()) as { id: string; mimeType: string; size: number };
+      const draft = {
+        expectedRevision: 0,
+        content: { text: "image", images: [{ ...ref, name: "synthetic.png" }] },
+      };
+      // Upload responses also contain preparation details; only the public reference fields are stored.
+      draft.content.images = [
+        { id: ref.id, mimeType: ref.mimeType, size: ref.size, name: "synthetic.png" },
+      ];
+      const put = (id: string) =>
+        app.request(`http://localhost:3000/api/chats/${id}/draft`, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(draft),
+        });
+      expect((await put(main)).status).toBe(200);
+      const other = await host.chats.create(crypto.randomUUID());
+      expect((await put(other.id)).status).toBe(409);
+      expect(provider.calls).toHaveLength(0);
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("persists literal drafts, enforces CAS and lifecycle without provider calls", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "draft-test-"));
+    const provider = testModels();
+    let host = await openChat(dir, provider.models, dir);
+    try {
+      let app = createApp(host);
+      const path = `http://localhost:3000/api/chats/${host.conversation.id}/draft`;
+      const get = () => app.request(path);
+      const put = (body: unknown) =>
+        app.request(path, {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      expect(await (await get()).json()).toEqual({
+        revision: 0,
+        content: { text: "", images: [] },
+      });
+      const draft = { expectedRevision: 0, content: { text: "  synthetic draft\n", images: [] } };
+      expect((await put(draft)).status).toBe(200);
+      expect((await put(draft)).status).toBe(409);
+      expect(
+        (
+          await put({
+            expectedRevision: 1,
+            content: {
+              text: "bad",
+              images: [{ id: crypto.randomUUID(), name: "x.png", mimeType: "image/png", size: 4 }],
+            },
+          })
+        ).status,
+      ).toBe(409);
+      expect(((await (await get()).json()) as { content: { text: string } }).content.text).toBe(
+        "  synthetic draft\n",
+      );
+      await host.close();
+      host = await openChat(dir, provider.models, dir);
+      app = createApp(host);
+      expect(((await (await get()).json()) as { revision: number }).revision).toBe(1);
+      await host.chats.change(String(host.conversation.id), "archive");
+      expect((await get()).status).toBe(200);
+      expect((await put({ ...draft, expectedRevision: 1 })).status).toBe(409);
+      await host.chats.change(String(host.conversation.id), "delete");
+      expect((await get()).status).toBe(404);
+      expect(provider.calls).toHaveLength(0);
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

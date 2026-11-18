@@ -18,6 +18,8 @@ import {
   HistoryLoadSchema,
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
+import { readDraft, saveDraft } from "./drafts.ts";
+import { DraftUpdateSchema } from "../shared/drafts.ts";
 import type { openChat } from "./chat.ts";
 import {
   ChatIdSchema,
@@ -245,6 +247,19 @@ export function createApp(
     c.set("history", history);
     await next();
     return;
+  });
+
+  routes.get("/draft", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    return c.json(await readDraft(c.get("scope")));
+  });
+  routes.put("/draft", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const input = DraftUpdateSchema.safeParse(await c.req.json<unknown>().catch(() => null));
+    if (!input.success) return c.json({ error: "Invalid draft." }, 400);
+    return c.json(await saveDraft(c.get("scope"), input.data));
   });
 
   routes.post("/input", async (c) => {
