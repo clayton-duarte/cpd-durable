@@ -25,6 +25,7 @@ import { AttachmentAccessError } from "./attachment-routes.ts";
 import { assertMainModelDecisionTx, type createModelPolicy } from "./model-policy.ts";
 import { inspectParentTangents, type TangentHooks } from "./tangents/index.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
+import { helperHasUnsettled } from "./helpers.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -60,6 +61,29 @@ export class ChatLifecycleError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+export async function assertInteractiveChat(tx: Tx, id: ConversationId, writable: boolean) {
+  const catalog = await tx.doc(CatalogDoc);
+  const item = catalog.items.find((entry) => entry.id === id && entry.status !== "deleted");
+  if (!item) throw new ChatLifecycleError("Chat not found.", 404);
+  const parent =
+    item.kind === "tangent"
+      ? catalog.items.find(
+          (entry) =>
+            entry.id === item.tangentParentId &&
+            entry.kind !== "tangent" &&
+            entry.status !== "deleted",
+        )
+      : undefined;
+  if (item.kind === "tangent" && !parent) throw new ChatLifecycleError("Chat not found.", 404);
+  if (
+    writable &&
+    (item.status === "archived" ||
+      parent?.status === "archived" ||
+      (item.kind === "tangent" && item.tangentLifecycle !== "open"))
+  )
+    throw new ChatLifecycleError("Chat is read-only.", 409);
 }
 
 /** Hooks are called inside the tangent operation's SDK transaction. */
@@ -133,7 +157,12 @@ export function createTangentCatalogHooks(options: {
 async function idle(tx: Tx, id: number) {
   const live = await tx.doc(LiveDoc, id as ConversationId);
   const inbox = await tx.doc(InboxDoc, id as ConversationId);
-  return live.run === undefined && !live.compactions?.length && inbox.items.length === 0;
+  return (
+    live.run === undefined &&
+    !live.compactions?.length &&
+    inbox.items.length === 0 &&
+    !(await helperHasUnsettled(tx, id as ConversationId))
+  );
 }
 async function empty(tx: Tx, item: CatalogItem) {
   return (

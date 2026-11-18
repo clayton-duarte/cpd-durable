@@ -7,7 +7,7 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
-import { createTangentCatalogHooks, modelKey, openChats } from "./chats.ts";
+import { assertInteractiveChat, createTangentCatalogHooks, modelKey, openChats } from "./chats.ts";
 import { createTangentRoutes } from "./tangent-routes.ts";
 import type { TangentHooks } from "./tangents/index.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
@@ -16,11 +16,15 @@ import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
 import { assertModelPolicyTx, createModelPolicy } from "./model-policy.ts";
+import { createWorkerTools, type WorkerToolDependencies } from "./worker-tools.ts";
+import { createWorkerRoutes } from "./worker-routes.ts";
+import { helperHasUnsettled } from "./helpers.ts";
 
 export type TangentPolicy = {
   resolveModel(): Promise<ResolvedTangentModel>;
   assertResolvedModel(tx: Tx, resolved: ResolvedTangentModel): Promise<void>;
 };
+export type WorkerHostFactory = (harness: () => Harness) => Omit<WorkerToolDependencies, "harness">;
 export async function openChat(
   dataDir: string,
   models: Models,
@@ -31,16 +35,40 @@ export async function openChat(
       tx: Tx,
       tangent: import("@earendil-works/pi-durable").ConversationId,
     ) => Promise<void>;
+    workers?: WorkerHostFactory;
   } = {},
 ) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
   let boundTangentHooks: TangentHooks | undefined;
-  const execution = createExecution(cwd, () => {
-    if (!boundTangentHooks) throw new Error("Tangent service unavailable.");
-    return boundTangentHooks;
-  });
   let harness: Awaited<ReturnType<typeof Harness.open>> | undefined;
+  const getHarness = () => {
+    if (!harness) throw new Error("Worker host is not ready.");
+    return harness;
+  };
+  let workerOptions: WorkerToolDependencies | undefined;
+  const getWorkers = () => {
+    if (!workerOptions) throw new Error("Worker service unavailable.");
+    return workerOptions;
+  };
+  const execution = createExecution(
+    cwd,
+    () => {
+      if (!boundTangentHooks) throw new Error("Tangent service unavailable.");
+      return boundTangentHooks;
+    },
+    createWorkerTools({
+      harness: getHarness,
+      policy: {
+        resolveModelForRole: (role, options) =>
+          getWorkers().policy.resolveModelForRole(role, options),
+        assertModelPolicy: (tx, resolved) => getWorkers().policy.assertModelPolicy(tx, resolved),
+        assertParentWritable: (tx, id) => getWorkers().policy.assertParentWritable(tx, id),
+        assertInteractiveParent: (tx, id) => getWorkers().policy.assertInteractiveParent(tx, id),
+      },
+      assertReadable: (tx, id) => getWorkers().assertReadable(tx, id),
+    }),
+  );
   try {
     harness = await Harness.open(
       storage,
@@ -73,6 +101,32 @@ export async function openChat(
     };
     const modelPolicy = createModelPolicy(harness, models);
     const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
+    const custom = options.workers?.(getHarness);
+    workerOptions = {
+      harness: getHarness,
+      policy: {
+        resolveModelForRole: (role, opts) =>
+          custom
+            ? custom.policy.resolveModelForRole(role, opts)
+            : modelPolicy.resolveModelForRole(role, opts),
+        assertModelPolicy: (tx, resolved) =>
+          custom
+            ? custom.policy.assertModelPolicy(tx, resolved)
+            : assertModelPolicyTx(tx, resolved),
+        async assertParentWritable(tx, id) {
+          await assertInteractiveChat(tx, id, true);
+          await custom?.policy.assertParentWritable(tx, id);
+        },
+        async assertInteractiveParent(tx, id) {
+          await assertInteractiveChat(tx, id, false);
+          await custom?.policy.assertInteractiveParent(tx, id);
+        },
+      },
+      async assertReadable(tx, id) {
+        await assertInteractiveChat(tx, id, false);
+        await custom?.assertReadable(tx, id);
+      },
+    };
     const policy = options.tangentPolicy?.(harness, models) ?? {
       resolveModel: () => modelPolicy.resolveModelForRole("tangent"),
       assertResolvedModel: assertModelPolicyTx,
@@ -85,12 +139,25 @@ export async function openChat(
         await policy.assertResolvedModel(tx, resolved);
       },
       cwd: (source) => workingDirectory(source ?? cwd),
-      ...(options.assertNoUnsettledTangent
-        ? { assertNoUnsettled: options.assertNoUnsettledTangent }
-        : {}),
+      async assertNoUnsettled(tx, tangent) {
+        if (await helperHasUnsettled(tx, tangent))
+          throw new Error("Tangent has unsettled workers.");
+        await options.assertNoUnsettledTangent?.(tx, tangent);
+      },
     });
     boundTangentHooks = tangentHooks;
     const tangents = { routes: createTangentRoutes(harness, tangentHooks, models) };
+    const workers = createWorkerRoutes({
+      harness,
+      resolve: async (id) => {
+        const scope = await chats.resolve(id);
+        return scope
+          ? { conversation: scope.conversation, policy: getWorkers().policy }
+          : undefined;
+      },
+      assertReadable: (tx, id) => getWorkers().assertReadable(tx, id),
+      modelName: (provider, id) => models.getModel(provider, id)?.name,
+    });
     const processor = await createNodePhotonImages();
     const attachments = createAttachmentBackend({
       harness,
@@ -127,6 +194,7 @@ export async function openChat(
       modelPolicy,
       attachments,
       tangents,
+      workers,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

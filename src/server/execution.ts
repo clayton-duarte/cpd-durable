@@ -9,6 +9,8 @@ import { createResourceExtension } from "./resources/index.ts";
 import { createSearchTools } from "./tools/search.ts";
 import { createQuestionExtension } from "./questions.ts";
 import { createTangentExtension, type TangentHooks } from "./tangents/index.ts";
+import { HelpersExtension } from "./helpers.ts";
+import type { createWorkerTools } from "./worker-tools.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -20,6 +22,7 @@ export function workingDirectory(path = "~"): string {
 export function createExecution(
   defaultCwd = workingDirectory(),
   tangentHooks?: () => TangentHooks,
+  workerTools?: ReturnType<typeof createWorkerTools>,
 ) {
   const registry = createRegistry();
   const codeMode = createCodeMode();
@@ -30,6 +33,8 @@ export function createExecution(
   registry.install(createResourceExtension());
   registry.install(createQuestionExtension());
   if (tangentHooks) registry.install(createTangentExtension(tangentHooks));
+  registry.install(HelpersExtension);
+  if (workerTools) registry.install(workerTools);
   registry.install(
     defineExtension({
       name: "cpd-context",

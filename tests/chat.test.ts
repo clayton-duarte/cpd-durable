@@ -204,6 +204,10 @@ describe("single durable chat", () => {
       "load_skill",
       "ask_user",
       "create_tangent",
+      "launch_worker",
+      "stop_worker",
+      "inspect_workers",
+      "collect_worker",
     ]);
     expect(agent.cwd).toBe(homedir());
   });
