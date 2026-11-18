@@ -91,6 +91,8 @@ The official assistant-ui Thread supplies the runtime composer, messages and act
 
 When the assistant needs structured input, its `ask_user` tool can show a question above the composer. Answer or decline it without consuming the chat draft; this is a request for information, not tool approval. A disconnect is not a decline. An unconfirmed answer can be retried with the same question identity, revision and values, or refreshed before choosing another response. See [question semantics and limits](docs/chat-components.md#structured-agent-questions).
 
+Select **`/prompts`** to view and explicitly save the current text draft to **Saved prompts—all chats**. This initial increment supports reading, literal preview and saving, not inserting, editing or deleting from the UI. It does not submit a message or save attachments. Saved text is private SDK session data, shared across chats on this single-user host, not a multiuser account boundary; it can contain secrets and is not automatically redacted. See [saved prompt limits](docs/chat-components.md#saved-prompts-initial-increment).
+
 Select **`/reset`** for a compact confirmation dialog with optional multiline handoff and **Cancel / Reset context** actions. Stored history remains; only active model context restarts. While busy, reset waits for a boundary. Stop does not withdraw a queued reset. Handoff text becomes a user message; reset alone does not request an answer. The idle Ready pill, nested ellipsis/palette and unavailable Refresh control are omitted. See the [component mapping and semantics](docs/chat-components.md#2-composer-and-run-controls) for reuse and pending work.
 
 ## Persistence and recovery

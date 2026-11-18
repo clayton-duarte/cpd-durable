@@ -15,14 +15,20 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
 import { useChatHost } from "./chat-host.ts";
+import { SavedPrompts } from "./saved-prompts.tsx";
 
 // Host bindings only: the supplied elements own all visual presentation.
 export function DurableControls() {
   const host = useChatHost();
   const [resetOpen, setResetOpen] = useState(false);
+  const [promptsOpen, setPromptsOpen] = useState(false);
   useEffect(() => {
-    if (host.active === false) setResetOpen(false);
+    if (host.active === false) {
+      setResetOpen(false);
+      setPromptsOpen(false);
+    }
   }, [host.active]);
   const [handoff, setHandoff] = useState("");
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
@@ -42,6 +48,11 @@ export function DurableControls() {
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
+    commands.push({
+      id: "prompts",
+      description: "Open saved prompts for all chats",
+      execute: () => setPromptsOpen(true),
+    });
     if (busy) {
       commands.push(
         {
@@ -91,6 +102,12 @@ export function DurableControls() {
 
   return (
     <>
+      <SavedPrompts open={promptsOpen && host.active !== false} onOpenChange={setPromptsOpen} />
+      {host.active !== false && !host.onSend && (
+        <Button variant="outline" onClick={() => setPromptsOpen(true)}>
+          View saved prompts
+        </Button>
+      )}
       {host.onSend && (
         <ComposerTriggerPopover
           char="/"

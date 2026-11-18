@@ -12,6 +12,7 @@ import { selection } from "./configuration.ts";
 import { createAttachmentBackend, AttachmentAccessError } from "./attachment-routes.ts";
 import { createPendingImageCatalog } from "./attachment-catalog.ts";
 import { openConfiguredMcp } from "./mcp/config.ts";
+import { createSavedPrompts } from "./saved-prompts.ts";
 
 export async function openChat(
   dataDir: string,
@@ -93,6 +94,7 @@ export async function openChat(
       conversation,
       chats,
       attachments,
+      savedPrompts: createSavedPrompts(harness),
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

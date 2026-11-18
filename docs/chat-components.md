@@ -84,12 +84,19 @@ Queries allow at most 256 Unicode code points and the inspector returns at most 
 | Continue                 | `/continue` selection                                         | Starts a run without adding user text or consuming the draft; not checkpoint Resume or Regenerate                                                                    |
 | Reset/handoff            | `/reset` → supplied shadcn AlertDialog and Textarea           | One explicit Reset context action, optional multiline handoff; initial focus is Cancel, modal focus is contained and Escape/Cancel restores the originating composer |
 | Attachments              | Supplied Attachment adapter, picker, paste and Image          | PNG/JPEG only; server checks image model support and retains originals, including removed drafts                                                                     |
+| Saved prompts            | `/prompts`, supplied CommandPalette and Dialog                | Initial read, literal preview and explicit draft save only; [limits](#saved-prompts-initial-increment)                                                               |
 
 Steering is requested at an eligible boundary, not an immediate interruption. Continue eligibility comes from idle active model context ending in user content/tool results, with no queued reset, not the recent transcript window. Continue/reset admissions use request IDs for safe retry; reset uses the SDK's public reset-entry shape.
 
 The input placeholder advertises `/`. Runtime `unstable_useSlashCommandAdapter` executes supplied callbacks on selection with `removeOnExecute: true`; selected command text is removed before the callback reads the remaining draft. Write a draft, then append `/queue` or `/steer` and select it, or insert a command before existing draft text. The picker supports native keyboard/ARIA behavior. It is not an argument parser. Availability follows committed host state; the host still validates admission. Raw reserved command names/prefixes are refused by native Send rather than becoming user messages after Escape or an eligibility change. Other slash text, such as paths not matching a reserved command prefix, remains ordinary input.
 
 MessageQueue keeps the registry design but accepts host placement wording and an optional running row: durable queues need not have a current user prompt, steering is not next-run input, and failure can hold queued input. No native assistant-ui queue is populated or drained. These small semantic adaptations do not introduce a new visual queue design.
+
+### Saved prompts initial increment
+
+The session-scoped SDK application document holds plain-text prompts for all chats in this single-user host session, not model memory or a transcript. The supplied CommandPalette and shadcn Dialog/Textarea allow choosing a literal preview and explicitly saving the current text draft with a title; a dedicated library dialog is not supplied by assistant-ui. Saving does not submit input, clear the draft or save attachments. Archived views can read via **View saved prompts**, but cannot save. Insertion, editing and deletion controls are not yet implemented; the protected API already exposes revision-checked update and delete.
+
+Records are capped at 1,000, text at 32 KiB UTF-8 and titles at 120 characters; pages contain at most 20 records. Operation receipts are retained without eviction up to 10,000 operations, after which further changes fail explicitly. Receipts retain prior prompt text, so deleting an application record is not physical erasure. Treat this SDK storage and backups as private: prompt text may contain secrets and is not automatically sanitized. No argument expansion, automatic model-context inclusion or draft persistence is provided.
 
 ## 3. Agent activity, tools and tasks
 

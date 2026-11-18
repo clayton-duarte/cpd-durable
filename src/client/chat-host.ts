@@ -43,6 +43,7 @@ type ChatHost = ChatProps & {
   localError: string | null;
   clearLocalError: () => void;
   submitDraft: (mode: SendMode) => Promise<boolean>;
+  readDraft: () => string;
 };
 
 export const ChatHostContext = createContext<ChatHost | null>(null);

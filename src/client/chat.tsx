@@ -34,7 +34,7 @@ import { parseDirectShell } from "../shared/direct-shell.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
-const durableCommandNames = ["queue", "steer", "continue", "reset"];
+const durableCommandNames = ["queue", "steer", "continue", "reset", "prompts"];
 // Adapt authoritative tool status only; the supplied ToolFallback owns presentation.
 function DurableToolFallback(props: ToolCallMessagePartProps) {
   const host = useChatHost();
@@ -452,6 +452,7 @@ export function Chat(props: ChatProps) {
     <ChatHostContext.Provider
       value={{
         ...props,
+        readDraft: () => runtimeRef.current?.thread.composer.getState().text ?? "",
         ...(props.onRetry
           ? {
               onRetry: async () => {
