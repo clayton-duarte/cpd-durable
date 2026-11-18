@@ -334,6 +334,27 @@ export function Chat(props: ChatProps) {
   const runtime = useExternalStoreRuntime({
     messages,
     onNew,
+    ...(props.onEdit
+      ? {
+          onEdit: async (message: AppendMessage) => {
+            const source = projection.messages.find((item) => item.id === message.sourceId);
+            const entryId = source?.metadata?.custom?.["sourceEntryId"];
+            if (
+              typeof entryId !== "number" ||
+              !Number.isSafeInteger(entryId) ||
+              message.role !== "user" ||
+              message.content.some((part) => part.type !== "text") ||
+              (message.attachments?.length ?? 0) !== 0
+            )
+              throw new Error("This message cannot be edited.");
+            const text = message.content
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("");
+            if (!text.trim() || text.length > 32_000) throw new Error("Enter a valid message.");
+            props.onEdit?.(entryId, text);
+          },
+        }
+      : {}),
     isRunning: props.state?.busy ?? false,
     isLoading: props.state === null,
     isDisabled: !props.onSend,
