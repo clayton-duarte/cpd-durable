@@ -39,11 +39,14 @@ type ThreadListOptions = {
   runningIds?: ReadonlySet<string>;
   createDisabled?: boolean;
   canManage?: boolean;
+  canRename?: boolean;
 };
 const ThreadListOptionsContext = createContext<ThreadListOptions>({});
 export const ThreadList: FC<ThreadListOptions> = (options) => {
   const [search, setSearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const hasThreads = useAuiState((s) => s.threads.threadIds.length > 0);
+  const hasArchived = useAuiState((s) => s.threads.archivedThreadIds.length > 0);
 
   return (
     <ThreadListOptionsContext.Provider value={options}>
@@ -51,6 +54,18 @@ export const ThreadList: FC<ThreadListOptions> = (options) => {
         <ThreadListNew disabled={options.createDisabled} />
         {hasThreads && <ThreadListSearch value={search} onValueChange={setSearch} />}
         <ThreadListItems searchQuery={hasThreads ? search : ""} />
+        {hasArchived && (
+          <>
+            <Button
+              variant="ghost"
+              aria-expanded={showArchived}
+              onClick={() => setShowArchived((value) => !value)}
+            >
+              Archived chats
+            </Button>
+            {showArchived && <ThreadListPrimitive.Items archived components={{ ThreadListItem }} />}
+          </>
+        )}
       </ThreadListRoot>
     </ThreadListOptionsContext.Provider>
   );
@@ -312,6 +327,7 @@ export const ThreadListItem: FC = () => {
   const runtimeRunning = useAuiState((s) => s.threadListItem.isRunning);
   const isRunning = options.runningIds ? options.runningIds.has(id) : runtimeRunning;
   const [isRenaming, setIsRenaming] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef(false);
 
@@ -323,6 +339,21 @@ export const ThreadListItem: FC = () => {
 
   return (
     <ThreadListItemPrimitive.Root
+      onContextMenu={(event) => {
+        if (options.canManage) {
+          event.preventDefault();
+          setMenuOpen(true);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (
+          options.canManage &&
+          (event.key === "ContextMenu" || (event.shiftKey && event.key === "F10"))
+        ) {
+          event.preventDefault();
+          setMenuOpen(true);
+        }
+      }}
       data-slot="aui_thread-list-item"
       className="group hover:bg-muted focus-visible:bg-muted data-active:bg-muted has-focus-visible:bg-muted has-data-[state=open]:bg-muted relative flex h-8 items-center rounded-md transition-colors focus-visible:outline-none"
     >
@@ -352,7 +383,13 @@ export const ThreadListItem: FC = () => {
           {isRunning && <span className="sr-only">Running</span>}
         </ThreadListItemPrimitive.Trigger>
       )}
-      {options.canManage && <ThreadListItemMore onRename={() => setIsRenaming(true)} />}
+      {options.canManage && (
+        <ThreadListItemMore
+          open={menuOpen}
+          onOpenChange={setMenuOpen}
+          onRename={() => setIsRenaming(true)}
+        />
+      )}
     </ThreadListItemPrimitive.Root>
   );
 };
@@ -422,9 +459,15 @@ const ThreadListItemRename: FC<{
   );
 };
 
-const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
+const ThreadListItemMore: FC<{
+  onRename: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}> = ({ onRename, open, onOpenChange }) => {
+  const options = useContext(ThreadListOptionsContext);
+  const archived = useAuiState((s) => s.threadListItem.status === "archived");
   return (
-    <ThreadListItemMorePrimitive.Root sharedFocusGroup>
+    <ThreadListItemMorePrimitive.Root sharedFocusGroup open={open} onOpenChange={onOpenChange}>
       <ThreadListItemMorePrimitive.Trigger
         render={
           <Button
@@ -445,25 +488,37 @@ const ThreadListItemMore: FC<{ onRename: () => void }> = ({ onRename }) => {
         data-slot="aui_thread-list-item-more-content"
         className="bg-popover text-popover-foreground data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:animate-out data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-50 min-w-32 overflow-hidden rounded-xl border p-1.5"
       >
-        <ThreadListItemMorePrimitive.Item
-          data-slot="aui_thread-list-item-more-item"
-          className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
-          onSelect={onRename}
-        >
-          <PencilIcon className="size-4" />
-          Rename
-        </ThreadListItemMorePrimitive.Item>
-        <ThreadListItemPrimitive.Archive
-          render={
-            <ThreadListItemMorePrimitive.Item
-              data-slot="aui_thread-list-item-more-item"
-              className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
-            />
-          }
-        >
-          <ArchiveIcon className="size-4" />
-          Archive
-        </ThreadListItemPrimitive.Archive>
+        {options.canRename && (
+          <ThreadListItemMorePrimitive.Item
+            data-slot="aui_thread-list-item-more-item"
+            className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
+            onSelect={onRename}
+          >
+            <PencilIcon className="size-4" />
+            Rename
+          </ThreadListItemMorePrimitive.Item>
+        )}
+        {archived ? (
+          <ThreadListItemPrimitive.Unarchive
+            render={
+              <ThreadListItemMorePrimitive.Item className="hover:bg-accent flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm" />
+            }
+          >
+            <ArchiveIcon className="size-4" /> Restore
+          </ThreadListItemPrimitive.Unarchive>
+        ) : (
+          <ThreadListItemPrimitive.Archive
+            render={
+              <ThreadListItemMorePrimitive.Item
+                data-slot="aui_thread-list-item-more-item"
+                className="hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm outline-none select-none"
+              />
+            }
+          >
+            <ArchiveIcon className="size-4" />
+            Archive
+          </ThreadListItemPrimitive.Archive>
+        )}
         <ThreadListItemPrimitive.Delete
           render={
             <ThreadListItemMorePrimitive.Item

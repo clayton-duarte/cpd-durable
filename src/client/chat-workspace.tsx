@@ -10,6 +10,17 @@ import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 import { ChatCatalogSchema, ChatSummarySchema, type ChatCatalog } from "../shared/chats.ts";
 import { ChatPage } from "./chat-page.tsx";
+import { ApiErrorSchema } from "../shared/chat.ts";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 
 export function ChatWorkspace() {
   return (
@@ -30,8 +41,18 @@ function Workspace() {
   const inFlight = useRef(false);
   const [reload, setReload] = useState(0);
   const [visited, setVisited] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [managing, setManaging] = useState(false);
+  const mutationVersion = useRef(0);
+  const managementInFlight = useRef(false);
+  const cancelDelete = useRef<HTMLButtonElement>(null);
   const selected = catalog?.chats.find((item) => item.id === chatId);
-  const mounted = selected && !visited.includes(selected.id) ? [...visited, selected.id] : visited;
+  const fallback =
+    catalog?.chats.find((item) => item.id === catalog.rootId && item.status === "regular") ??
+    catalog?.chats.find((item) => item.status === "regular");
+  const retained = visited.filter((id) => catalog?.chats.some((item) => item.id === id));
+  const mounted =
+    selected && !retained.includes(selected.id) ? [...retained, selected.id] : retained;
   useEffect(() => {
     if (selected)
       setVisited((current) =>
@@ -43,22 +64,13 @@ function Workspace() {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
+      const version = mutationVersion.current;
       try {
         const response = await fetch("/api/chats");
         if (!response.ok) throw new Error("Catalog unavailable");
         const next = ChatCatalogSchema.parse(await response.json());
-        if (active) {
-          // No delete API exists. An older list must not retire a chat whose
-          // creation was acknowledged while that read was in flight.
-          setCatalog((current) => ({
-            ...next,
-            chats: [
-              ...next.chats,
-              ...(current?.chats.filter(
-                (item) => !next.chats.some((entry) => entry.id === item.id),
-              ) ?? []),
-            ],
-          }));
+        if (active && version === mutationVersion.current) {
+          setCatalog(next);
           setError((current) => (current === "Chat list could not be refreshed." ? null : current));
         }
       } catch {
@@ -78,16 +90,22 @@ function Workspace() {
   }, [reload]);
 
   useEffect(() => {
-    if (!chatId && catalog) void navigate({ params: { chatId: catalog.rootId }, replace: true });
-  }, [chatId, catalog?.rootId, navigate]);
+    if (!chatId && catalog) {
+      const fallback =
+        catalog.chats.find((item) => item.id === catalog.rootId && item.status === "regular") ??
+        catalog.chats.find((item) => item.status === "regular");
+      if (fallback) void navigate({ params: { chatId: fallback.id }, replace: true });
+    }
+  }, [chatId, catalog, navigate]);
 
   function switchChat(id: string) {
     sidebar.setOpenMobile(false);
     void navigate({ params: { chatId: id } });
   }
   async function create() {
-    if (inFlight.current) return;
+    if (inFlight.current || managementInFlight.current) return;
     inFlight.current = true;
+    mutationVersion.current++;
     creation.current ??= crypto.randomUUID();
     setCreating(true);
     setError(null);
@@ -97,8 +115,12 @@ function Workspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requestId: creation.current }),
       });
-      if (!response.ok) throw new Error("Creation unavailable");
+      if (!response.ok) {
+        if (response.status < 500) creation.current = null;
+        throw new Error("Creation unavailable");
+      }
       const created = ChatSummarySchema.parse(await response.json());
+      mutationVersion.current++;
       setCatalog((current) =>
         current
           ? {
@@ -117,6 +139,43 @@ function Workspace() {
       setCreating(false);
     }
   }
+  async function manage(id: string, action: "archive" | "unarchive" | "delete") {
+    if (managementInFlight.current || inFlight.current) return;
+    managementInFlight.current = true;
+    mutationVersion.current++;
+    setManaging(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/chats/${id}/manage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!response.ok) {
+        const failure = ApiErrorSchema.parse(await response.json());
+        throw new Error(failure.error);
+      }
+      const next = ChatCatalogSchema.parse(await response.json());
+      mutationVersion.current++;
+      setCatalog(next);
+      setDeleting(null);
+      setReload((value) => value + 1);
+      if (chatId === id && action !== "unarchive") {
+        const fallback = next.chats.find((item) => item.status === "regular");
+        sidebar.setOpenMobile(false);
+        void navigate({ params: { chatId: fallback?.id }, replace: true });
+      }
+    } catch (error) {
+      setError(
+        error instanceof Error
+          ? error.message
+          : "Chat action could not be confirmed. Refresh the list before retrying.",
+      );
+    } finally {
+      managementInFlight.current = false;
+      setManaging(false);
+    }
+  }
   // This runtime presents navigation metadata only. Each Chat below retains its
   // own immutable runtime; pi-durable alone owns execution and transcripts.
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -126,11 +185,21 @@ function Workspace() {
     adapters: {
       threadList: {
         threadId: chatId ?? "workspace",
-        threads: (catalog?.chats ?? []).map((item) => ({
-          id: item.id,
-          title: item.title,
-          status: "regular" as const,
-        })),
+        threads: (catalog?.chats ?? [])
+          .filter((item) => item.status === "regular")
+          .map((item) => ({
+            id: item.id,
+            title: item.title,
+            status: "regular" as const,
+          })),
+        archivedThreads: (catalog?.chats ?? [])
+          .filter((item) => item.status === "archived")
+          .map((item) => ({ id: item.id, title: item.title, status: "archived" as const })),
+        onArchive: (id) => manage(id, "archive"),
+        onUnarchive: (id) => manage(id, "unarchive"),
+        onDelete: async (id) => {
+          setDeleting(id);
+        },
         isLoading: !catalog,
         onSwitchToNewThread: create,
         onSwitchToThread: switchChat,
@@ -142,7 +211,8 @@ function Workspace() {
       <ThreadListSidebar
         collapsible="offcanvas"
         threadList={{
-          createDisabled: creating || !catalog,
+          createDisabled: creating || managing || !catalog,
+          canManage: true,
           runningIds: new Set(catalog?.chats.filter((item) => item.running).map((item) => item.id)),
         }}
       />
@@ -170,8 +240,17 @@ function Workspace() {
             title="Chat not found"
             retrying={false}
             detail="This chat is not available in this session."
-            actionLabel="Open original chat"
-            onRetry={() => switchChat(catalog.rootId)}
+            actionLabel={
+              fallback
+                ? fallback.id === catalog.rootId
+                  ? "Open original chat"
+                  : "Open another chat"
+                : "New chat"
+            }
+            onRetry={() => {
+              if (fallback) switchChat(fallback.id);
+              else void create();
+            }}
           />
         )}
         {mounted.map((id) => (
@@ -181,10 +260,55 @@ function Workspace() {
             className="min-h-0 flex-1"
             style={{ display: id === selected?.id ? "flex" : "none", flexDirection: "column" }}
           >
-            <ChatPage chatId={id} active={id === selected?.id} />
+            <ChatPage
+              chatId={id}
+              active={id === selected?.id}
+              readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
+            />
           </div>
         ))}
       </SidebarInset>
+      <AlertDialog
+        open={deleting !== null}
+        onOpenChange={(open) => {
+          if (!open && !managing) setDeleting(null);
+        }}
+      >
+        <AlertDialogContent initialFocus={cancelDelete}>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Permanently remove “{catalog?.chats.find((item) => item.id === deleting)?.title}” from
+              this app and discard its unsent draft. This cannot be undone here. Underlying
+              pi-durable records remain in storage; this does not erase them.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {error && (
+            <ErrorState
+              title="Delete not confirmed"
+              detail={error}
+              retrying={managing}
+              onRetry={() => {
+                if (deleting) void manage(deleting, "delete");
+              }}
+            />
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel ref={cancelDelete} disabled={managing}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={managing}
+              onClick={(event) => {
+                event.preventDefault();
+                if (deleting) void manage(deleting, "delete");
+              }}
+            >
+              Delete chat
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AssistantRuntimeProvider>
   );
 }

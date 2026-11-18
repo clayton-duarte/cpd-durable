@@ -2,7 +2,15 @@ import { Chat } from "./chat.tsx";
 import { useChat } from "./use-chat.ts";
 import { MODEL_ID } from "../shared/chat.ts";
 
-export function ChatPage({ chatId, active = true }: { chatId?: string; active?: boolean }) {
+export function ChatPage({
+  chatId,
+  active = true,
+  readOnly = false,
+}: {
+  chatId?: string;
+  active?: boolean;
+  readOnly?: boolean;
+}) {
   const chat = useChat(chatId, active);
   return (
     <main className="h-full min-h-0">
@@ -19,11 +27,15 @@ export function ChatPage({ chatId, active = true }: { chatId?: string; active?: 
         uncertain={chat.uncertain}
         notice={chat.notice}
         onRetry={chat.retryRequest}
-        onSend={chat.send}
-        onStop={chat.stop}
-        onContinue={chat.continueRun}
-        onReset={chat.reset}
-        onWithdraw={chat.withdraw}
+        {...(readOnly
+          ? {}
+          : {
+              onSend: chat.send,
+              onStop: chat.stop,
+              onContinue: chat.continueRun,
+              onReset: chat.reset,
+              onWithdraw: chat.withdraw,
+            })}
         historyLoading={chat.historyLoading}
         historyError={chat.historyError}
         historyGap={chat.historyGap}
