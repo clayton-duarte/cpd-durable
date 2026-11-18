@@ -7,6 +7,9 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import type { JsonRepresentation } from "@earendil-works/chord/json";
+import { assertInteractiveChat, CatalogDoc, ChatLifecycleError } from "./chats.ts";
+import { BackgroundHelperTask, ForegroundHelperTask, HelpersDoc } from "./helpers.ts";
+import { TangentsDoc } from "./tangents/index.ts";
 import {
   HandoffActionSchema,
   HandoffRecordSchema,
@@ -28,8 +31,68 @@ export type HandoffAction = "read" | "record" | "collect" | "review";
 /** Required host hooks validate catalog lifecycle and real tangent/worker ownership on the SDK line. */
 export type HandoffGuards = {
   assertAccess(tx: Tx, actor: ConversationId, action: HandoffAction): Promise<void>;
-  assertRelationship(tx: Tx, parent: ConversationId, child: ConversationId): Promise<void>;
+  assertRelationship(
+    tx: Tx,
+    parent: ConversationId,
+    child: ConversationId,
+    action: HandoffAction,
+  ): Promise<void>;
 };
+
+/** Catalog, tangent metadata, task and ownership checks share the caller's transaction. */
+export function createHandoffGuards(): HandoffGuards {
+  return {
+    async assertAccess(tx, actor, action) {
+      const conversation = await tx.conversation(actor);
+      if (!conversation) throw new ChatLifecycleError("Conversation not found.", 404);
+      await assertInteractiveChat(
+        tx,
+        conversation.owner?.conversationId ?? actor,
+        action !== "read",
+      );
+    },
+    async assertRelationship(tx, parent, child, action) {
+      await assertInteractiveChat(tx, parent, action !== "read");
+      const conversation = await tx.conversation(child);
+      if (!conversation) throw new ChatLifecycleError("Conversation not found.", 404);
+      if (conversation.owner) {
+        const task = await tx.task(conversation.owner.taskId);
+        const worker = (await tx.doc(HelpersDoc, parent)).items.find(
+          (item) => item.childId === child && item.taskId === conversation.owner?.taskId,
+        );
+        if (
+          !worker ||
+          conversation.owner.conversationId !== parent ||
+          !task ||
+          task.conversationId !== parent ||
+          task.owner !== undefined ||
+          ![ForegroundHelperTask.definition.name, BackgroundHelperTask.definition.name].includes(
+            task.kind,
+          )
+        )
+          throw new ChatLifecycleError("Handoff relationship not found.", 404);
+        return;
+      }
+      const tangent = (await tx.doc(TangentsDoc)).tangents.find(
+        (item) => item.id === child && item.parentId === parent,
+      );
+      const catalog = (await tx.doc(CatalogDoc)).items.find(
+        (item) => item.id === child && item.kind === "tangent" && item.tangentParentId === parent,
+      );
+      if (!tangent || !catalog)
+        throw new ChatLifecycleError("Handoff relationship not found.", 404);
+      await assertInteractiveChat(tx, child, action !== "read");
+    },
+  };
+}
+
+export async function handoffParent(tx: Tx, child: ConversationId): Promise<ConversationId> {
+  const record = await tx.conversation(child);
+  if (record?.owner) return record.owner.conversationId;
+  const tangent = (await tx.doc(TangentsDoc)).tangents.find((item) => item.id === child);
+  if (!tangent) throw new ChatLifecycleError("Handoff relationship not found.", 404);
+  return tangent.parentId as ConversationId;
+}
 type Driver = Pick<Harness, "commit">;
 const detach = (record: unknown) => HandoffRecordSchema.parse(record);
 
@@ -48,7 +111,7 @@ export function createHandoffService(
     )
       throw new Error("Handoff relationship unavailable");
     await guards.assertAccess(tx, actor.id, action);
-    await guards.assertRelationship(tx, parent as ConversationId, child as ConversationId);
+    await guards.assertRelationship(tx, parent as ConversationId, child as ConversationId, action);
   }
   return {
     async list(parentId: number, childId: number, assignmentId: string) {

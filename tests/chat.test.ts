@@ -208,6 +208,13 @@ describe("single durable chat", () => {
       "stop_worker",
       "inspect_workers",
       "collect_worker",
+      "delegate_handoff",
+      "update_handoff",
+      "escalate_handoff",
+      "report_handoff",
+      "inspect_handoffs",
+      "collect_handoff",
+      "review_handoff",
     ]);
     expect(agent.cwd).toBe(homedir());
   });

@@ -19,6 +19,8 @@ import { assertModelPolicyTx, createModelPolicy } from "./model-policy.ts";
 import { createWorkerTools, type WorkerToolDependencies } from "./worker-tools.ts";
 import { createWorkerRoutes } from "./worker-routes.ts";
 import { helperHasUnsettled } from "./helpers.ts";
+import { createHandoffRoutes } from "./handoff-routes.ts";
+import { createHandoffGuards } from "./handoffs.ts";
 
 export type TangentPolicy = {
   resolveModel(): Promise<ResolvedTangentModel>;
@@ -101,6 +103,11 @@ export async function openChat(
     };
     const modelPolicy = createModelPolicy(harness, models);
     const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
+    const handoffs = createHandoffRoutes({
+      harness,
+      guards: createHandoffGuards(),
+      resolve: async (id) => (await chats.resolve(id))?.conversation,
+    });
     const custom = options.workers?.(getHarness);
     workerOptions = {
       harness: getHarness,
@@ -195,6 +202,7 @@ export async function openChat(
       attachments,
       tangents,
       workers,
+      handoffs,
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

@@ -11,6 +11,8 @@ import { createQuestionExtension } from "./questions.ts";
 import { createTangentExtension, type TangentHooks } from "./tangents/index.ts";
 import { HelpersExtension } from "./helpers.ts";
 import type { createWorkerTools } from "./worker-tools.ts";
+import { createHandoffTools } from "./handoff-tools.ts";
+import { createHandoffGuards } from "./handoffs.ts";
 
 export function workingDirectory(path = "~"): string {
   return resolve(
@@ -35,6 +37,7 @@ export function createExecution(
   if (tangentHooks) registry.install(createTangentExtension(tangentHooks));
   registry.install(HelpersExtension);
   if (workerTools) registry.install(workerTools);
+  registry.install(createHandoffTools(createHandoffGuards()));
   registry.install(
     defineExtension({
       name: "cpd-context",
