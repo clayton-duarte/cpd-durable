@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
-import { CatalogDoc } from "../src/server/chats.ts";
+import { CatalogDoc, openChats } from "../src/server/chats.ts";
 import {
   BranchOperationError,
   createBranchOperations,
@@ -222,6 +222,45 @@ describe("durable edit branch foundation", () => {
     expect(provider.calls).toHaveLength(1);
     expect(await operations.recent(root.id, target)).toEqual({
       operations: [{ ...accepted, requestId: input.requestId }],
+    });
+  });
+
+  it("recovers a prepared operation through production HTTP after SDK reopen without duplicate admission", async () => {
+    const target = await append("Original");
+    const input = request(target);
+    const prepared = await createBranchOperations(harness, hooks).prepareEdit(input);
+    await harness.close(BACKGROUND_CONTEXT);
+    await open();
+    const chats = await openChats(harness, root, {}, provider.models);
+    const app = createApp({
+      conversation: root,
+      chats,
+      withdraw: (id) => harness.abortSubmission(id, BACKGROUND_CONTEXT, root.id),
+    });
+    const base = `http://localhost:3000/api/chats/${root.id}`;
+    const get = () => app.request(`${base}/edit-operations/${target}`);
+    expect(await (await get()).json()).toEqual({
+      operations: [{ ...prepared, requestId: input.requestId }],
+    });
+    expect(provider.calls).toHaveLength(0);
+    const post = (text: string) =>
+      app.request(`${base}/edit-branch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...input, text }),
+      });
+    expect((await post("Wrong replacement")).status).toBe(409);
+    expect(provider.calls).toHaveLength(0);
+    const response = await post(input.text);
+    expect(response.status).toBe(202);
+    const admitted = (await response.json()) as typeof prepared;
+    expect(admitted).toMatchObject({ branchId: prepared.branchId, status: "admitted" });
+    expect(await (await post(input.text)).json()).toEqual(admitted);
+    await finish();
+    expect(provider.calls).toHaveLength(1);
+    expect((await harness.snapshot(CatalogDoc, BACKGROUND_CONTEXT))!.items).toHaveLength(2);
+    expect(await (await get()).json()).toEqual({
+      operations: [{ ...admitted, requestId: input.requestId }],
     });
   });
 
