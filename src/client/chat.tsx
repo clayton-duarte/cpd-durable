@@ -753,6 +753,10 @@ export function Chat(props: ChatProps) {
                 clearSubmitted();
                 writer?.endSend();
               }
+              // The native snapshot may have been retained without emitting a
+              // composer event (for example, a pending upload can fail). Save
+              // it against the adopted clear revision, after any native clear.
+              if (confirmedClear) writer.reconcile();
               return admitted;
             }}
           />

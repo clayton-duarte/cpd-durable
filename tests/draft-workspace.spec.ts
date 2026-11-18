@@ -433,6 +433,8 @@ test("recovery retry clears only the unchanged original and adopts the confirmed
   expect(inputCalls).toBe(0);
   await page.getByRole("button", { name: "Retry original" }).click();
   await expect(input).toHaveValue("");
+  await page.waitForTimeout(400);
+  expect(writes).toEqual([]);
   await input.fill("next");
   await expect.poll(() => draft.content.text).toBe("next");
   expect(writes).toEqual([2]);
@@ -500,8 +502,12 @@ test("retry without a clear receipt retains an equal-content newer revision and 
   expect(draft.content.images).toEqual([image]);
 });
 
-for (const uploadFirst of [false, true]) {
-  test(`recovery acknowledgement cannot clear a draft when an upload starts ${uploadFirst ? "before" : "after"} retry`, async ({
+for (const { uploadFirst, fails } of [
+  { uploadFirst: false, fails: false },
+  { uploadFirst: true, fails: false },
+  { uploadFirst: true, fails: true },
+]) {
+  test(`recovery preserves draft when upload starts ${uploadFirst ? "before" : "after"} retry and ${fails ? "fails" : "succeeds"}`, async ({
     page,
   }) => {
     await syntheticEvents(page);
@@ -579,6 +585,7 @@ for (const uploadFirst of [false, true]) {
         uploadStarted = true;
         uploadCalls++;
         await uploadGate;
+        if (fails) return route.fulfill({ status: 503, json: {} });
         return route.fulfill({
           status: 201,
           json: {
@@ -612,9 +619,18 @@ for (const uploadFirst of [false, true]) {
     await expect(page.getByText(/Delivery unconfirmed/)).toHaveCount(0);
     await expect(input).toHaveValue("original");
     releaseUpload();
-    await expect.poll(() => draft.content.images.some((image) => image.id === newId)).toBe(true);
+    if (fails) {
+      await expect(page.getByText(/Image upload failed/).first()).toBeVisible();
+      await expect.poll(() => draft.content.text).toBe("original");
+      expect(draft.content.images).toEqual([]);
+      expect(writes).toEqual([2]);
+      await page.reload();
+      await expect(input).toHaveValue("original");
+    } else {
+      await expect.poll(() => draft.content.images.some((image) => image.id === newId)).toBe(true);
+    }
     expect(draft.content.text).toBe("original");
-    expect(writes).toEqual([2]);
+    expect(writes[0]).toBe(2);
     expect(inputCalls).toBe(1);
     expect(uploadCalls).toBe(1);
   });

@@ -410,6 +410,10 @@ export function createDraftAutosave(options: {
   });
   return {
     flush,
+    /** Recheck native state after adopting a server clear, even without a composer event. */
+    reconcile() {
+      schedule();
+    },
     hasUnsaved() {
       const content = snapshot();
       return (
