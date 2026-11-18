@@ -121,7 +121,7 @@ describe("resource discovery", () => {
         .some(({ section }) => section.key === "project-resources"),
     ).toBe(true);
   });
-  it("keeps supported fields and reports ignored metadata and unsupported required forms", async () => {
+  it("parses YAML scalar styles and reports ignored optional metadata", async () => {
     const { cwd } = await setup();
     await put(
       join(cwd, ".pi/skills/good/SKILL.md"),
@@ -133,10 +133,60 @@ describe("resource discovery", () => {
     );
     const result = await discoverResources(cwd);
     expect(result.skills).toEqual([
+      expect.objectContaining({ name: "bad", description: "folded text\n" }),
       expect.objectContaining({ name: "good", description: "It's useful" }),
     ]);
     expect(result.issues.some((i) => i.reason.includes("metadata ignored"))).toBe(true);
-    expect(result.issues.some((i) => i.reason.includes("malformed or unsupported"))).toBe(true);
+  });
+  it("accepts CRLF, Unicode, literal strings and comments without changing the loaded body", async () => {
+    const { cwd } = await setup();
+    const raw =
+      "---\r\nname: literal # comment\r\ndescription: |\r\n  第一行\r\n  next line\r\nlicense: MIT\r\nallowed-tools: [read, bash]\r\n---\r\nBody\r\n";
+    await put(join(cwd, ".pi/skills/literal/SKILL.md"), raw);
+    const result = await discoverResources(cwd);
+    expect(result.skills).toEqual([
+      expect.objectContaining({ name: "literal", description: "第一行\nnext line\n" }),
+    ]);
+    expect(result.issues.some((i) => i.reason.includes("metadata ignored"))).toBe(true);
+    expect((await loadSkill(result, "literal")).resource?.text).toBe(raw);
+  });
+  it("rejects duplicate keys, tags, aliases, deep nodes, unsafe keys and non-string fields", async () => {
+    const { cwd } = await setup();
+    const bad = [
+      "name: x\nname: x\ndescription: ok",
+      "name: x\ndescription: !custom hello",
+      "name: x\ndescription: &a hello\nother: *a",
+      `name: x\ndescription: ok\nother: ${"[".repeat(100)}x${"]".repeat(100)}`,
+      "name: x\ndescription: ok\n__proto__: {polluted: true}",
+      "name: x\ndescription: ok\nconstructor: bad",
+      "name: x\ndescription: true",
+      "name: x\ndescription: 123",
+      "name: x\ndescription: {text: hi}",
+      "name: 42\ndescription: ok",
+      "name: x\ndescription: ok\n...\n---\nname: y",
+      "name: x\ndescription: [unclosed",
+      "",
+      `name: x\ndescription: ok\nother: &huge ${"a".repeat(12000)}`,
+    ];
+    for (const [i, source] of bad.entries())
+      await put(join(cwd, `.pi/skills/bad${i}/SKILL.md`), `---\n${source}\n---\nbody`);
+    const result = await discoverResources(cwd);
+    expect(result.skills).toEqual([]);
+    expect(result.issues.filter((i) => i.reason.includes("malformed or unsupported"))).toHaveLength(
+      bad.length,
+    );
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
+  it("selects the nearest valid name when a nearer directory contains invalid metadata", async () => {
+    const { cwd, parent } = await setup();
+    await put(
+      join(cwd, ".pi/skills/near/SKILL.md"),
+      "---\nname: choice\ndescription: false\n---\ninvalid",
+    );
+    await put(join(parent, ".pi/skills/far/SKILL.md"), skill("choice", "valid"));
+    const result = await discoverResources(cwd);
+    expect((await loadSkill(result, "choice")).resource?.text).toContain("valid");
+    expect(result.issues.some((i) => i.reason.includes("malformed"))).toBe(true);
   });
   it.skipIf(process.platform === "win32")(
     "rejects a FIFO and its symlink without opening a reader",
@@ -207,7 +257,9 @@ describe("resource discovery", () => {
     await mkdir(other);
     await put(join(cwd, "AGENTS.md"), "cwd-one-before");
     await put(join(other, "AGENTS.md"), "cwd-two-only");
-    await put(join(cwd, ".pi/skills/one/SKILL.md"), skill("one", "skill-one-body"));
+    const rawSkill =
+      "---\r\nname: one\r\ndescription: >\r\n  folded skill\r\n  description\r\nlicense: MIT\r\n---\r\nskill-one-body\r\n";
+    await put(join(cwd, ".pi/skills/one/SKILL.md"), rawSkill);
     const registry = createRegistry();
     registry.install(createResourceExtension());
     const provider = testModels();
@@ -236,8 +288,11 @@ describe("resource discovery", () => {
       await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
       const original = JSON.stringify(provider.calls[0]!.context.messages);
       expect(original).toContain("cwd-one-before");
+      expect(original).toContain("folded skill description");
       expect(original).not.toContain("cwd-two-only");
       await put(join(cwd, "AGENTS.md"), "cwd-one-after");
+      const updatedSkill = rawSkill.replace("folded skill", "refreshed skill");
+      await put(join(cwd, ".pi/skills/one/SKILL.md"), updatedSkill);
       expect(JSON.stringify(provider.calls[0]!.context.messages)).toBe(original);
       provider.calls[0]!.tools([
         { id: "skill-call", name: "load_skill", arguments: { name: "one" } },
@@ -245,6 +300,8 @@ describe("resource discovery", () => {
       await vi.waitFor(() => expect(provider.calls).toHaveLength(2));
       const next = JSON.stringify(provider.calls[1]!.context.messages);
       expect(next).toContain("skill-one-body");
+      expect(next).toContain(JSON.stringify(JSON.stringify(updatedSkill)).slice(1, -1));
+      expect(next).toContain("refreshed skill description");
       expect(next).toContain("cwd-one-after");
       provider.calls[1]!.finish("done");
       await first.waitForIdle(BACKGROUND_CONTEXT);

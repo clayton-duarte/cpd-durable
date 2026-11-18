@@ -16,6 +16,7 @@ export default defineConfig({
     "edit-branch.spec.ts",
     "questions.spec.ts",
     "structured-table.spec.ts",
+    "regeneration.spec.ts",
   ],
   workers: 1,
   use: { baseURL },
