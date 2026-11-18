@@ -63,6 +63,9 @@ if (!config.success) {
       } else {
         app = createApp(chat);
         app.get("*", serveStatic({ root: "./dist/client" }));
+        app.get("/", serveStatic({ root: "./dist/client", path: "index.html" }));
+        app.get("/chats/*", serveStatic({ root: "./dist/client", path: "index.html" }));
+        app.get("/chats", serveStatic({ root: "./dist/client", path: "index.html" }));
         console.log("CPD Durable: http://127.0.0.1:3000");
       }
     }

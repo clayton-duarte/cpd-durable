@@ -6,7 +6,7 @@ Parallelism is the reason for CPD, not a worker-count target. Pragmatism guides 
 
 ## Current status
 
-This fresh start, framed as CPD v1, now includes a minimal localhost browser chat backed directly by one persistent pi-durable conversation. It is an initial connectivity/persistence slice—not the multi-project Cockpit, a legacy migration or an application cutover.
+This fresh start, framed as CPD v1, now includes localhost browser chats backed directly by persistent pi-durable conversations, with a sidebar for creation and navigation. It is not the multi-project Cockpit, a legacy migration or an application cutover.
 
 The existing [CPD repository](https://github.com/clayton-duarte/cpd) remains historical reference; its identity is unchanged. Starting fresh does not authorize deleting its data or evidence.
 
@@ -38,7 +38,9 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
-The model currently remains OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through Hono/SSE. Native host tools now include **read, write, edit, bash and powershell**. Calls, streaming output, results and failures appear in supplied tool disclosures. PowerShell needs `pwsh` or `powershell` installed. Attachments, model selection, new conversations, Assistant Cloud and LAN access remain unimplemented. User text stays literal; assistant Markdown supports lists, tables and copyable code, without executing rendered code/raw HTML or fetching remote Markdown images. The existing dark theme remains the default.
+The model currently remains OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through Hono/SSE. Native host tools now include **read, write, edit, bash and powershell**. Calls, streaming output, results and failures appear in supplied tool disclosures. PowerShell needs `pwsh` or `powershell` installed. Attachments, model selection, Assistant Cloud and LAN access remain unimplemented. User text stays literal; assistant Markdown supports lists, tables and copyable code, without executing rendered code/raw HTML or fetching remote Markdown images. The existing dark theme remains the default.
+
+Use **New chat** in the supplied assistant-ui sidebar. TanStack Router gives each chat a `/chats/<id>` deep link, back/forward navigation and mobile sidebar navigation. Existing history appears as **Original chat**; new chats receive a title from their first admitted input. Switching retains visited chats' native drafts and retry state until refresh and never stops background work. Rename, archive, delete and forks are not implemented. See [chat navigation semantics](docs/chat-components.md#chat-navigation-and-creation).
 
 **Execution defaults to your home directory (`~/`)**, independently of the repository and session-data location. `CPD_CWD` overrides it and expands `~`/`~/…`. This is not a sandbox: tools can access absolute paths, parent directories, network programs and the server account's inherited environment with normal OS permissions. There are no cpd approval prompts, path/command restrictions, forced shell timeouts or tool-round caps. Commands can modify/delete files and expose account secrets in tool output; protect the local host and conversation data accordingly. Shell `cd` affects that invocation, not the default directory of later calls. See [pi TUI parity and remaining work](docs/pi-durable-features.md#pi-tui-parity); native tools alone are not full TUI parity.
 

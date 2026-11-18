@@ -38,7 +38,7 @@ test("acknowledging a send preserves edits made while delivery is pending", asyn
   const acknowledgement = new Promise<void>((resolve) => {
     acknowledge = resolve;
   });
-  await page.route("**/api/input", async (route) => {
+  await page.route("**/api/chats/*/input", async (route) => {
     const response = await route.fetch();
     await acknowledgement;
     await route.fulfill({ response });
@@ -49,7 +49,7 @@ test("acknowledging a send preserves edits made while delivery is pending", asyn
   await input.fill("Delayed acknowledgement");
   await page.getByRole("button", { name: "Send message", exact: true }).click();
   await input.fill("This draft has not been submitted");
-  const delivered = page.waitForResponse("**/api/input");
+  const delivered = page.waitForResponse("**/api/chats/*/input");
   acknowledge();
   await delivered;
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();

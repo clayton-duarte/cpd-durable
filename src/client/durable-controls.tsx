@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useAui,
   unstable_useSlashCommandAdapter,
@@ -26,6 +26,9 @@ export function DurableControls() {
   const host = useChatHost();
   const aui = useAui();
   const [resetOpen, setResetOpen] = useState(false);
+  useEffect(() => {
+    if (host.active === false) setResetOpen(false);
+  }, [host.active]);
   const [handoff, setHandoff] = useState("");
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
@@ -182,7 +185,7 @@ export function DurableControls() {
             : {})}
         />
       )}
-      <AlertDialog open={resetOpen} onOpenChange={setResetOpen}>
+      <AlertDialog open={resetOpen && host.active !== false} onOpenChange={setResetOpen}>
         <AlertDialogContent
           initialFocus={cancelRef}
           finalFocus={composerInputRef}

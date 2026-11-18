@@ -2,10 +2,11 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { Harness, type SubmissionId } from "@earendil-works/pi-durable";
+import { Harness, type SubmissionId, type AgentChange } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
+import { openChats } from "./chats.ts";
 
 export async function openChat(dataDir: string, models: Models, cwd = workingDirectory()) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
@@ -30,21 +31,20 @@ export async function openChat(dataDir: string, models: Models, cwd = workingDir
   try {
     const conversation = await harness.root(BACKGROUND_CONTEXT);
     // Apply the fixed provider to reopened sessions too, without discarding history.
-    await conversation.configure(
-      {
-        model: { provider: PROVIDER_ID, modelId: MODEL_ID },
-        cwd: workingDirectory(cwd),
-        extensions: null,
-        tools: null,
-        modelTools: null,
-        maxTurns: null,
-      },
-      BACKGROUND_CONTEXT,
-    );
+    const defaults: AgentChange = {
+      model: { provider: PROVIDER_ID, modelId: MODEL_ID },
+      cwd: workingDirectory(cwd),
+      extensions: null,
+      tools: null,
+      modelTools: null,
+      maxTurns: null,
+    };
+    const chats = await openChats(harness, conversation, defaults);
     harness.resume();
     let closed = false;
     return {
       conversation,
+      chats,
       withdraw: (id: SubmissionId) =>
         harness.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {
