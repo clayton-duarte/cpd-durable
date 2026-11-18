@@ -16,13 +16,18 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { useChatHost } from "./chat-host.ts";
+import { PromptTemplates } from "./prompt-templates.tsx";
 
 // Host bindings only: the supplied elements own all visual presentation.
 export function DurableControls() {
   const host = useChatHost();
   const [resetOpen, setResetOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   useEffect(() => {
-    if (host.active === false) setResetOpen(false);
+    if (host.active === false) {
+      setResetOpen(false);
+      setTemplatesOpen(false);
+    }
   }, [host.active]);
   const [handoff, setHandoff] = useState("");
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
@@ -42,6 +47,12 @@ export function DurableControls() {
 
   const commands: Unstable_SlashCommand[] = [];
   if (!locked && !resetOpen) {
+    if (host.chatId || host.state?.conversationId)
+      commands.push({
+        id: "templates",
+        description: "Browse local prompt templates without sending",
+        execute: () => setTemplatesOpen(true),
+      });
     if (busy) {
       commands.push(
         {
@@ -99,6 +110,7 @@ export function DurableControls() {
           emptyItemsLabel="No commands available for this state"
         />
       )}
+      <PromptTemplates open={templatesOpen} onOpenChange={setTemplatesOpen} />
       {status && <AgentStatus state="waiting" label={status} role="status" title={host.title} />}
       {host.state?.hasEarlier && !host.onLoadEarlier && (
         <AgentStatus
