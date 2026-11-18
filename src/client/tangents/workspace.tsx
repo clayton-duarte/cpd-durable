@@ -11,7 +11,7 @@ export interface TangentWorkspaceProps {
   navigationDisabled?: boolean;
   onSelectTangent: (id: string) => void;
   onCloseTangent: () => void;
-  // These must return stable, independently scoped Chat instances. All open
+  // These must return stable, independently scoped Chat instances. Listed
   // tangents stay mounted; active means visible observation, not execution.
   renderMain: (active: boolean) => ReactNode;
   renderTangent: (tangent: TangentChildView, active: boolean) => ReactNode;
@@ -37,7 +37,7 @@ export function TangentWorkspace(props: TangentWorkspaceProps) {
   const narrow = useNarrow();
   const strip = useRef<HTMLDivElement>(null);
   const panelId = useId();
-  const available = tangents.filter((t) => t.parentId === main.id && t.lifecycle === "open");
+  const available = tangents.filter((t) => t.parentId === main.id);
   const selected = available.find((t) => t.id === selectedTangentId);
   const selectedId = selected?.id ?? null;
   const previous = useRef(selectedId);

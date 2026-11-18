@@ -9,6 +9,11 @@ import { WorkerPanel } from "../workers/panel.tsx";
 import { ModelPolicyViewSchema } from "../../shared/model-policy.ts";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  CollapsibleRoot,
+  CollapsibleTrigger,
+  CollapsibleContent,
+} from "@/components/assistant-ui/elements/collapsible-root";
 
 const ResponseSchema = z.strictObject({ tangents: z.array(TangentViewSchema) });
 const StartResponseSchema = z.strictObject({ tangent: TangentViewSchema });
@@ -113,6 +118,10 @@ export function MainThreadView({
   const [error, setError] = useState(false);
   const [retry, setRetry] = useState(0);
   const [configured, setConfigured] = useState(false);
+  const mutationVersion = useRef(0);
+  const mutationPending = useRef(false);
+  const [changing, setChanging] = useState(false);
+  const [lifecycleError, setLifecycleError] = useState<string | null>(null);
   useEffect(() => {
     if (!active || readOnly) {
       setConfigured(false);
@@ -149,6 +158,7 @@ export function MainThreadView({
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function refresh() {
+      const version = mutationVersion.current;
       try {
         const response = await fetch(`/api/chats/${mainId}/tangents`, {
           signal: controller.signal,
@@ -160,7 +170,7 @@ export function MainThreadView({
           new Set(result.tangents.map((item) => item.id)).size !== result.tangents.length
         )
           throw new Error("Invalid ownership");
-        if (alive) {
+        if (alive && version === mutationVersion.current) {
           setItems((current) =>
             result.tangents.map((item) =>
               current.some((prior) => prior.id === item.id && prior.startState === "admitted")
@@ -172,7 +182,7 @@ export function MainThreadView({
           setError(false);
         }
       } catch {
-        if (alive) setError(true);
+        if (alive && version === mutationVersion.current) setError(true);
       } finally {
         if (alive)
           timer = setTimeout(() => {
@@ -192,9 +202,7 @@ export function MainThreadView({
     selectedTangent !== undefined &&
     /^[1-9][0-9]*$/.test(selectedTangent) &&
     Number.isSafeInteger(Number(selectedTangent));
-  const selected = validId
-    ? items.find((item) => String(item.id) === selectedTangent && item.lifecycle === "open")
-    : undefined;
+  const selected = validId ? items.find((item) => String(item.id) === selectedTangent) : undefined;
   const invalidSelection =
     active && selectedTangent !== undefined && (!validId || (loaded && !error && !selected));
   return (
@@ -210,12 +218,35 @@ export function MainThreadView({
       {invalidSelection && (
         <ErrorState
           title="Tangent not found"
-          detail="This tangent is not an open child of this main chat."
+          detail="This tangent is not a child of this main chat."
           actionLabel="Close tangent"
           retrying={false}
           onRetry={onCloseTangent}
         />
       )}
+      {items.some((item) => item.lifecycle !== "open") && (
+        <CollapsibleRoot>
+          <CollapsibleTrigger render={<Button variant="outline" />}>
+            Completed and archived tangents
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            {items
+              .filter((item) => item.lifecycle !== "open")
+              .map((item) => (
+                <Button
+                  key={item.id}
+                  variant="ghost"
+                  disabled={error}
+                  onClick={() => onSelectTangent(String(item.id))}
+                >
+                  {item.title} · {item.lifecycle === "concluded" ? "Concluded" : "Archived"} ·{" "}
+                  {item.model.name ?? `${item.model.provider}/${item.model.modelId}`}
+                </Button>
+              ))}
+          </CollapsibleContent>
+        </CollapsibleRoot>
+      )}
+      {lifecycleError && <p role="alert">{lifecycleError}</p>}
       <TangentWorkspace
         main={{ id: mainId, title }}
         tangents={items.map(tangentChildView)}
@@ -252,6 +283,82 @@ export function MainThreadView({
                     )
                   }
                 />
+              ))}
+            {items
+              .filter((item) => String(item.id) === tangent.id)
+              .map((item) => (
+                <div key={`lifecycle-${item.id}`}>
+                  <span>Lifecycle: {item.lifecycle}</span>
+                  {(item.lifecycle === "open"
+                    ? (["concluded", "archived"] as const)
+                    : item.lifecycle === "concluded"
+                      ? (["open", "archived"] as const)
+                      : (["open"] as const)
+                  ).map((next) => (
+                    <Button
+                      key={next}
+                      variant="outline"
+                      disabled={
+                        readOnly ||
+                        (item.lifecycle === "open" && item.readOnly) ||
+                        error ||
+                        changing
+                      }
+                      onClick={() => {
+                        if (mutationPending.current || readOnly || error) return;
+                        mutationPending.current = true;
+                        mutationVersion.current++;
+                        setChanging(true);
+                        setLifecycleError(null);
+                        void (async () => {
+                          try {
+                            const response = await fetch(
+                              `/api/chats/${mainId}/tangents/${item.id}/lifecycle`,
+                              {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ expected: item.lifecycle, next }),
+                              },
+                            );
+                            if (!response.ok)
+                              throw new Error(
+                                response.status === 409
+                                  ? "Tangent lifecycle changed or work is still active. Refresh and try again explicitly."
+                                  : "Lifecycle change could not be confirmed.",
+                              );
+                            const result = StartResponseSchema.parse(await response.json()).tangent;
+                            if (
+                              result.id !== item.id ||
+                              String(result.parentId) !== mainId ||
+                              result.lifecycle !== next
+                            )
+                              throw new Error("Lifecycle response could not be confirmed.");
+                            setItems((current) =>
+                              current.map((entry) => (entry.id === result.id ? result : entry)),
+                            );
+                          } catch (err) {
+                            setLifecycleError(
+                              err instanceof Error
+                                ? err.message
+                                : "Lifecycle change could not be confirmed.",
+                            );
+                          } finally {
+                            mutationVersion.current++;
+                            mutationPending.current = false;
+                            setChanging(false);
+                            setRetry((value) => value + 1);
+                          }
+                        })();
+                      }}
+                    >
+                      {next === "concluded"
+                        ? "Conclude tangent"
+                        : next === "archived"
+                          ? "Archive tangent"
+                          : "Reopen tangent"}
+                    </Button>
+                  ))}
+                </div>
               ))}
             <WorkerPanel
               chatId={tangent.id}

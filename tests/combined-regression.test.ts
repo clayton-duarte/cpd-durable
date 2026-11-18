@@ -106,6 +106,26 @@ async function fixture(configured = true) {
 }
 
 describe("combined production regression", () => {
+  it("rejects tangent archive while an owned worker remains unsettled without stopping it", async () => {
+    const f = await fixture();
+    try {
+      const child = await f.create(false);
+      expect((await f.launch(child, "archive-blocker", "background")).status).toBe(202);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(1));
+      const before = await f.workers(child);
+      expect(before).toHaveLength(1);
+      const response = await f.post(`/api/chats/${f.main}/tangents/${child}/lifecycle`, {
+        expected: "open",
+        next: "archived",
+      });
+      expect(response.status).toBe(409);
+      expect((await f.workers(child))[0]?.stop).toBe("none");
+      expect(f.provider.calls).toHaveLength(1);
+      f.provider.calls[0]!.finish("worker complete");
+    } finally {
+      await f.done();
+    }
+  });
   it("fails unconfigured launches without creating workers or making provider calls", async () => {
     const f = await fixture(false);
     try {

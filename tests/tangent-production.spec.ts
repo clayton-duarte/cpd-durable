@@ -244,15 +244,15 @@ test("production route keeps native chats and drafts through tangent navigation"
   await page.goto("/chats/1?tangent=wrong");
   await expect(page.getByText("Tangent not found", { exact: true })).toBeVisible();
   const starts: unknown[] = [];
-  const unstarted = { ...tangent(3, "Idle child", "idle"), startState: "create-only" };
+  let unstarted = { ...tangent(3, "Idle child", "idle"), startState: "create-only" };
   await page.route("**/api/chats/1/tangents", (route) =>
     route.fulfill({ json: { tangents: [unstarted] } }),
   );
   await page.route("**/api/chats/1/tangents/3/start", (route) => {
     starts.push(route.request().postDataJSON());
-    return starts.length === 1
-      ? route.abort()
-      : route.fulfill({ status: 202, json: { tangent: { ...unstarted, startState: "admitted" } } });
+    if (starts.length === 1) return route.abort();
+    unstarted = { ...unstarted, startState: "admitted" };
+    return route.fulfill({ status: 202, json: { tangent: unstarted } });
   });
   await page.goto("/chats/1?tangent=3");
   const unstartedPane = page.getByRole("region", { name: "Tangent chat: Idle child" });
@@ -269,4 +269,108 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
   expect(starts).toHaveLength(2);
   expect(starts[1]).toEqual(starts[0]);
+  const lifecycleRequests: unknown[] = [];
+  await page.route("**/api/chats/1/tangents/3/lifecycle", (route) => {
+    const body = route.request().postDataJSON() as { expected: string; next: string };
+    lifecycleRequests.push(body);
+    if (lifecycleRequests.length === 1 || body.next === "archived")
+      return route.fulfill({ status: 409, json: { error: "Tangent has active work" } });
+    unstarted = { ...unstarted, lifecycle: body.next, readOnly: body.next !== "open" };
+    return route.fulfill({ json: { tangent: unstarted } });
+  });
+  await unstartedPane.getByRole("button", { name: "Conclude tangent" }).click();
+  await expect(page.getByRole("alert")).toContainText("work is still active");
+  await expect(input(unstartedPane)).toHaveValue("keep this draft");
+  await unstartedPane.getByRole("button", { name: "Conclude tangent" }).click();
+  await expect(unstartedPane.getByText("Lifecycle: concluded")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open tangent: Idle child" })).toHaveCount(0);
+  await unstartedPane.getByRole("button", { name: "Close tangent" }).click();
+  expect(lifecycleRequests).toHaveLength(2);
+  await page.getByRole("button", { name: "Completed and archived tangents" }).click();
+  await page.getByRole("button", { name: /Idle child · Concluded/ }).click();
+  await expect(input(unstartedPane)).toHaveValue("keep this draft");
+  await unstartedPane.getByRole("button", { name: "Reopen tangent" }).click();
+  await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();
+  await unstartedPane.getByRole("button", { name: "Archive tangent" }).click();
+  await expect(page.getByRole("alert")).toContainText("work is still active");
+  await expect(input(unstartedPane)).toHaveValue("keep this draft");
+});
+
+test("busy and archived main chats do not expose tangent commands or send their literal text", async ({
+  page,
+}) => {
+  let archived = false;
+  const inputs: string[] = [];
+  await page.addInitScript(() => {
+    class Synthetic extends EventTarget {
+      onerror: (() => void) | null = null;
+      constructor() {
+        super();
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                conversationId: 1,
+                messages: [],
+                partial: "",
+                busy: true,
+                hasEarlier: false,
+                failure: null,
+                controls: { canContinue: false, resetPending: false, queue: [] },
+              }),
+            }),
+          ),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: Synthetic });
+  });
+  await page.route("**/api/**", (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (req.method() === "POST" && path.endsWith("/input")) inputs.push(path);
+    if (path === "/api/chats")
+      return route.fulfill({
+        json: {
+          rootId: "1",
+          chats: [
+            { id: "1", title: "Main", running: true, status: archived ? "archived" : "regular" },
+          ],
+        },
+      });
+    if (path === "/api/model-policy")
+      return route.fulfill({
+        json: {
+          revision: 1,
+          assignments: {
+            main: null,
+            tangent: { provider: "test", modelId: "mid", thinkingLevel: "off" },
+            worker: null,
+          },
+          choices: [],
+        },
+      });
+    if (path.endsWith("/tangents")) return route.fulfill({ json: { tangents: [] } });
+    if (path.endsWith("/workers"))
+      return route.fulfill({ json: { helpers: [], hasUnsettled: false } });
+    if (path.endsWith("/questions"))
+      return route.fulfill({ json: { conversationId: "1", questions: [] } });
+    return route.abort();
+  });
+  await page.goto("/chats/1");
+  const draft = page.getByRole("textbox", { name: "Message input" });
+  await draft.fill("/tangent goal");
+  await draft.press("Enter");
+  await expect(
+    page
+      .locator('[data-slot="composer-trigger-popover"]')
+      .getByRole("option", { name: /\/tangent/ }),
+  ).toHaveCount(0);
+  expect(inputs).toEqual([]);
+  archived = true;
+  await page.reload();
+  await expect(page.getByText("Read-only", { exact: true })).toBeVisible();
+  await expect(page.getByRole("option", { name: /\/tangent|\/side/ })).toHaveCount(0);
+  expect(inputs).toEqual([]);
 });
