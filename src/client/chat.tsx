@@ -358,8 +358,8 @@ function PersistenceBridge({
           return (
             <div role="status" key={record.requestId} className="px-3 py-2 text-sm">
               <p>
-                Send not confirmed. It may already have been admitted; check the conversation before
-                retrying.
+                We could not confirm delivery. The server may already have accepted it; check this
+                conversation before retrying.
               </p>
               <p>
                 {record.text.slice(0, 160)}
@@ -402,7 +402,7 @@ function PersistenceBridge({
       ) && (
         <CollapsibleRoot>
           <CollapsibleTrigger render={<Button variant="ghost" size="sm" />}>
-            View admitted sends
+            Send history
           </CollapsibleTrigger>
           <CollapsibleContent className="px-3 text-sm">
             <p>Admitted means accepted for processing, not that a response completed.</p>

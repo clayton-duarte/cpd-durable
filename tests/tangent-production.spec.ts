@@ -140,6 +140,10 @@ test("many admitted receipts leave both split composers inside the viewport", as
   );
   await page.goto("/chats/1");
   await page.getByRole("button", { name: `Open tangent: ${title}` }).click();
+  await expect(page.getByRole("heading", { name: `${title} · Model 2` })).toHaveAttribute(
+    "title",
+    `${title} · Model 2`,
+  );
   if (process.env["CPD_SYNTHETIC_SCREENSHOT"]) {
     await page.screenshot({ path: process.env["CPD_SYNTHETIC_SCREENSHOT"] });
   }
@@ -168,9 +172,9 @@ test("many admitted receipts leave both split composers inside the viewport", as
     "synthetic receipt 12",
   );
   await recovery.getByRole("button", { name: "Review original" }).click();
-  await recovery.getByRole("button", { name: "View admitted sends" }).click();
+  await recovery.getByRole("button", { name: "Send history" }).click();
   await expect(recovery.getByRole("button", { name: "synthetic receipt 0" })).toBeVisible();
-  await recovery.getByRole("button", { name: "View admitted sends" }).click();
+  await recovery.getByRole("button", { name: "Send history" }).click();
   expect(writes).toBe(0);
   expect(
     await page.evaluate(
@@ -875,6 +879,7 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(page.getByRole("menuitem", { name: "Conclude tangent" })).toBeDisabled();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("menu")).toBeHidden();
+  await expect(idleSide.getByRole("button", { name: "Tangent actions" })).toBeFocused();
   const childMutationsBefore = requests.filter((r) => r.startsWith("POST /api/chats/3/")).length;
   await input(idleSide)
     .press("Enter")

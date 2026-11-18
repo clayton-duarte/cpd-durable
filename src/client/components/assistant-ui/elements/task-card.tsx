@@ -54,6 +54,7 @@ export function TaskCard({
   open,
   onOpenChange,
   onSelect,
+  selectionLabel,
   selected,
   selectionDisabled,
   children,
@@ -61,7 +62,7 @@ export function TaskCard({
   ...props
 }: Omit<
   ComponentProps<"div">,
-  "children" | "label" | "state" | "result" | "open" | "onOpenChange"
+  "children" | "label" | "state" | "result" | "open" | "onOpenChange" | "onSelect"
 > & {
   label: string;
   meta?: string | undefined;
@@ -70,14 +71,30 @@ export function TaskCard({
   elapsed?: string | undefined;
   actions?: ReactNode | undefined;
   result?: ReactNode | undefined;
-  open?: boolean | undefined;
-  onOpenChange?: ((open: boolean) => void) | undefined;
-  onSelect?: (() => void) | undefined;
-  selected?: boolean | undefined;
-  selectionDisabled?: boolean | undefined;
-  children?: ReactNode | undefined;
-}) {
+} & (
+    | {
+        onSelect: () => void;
+        selectionLabel: string;
+        selected: boolean;
+        selectionDisabled?: boolean | undefined;
+        children?: never;
+        open?: never;
+        onOpenChange?: never;
+      }
+    | {
+        onSelect?: never;
+        selectionLabel?: never;
+        selected?: never;
+        selectionDisabled?: never;
+        children?: ReactNode | undefined;
+        open?: boolean | undefined;
+        onOpenChange?: ((open: boolean) => void) | undefined;
+      }
+  )) {
   const hasTranscript = Children.toArray(children).length > 0;
+  if (onSelect && (hasTranscript || open !== undefined || onOpenChange !== undefined)) {
+    throw new Error("TaskCard selection cannot also disclose children");
+  }
   const inert = open !== undefined && onOpenChange === undefined;
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const isOpen = open ?? uncontrolledOpen;
@@ -98,9 +115,7 @@ export function TaskCard({
         type="button"
         aria-expanded={!onSelect && hasTranscript ? isOpen : undefined}
         aria-pressed={onSelect ? selected : undefined}
-        aria-label={
-          onSelect ? `${selected ? "Selected tangent" : "Open tangent"}: ${label}` : undefined
-        }
+        aria-label={onSelect ? selectionLabel : undefined}
         aria-description={onSelect ? stateLabel : undefined}
         disabled={onSelect ? selectionDisabled : !hasTranscript || inert}
         onClick={onSelect ?? toggle}
