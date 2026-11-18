@@ -15,6 +15,7 @@ export default defineConfig({
     "history-operations.spec.ts",
     "edit-branch.spec.ts",
     "questions.spec.ts",
+    "model-policy.spec.ts",
     "regeneration.spec.ts",
   ],
   workers: 1,
