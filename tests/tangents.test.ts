@@ -232,6 +232,32 @@ describe("interactive tangents", () => {
       await f.harness.close(context);
     }
   });
+  it("binds the model's omitted boundary once across later tool calls", async () => {
+    const f = await fixture();
+    try {
+      const { parentId: _parent, sourceId: _source, sourceEntryId: _entry, ...args } = f.request;
+      await f.main.submit({ type: "input", content: "Create a tangent" }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      f.provider.calls[1]!.tools([{ id: "first", name: "create_tangent", arguments: args }]);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(3));
+      const first = (await listTangents(f.harness, f.main.id, f.hooks))[0]!.tangent;
+      expect(first.sourceEntryId).not.toBeNull();
+      f.provider.calls[2]!.finish("created");
+      await f.main.waitForIdle(context);
+      await f.main.submit({ type: "input", content: "Retry the same request" }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(4));
+      f.provider.calls[3]!.tools([{ id: "retry", name: "create_tangent", arguments: args }]);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(5));
+      const list = await listTangents(f.harness, f.main.id, f.hooks);
+      expect(list).toHaveLength(1);
+      expect(list[0]!.tangent.sourceEntryId).toBe(first.sourceEntryId);
+      expect(JSON.stringify(f.provider.calls[4]!.context.messages)).toContain(String(first.id));
+      f.provider.calls[4]!.finish("retried");
+      await f.main.waitForIdle(context);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
   it("creates ownerless fresh context once, without provider requests or hidden hierarchy", async () => {
     const f = await fixture();
     try {

@@ -69,6 +69,17 @@ export const TangentsDoc = defineDoc<JsonRepresentation<State>>({
   initial: () => ({ tangents: [] }),
   checkpointWhen: () => true,
 });
+const ToolBoundariesDoc = defineDoc<
+  JsonRepresentation<{
+    requests: { requestId: string; fingerprint: string; sourceEntryId: number | null }[];
+  }>
+>({
+  kind: "cpd.tangent-tool-boundaries",
+  version: 1,
+  scope: "session",
+  initial: () => ({ requests: [] }),
+  checkpointWhen: () => true,
+});
 
 /** Hooks run inside the same commit. assertMain must reject missing, archived and deleted mains.
  * register must add the ownerless conversation to the host catalog without table reads after creation.
@@ -546,24 +557,52 @@ export async function setTangentLifecycle(
 
 /** A model tool returns on admission, never waits for child completion. */
 export function createTangentExtension(hooks: TangentHooks | (() => TangentHooks)) {
+  const toolSchema = CreateTangentSchema.omit({ parentId: true, sourceId: true }).extend({
+    sourceEntryId: CreateTangentSchema.shape.sourceEntryId.optional(),
+  });
   return defineExtension({
     name: "cpd-tangents",
     tools: [
       defineTool({
         name: "create_tangent",
         description:
-          "Create an independent interactive tangent using selected guidance; start only when requested. Do not include secrets.",
-        parameters: z.toJSONSchema(CreateTangentSchema.omit({ parentId: true, sourceId: true })),
+          "Create an independent interactive tangent using selected guidance; start only when requested. Omit sourceEntryId to bind the current visible source boundary. Do not include secrets.",
+        parameters: z.toJSONSchema(toolSchema),
         replay: "safe",
         async execute(args, api, context) {
-          const input = CreateTangentSchema.omit({ parentId: true, sourceId: true }).parse(args);
-          const request = { ...input, parentId: api.conversationId, sourceId: api.conversationId };
-          const result = await admitTangentStart(
-            api,
-            request,
-            typeof hooks === "function" ? hooks() : hooks,
-            context,
-          );
+          const input = toolSchema.parse(args);
+          const resolvedHooks = typeof hooks === "function" ? hooks() : hooks;
+          const sourceEntryId =
+            input.sourceEntryId ??
+            (await api.commit(async (tx) => {
+              await resolvedHooks.assertMain(tx, api.conversationId);
+              const state = await tx.doc(ToolBoundariesDoc);
+              const fingerprint = JSON.stringify({
+                ...input,
+                sourceEntryId: null,
+                parentId: api.conversationId,
+              });
+              const previous = state.requests.find((item) => item.requestId === input.requestId);
+              if (previous) {
+                if (previous.fingerprint !== fingerprint)
+                  throw new Error("Request identity conflicts with prior tangent");
+                return previous.sourceEntryId;
+              }
+              const at = await tx.latestEntryId(api.conversationId);
+              state.requests.push({
+                requestId: input.requestId,
+                fingerprint,
+                sourceEntryId: at ?? null,
+              });
+              return at ?? null;
+            }, context));
+          const request = {
+            ...input,
+            sourceEntryId,
+            parentId: api.conversationId,
+            sourceId: api.conversationId,
+          };
+          const result = await admitTangentStart(api, request, resolvedHooks, context);
           return {
             output: [
               {

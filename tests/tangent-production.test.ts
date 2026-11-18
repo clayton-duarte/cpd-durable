@@ -32,34 +32,29 @@ describe("production tangent integration", () => {
         BACKGROUND_CONTEXT,
       );
       await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
-      const entries = await host.conversation.entries(
-        { order: "ascending" },
-        20,
-        undefined,
-        BACKGROUND_CONTEXT,
-      );
-      const sourceEntryId = entries.items.at(-1)!.id;
       provider.calls[0]!.tools([
         {
           id: "tangent-tool",
-          name: "create_tangent",
+          name: "codemode",
           arguments: {
-            requestId: "production-tool",
-            sourceEntryId,
-            title: "Independent",
-            start: true,
-            handoff: {
-              goal: "Investigate",
-              decisions: [],
-              constraints: [],
-              exclusions: [],
-              references: [],
-              suggestedSkills: [],
-              discretion: "",
-              deliverable: "",
-              evidence: "",
-              limits: "",
-            },
+            code: `text(await tools.create_tangent(${JSON.stringify({
+              requestId: "production-tool",
+              sourceEntryId: null,
+              title: "Independent",
+              start: true,
+              handoff: {
+                goal: "Investigate",
+                decisions: [],
+                constraints: [],
+                exclusions: [],
+                references: [],
+                suggestedSkills: [],
+                discretion: "",
+                deliverable: "",
+                evidence: "",
+                limits: "",
+              },
+            })}));`,
           },
         },
       ]);
