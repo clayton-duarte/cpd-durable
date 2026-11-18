@@ -1,12 +1,87 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { createApp } from "../src/server/app.ts";
 import { openChat } from "../src/server/chat.ts";
 import { testModels } from "./models.ts";
 
 describe("conversation draft service", () => {
+  it("clears a matching image draft on real host admission and preserves later edits on retry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "draft-image-admission-"));
+    const provider = testModels();
+    const original = provider.models.getAvailable.bind(provider.models);
+    vi.spyOn(provider.models, "getAvailable").mockImplementation(async (id) =>
+      (await original(id)).map((model) => ({ ...model, input: ["text", "image"] })),
+    );
+    const host = await openChat(dir, provider.models, dir);
+    try {
+      const app = createApp(host);
+      const base = `http://localhost:3000/api/chats/${host.conversation.id}`;
+      const png = await readFile(new URL("./fixtures/attachments/sample.png", import.meta.url));
+      const upload = await app.request(`${base}/attachments`, {
+        method: "POST",
+        headers: { "content-type": "image/png" },
+        body: png,
+      });
+      expect(upload.status).toBe(201);
+      const ref = (await upload.json()) as { id: string; mimeType: string; size: number };
+      const image = { id: ref.id, mimeType: ref.mimeType, size: ref.size, name: "fixture.png" };
+      const json = (path: string, method: string, body: unknown) =>
+        app.request(`${base}${path}`, {
+          method,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const get = async (): Promise<unknown> => (await app.request(`${base}/draft`)).json();
+      expect(
+        (
+          await json("/draft", "PUT", {
+            expectedRevision: 0,
+            content: { text: "  image  ", images: [image] },
+          })
+        ).status,
+      ).toBe(200);
+      const input = {
+        requestId: crypto.randomUUID(),
+        text: "image",
+        images: [ref.id],
+        draft: { revision: 1, text: "  image  ", images: [ref.id] },
+      };
+      expect((await json("/input", "POST", input)).status).toBe(202);
+      expect(await get()).toEqual({ revision: 2, content: { text: "", images: [] } });
+      expect(
+        (
+          await json("/draft", "PUT", {
+            expectedRevision: 2,
+            content: { text: "image", images: [image] },
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await json("/input", "POST", {
+            ...input,
+            draft: { revision: 3, text: "image", images: [ref.id] },
+          })
+        ).status,
+      ).toBe(202);
+      expect(await get()).toEqual({ revision: 3, content: { text: "image", images: [image] } });
+      expect(
+        (
+          await json("/input", "POST", {
+            ...input,
+            requestId: crypto.randomUUID(),
+            mode: "followUp",
+          })
+        ).status,
+      ).toBe(202);
+      expect(await get()).toEqual({ revision: 3, content: { text: "image", images: [image] } });
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it("clears only the matching revision on first successful admission, never on retry", async () => {
     const dir = await mkdtemp(join(tmpdir(), "draft-admit-"));
     const provider = testModels();
