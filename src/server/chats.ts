@@ -104,6 +104,17 @@ export async function assertInteractiveChat(tx: Tx, id: ConversationId, writable
     throw new ChatLifecycleError("Chat is read-only.", 409);
 }
 
+/** A prepared tangent must receive its original delegation before other mutations. */
+export async function assertTangentStarted(tx: Tx, id: ConversationId) {
+  const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === id);
+  if (item?.kind !== "tangent") return;
+  const tangent = (await tx.doc(TangentsDoc)).tangents.find(
+    (entry) => entry.id === id && entry.parentId === item.tangentParentId,
+  );
+  if (!tangent || tangent.startSubmissionId === undefined)
+    throw new ChatLifecycleError("Start tangent with its handoff first.", 409);
+}
+
 /** Hooks are called inside the tangent operation's SDK transaction. */
 export function createTangentCatalogHooks(options: {
   resolveModel(): Promise<ResolvedTangentModel>;
@@ -286,14 +297,7 @@ export async function openChats(
     };
     const assertCanAdmit = async (tx: Tx) => {
       await assertWritable(tx);
-      const item = (await tx.doc(CatalogDoc)).items.find((entry) => entry.id === conversation.id);
-      if (item?.kind === "tangent") {
-        const tangent = (await tx.doc(TangentsDoc)).tangents.find(
-          (entry) => entry.id === conversation.id && entry.parentId === item.tangentParentId,
-        );
-        if (!tangent || tangent.startSubmissionId === undefined)
-          throw new ChatLifecycleError("Start tangent with its handoff first.", 409);
-      }
+      await assertTangentStarted(tx, conversation.id);
     };
     return {
       conversation,
@@ -314,7 +318,7 @@ export async function openChats(
         if (!choice || !choice.thinkingLevels.includes(next.thinkingLevel))
           throw new ChatLifecycleError("Model or thinking level is unavailable.", 409);
         await harness.commit(async (tx) => {
-          await assertWritable(tx);
+          await assertCanAdmit(tx);
           if (await directShellHasUnsettled(tx, conversation.id))
             throw new ChatLifecycleError("A direct shell command is running.", 409);
           const agent = await tx.doc(AgentDoc, conversation.id);
@@ -396,7 +400,7 @@ export async function openChats(
       compact: async (instructions?: string) => {
         const reservation = randomUUID();
         await conversation.commit(async (tx) => {
-          await assertWritable(tx);
+          await assertCanAdmit(tx);
           if (
             (await directShellHasUnsettled(tx, conversation.id)) ||
             (await compactIntentUnsettled(tx, conversation.id))
