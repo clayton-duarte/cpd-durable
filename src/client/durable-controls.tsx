@@ -120,12 +120,24 @@ export function DurableControls() {
           title={host.title}
         />
       )}
-      {host.state?.hasEarlier && (
+      {host.state?.hasEarlier && !host.onLoadEarlier && (
         <AgentStatus
           state="waiting"
           label="Recent history only"
           title="Earlier history remains in session storage."
           role="note"
+        />
+      )}
+      {host.historyError && host.onLoadEarlier && host.historyGap === undefined && (
+        <ErrorState
+          title="History unavailable"
+          detail={host.historyError}
+          retrying={host.historyLoading ?? false}
+          pendingLabel="Loading history"
+          disabled={!host.connected}
+          onRetry={() => {
+            void (host.onRetryHistory ?? host.onLoadEarlier)?.();
+          }}
         />
       )}
       {host.state?.controls?.resetPending && (

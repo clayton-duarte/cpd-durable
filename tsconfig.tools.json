@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "types": ["node", "vite/client"], "lib": ["ES2023", "DOM"] },
-  "include": ["vite.config.ts", "playwright.config.ts", "tests"]
+  "include": [
+    "vite.config.ts",
+    "playwright.config.ts",
+    "playwright.presentation.config.ts",
+    "tests"
+  ]
 }

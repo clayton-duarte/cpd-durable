@@ -10,6 +10,9 @@ export interface ErrorStateProps extends Omit<ComponentProps<"div">, "children" 
   detail: string;
   retrying: boolean;
   onRetry: () => void;
+  actionLabel?: string;
+  pendingLabel?: string;
+  disabled?: boolean | undefined;
 }
 
 export function ErrorState({
@@ -17,6 +20,9 @@ export function ErrorState({
   detail,
   retrying,
   onRetry,
+  actionLabel = "Retry",
+  pendingLabel = "Retrying",
+  disabled,
   className,
   ...props
 }: ErrorStateProps) {
@@ -35,7 +41,7 @@ export function ErrorState({
       >
         <RefreshCwIcon className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
         <ShimmerLabel className="text-muted-foreground relative inline-block">
-          Retrying
+          {pendingLabel}
         </ShimmerLabel>
       </div>
     );
@@ -63,10 +69,11 @@ export function ErrorState({
       <button
         type="button"
         onClick={onRetry}
+        disabled={disabled}
         className="ms-auto flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-500/10 dark:text-red-400"
       >
         <RefreshCwIcon className="size-3" />
-        Retry
+        {actionLabel}
       </button>
     </div>
   );

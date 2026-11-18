@@ -13,10 +13,11 @@ import {
 import { Thread } from "@/components/assistant-ui/elements/thread.aui";
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
-import { ToolStateSchema, type SendMode } from "../shared/chat.ts";
+import { ErrorState } from "@/components/assistant-ui/elements/error-state";
+import { ToolStateSchema, type SendMode, type HistoryGap } from "../shared/chat.ts";
 import { projectAssistantMessages, type AssistantProjection } from "./assistant-messages.ts";
 import { DurableControls } from "./durable-controls.tsx";
-import { ChatHostContext, type ChatProps } from "./chat-host.ts";
+import { ChatHostContext, useChatHost, type ChatProps } from "./chat-host.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
@@ -70,8 +71,35 @@ const omittedUI = {
 function OfficialThread() {
   useAssistantDataUI(interruptionUI);
   useAssistantDataUI(omittedUI);
+  useAssistantDataUI(historyGapUI);
   return <Thread components={threadComponents} autoFocus={false} />;
 }
+
+const historyGapUI = {
+  name: "history-gap",
+  render: function HistoryGapNotice({ data }: { data: HistoryGap }) {
+    const host = useChatHost();
+    const selected = host.historyGap?.after === data.after && host.historyGap.upTo === data.upTo;
+    const error = selected ? host.historyError : null;
+    if (!host.connected || !host.onFillGap)
+      return (
+        <AgentStatus state="waiting" label="History gap. Reconnect to load missing messages." />
+      );
+    return (
+      <ErrorState
+        title="History gap"
+        detail={error ?? "Messages between these entries are not loaded."}
+        actionLabel={error ? "Retry" : "Load missing messages"}
+        pendingLabel="Loading missing messages"
+        retrying={!!host.historyLoading && selected}
+        disabled={host.historyLoading}
+        onRetry={() => {
+          void host.onFillGap?.(data);
+        }}
+      />
+    );
+  },
+};
 
 // Application code adapts host behavior; the official Thread owns presentation.
 export function Chat(props: ChatProps) {
@@ -169,6 +197,8 @@ export function Chat(props: ChatProps) {
     isLoading: props.state === null,
     isDisabled: !props.onSend,
     isSendDisabled: !available || (props.state?.busy ?? false),
+    hasEarlier: !!props.onLoadEarlier && props.connected && (props.state?.hasEarlier ?? false),
+    ...(props.onLoadEarlier ? { onLoadEarlier: props.onLoadEarlier } : {}),
     ...(available && props.onStop ? { onCancel: props.onStop } : {}),
   });
   runtimeRef.current = runtime;

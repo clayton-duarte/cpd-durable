@@ -1,22 +1,33 @@
 import { test, expect, type Page, type Locator } from "@playwright/test";
-import type { ChatState } from "../src/shared/chat.ts";
+import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/shared/chat.ts";
 
 const empty = { messages: [], partial: "", busy: false, hasEarlier: false, failure: null };
 const controls = { canContinue: false, resetPending: false, queue: [] };
 async function connect(page: Page, state: ChatState = { ...empty, controls }) {
   await page.addInitScript((initial) => {
     class TestEventSource extends EventTarget {
+      view: string;
+      frame = (raw: string) => {
+        const state = JSON.parse(raw) as { history?: { view: string } };
+        if (state.history) state.history.view = this.view;
+        return JSON.stringify(state);
+      };
       onerror: (() => void) | null = null;
       disconnect = () => this.onerror?.();
       update = (event: Event) => {
         if (event instanceof CustomEvent)
-          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(event.detail) }));
+          this.dispatchEvent(
+            new MessageEvent("state", { data: this.frame(JSON.stringify(event.detail)) }),
+          );
       };
-      constructor() {
+      constructor(url: string) {
         super();
+        this.view = new URL(url, location.href).searchParams.get("view")!;
         window.addEventListener("synthetic-chat-state", this.update);
         window.addEventListener("synthetic-chat-disconnect", this.disconnect);
-        queueMicrotask(() => this.dispatchEvent(new MessageEvent("state", { data: initial })));
+        queueMicrotask(() =>
+          this.dispatchEvent(new MessageEvent("state", { data: this.frame(initial) })),
+        );
       }
       close() {
         window.removeEventListener("synthetic-chat-state", this.update);
@@ -48,9 +59,252 @@ async function actions(page: Page, scope?: Locator) {
   return root.locator('[data-slot="composer-trigger-popover"]');
 }
 
+function historyState(
+  first: number,
+  last: number,
+  revision: number,
+  hasEarlier = true,
+  gaps: HistoryGap[] = [],
+): ChatState {
+  const messages: ChatState["messages"] = Array.from({ length: last - first + 1 }, (_, index) => {
+    const id = first + index;
+    return {
+      id: `${id}:0`,
+      role: id % 2 ? "user" : "assistant",
+      text: `Turn ${id}\nHistory content for turn ${id}.`,
+      interrupted: false,
+      source: { entryId: id },
+    };
+  });
+  return {
+    ...empty,
+    controls,
+    messages,
+    live: null,
+    conversationId: 1,
+    hasEarlier,
+    window: { entryIds: messages.slice(-30).map((message) => message.source!.entryId) },
+    history: {
+      view: "22222222-2222-4222-8222-222222222222",
+      epoch: "11111111-1111-4111-8111-111111111111",
+      revision,
+      oldest: first,
+      gaps,
+    },
+  };
+}
+
 test.beforeEach(async ({ page }) => {
   // Never let synthetic tests reach the user's live conversation.
   await page.route("**/api/**", (route) => route.abort());
+});
+
+test("native earlier loading prepends history while preserving draft, row identity and scroll anchor", async ({
+  page,
+}) => {
+  await connect(page, historyState(61, 90, 1));
+  const requests: unknown[] = [];
+  await page.route("**/api/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    requests.push(request);
+    const next = historyState(31, 90, 2);
+    next.history!.view = request.view;
+    await route.fulfill({ status: 200, json: next });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep this unsent draft");
+  const load = page.getByRole("button", { name: "Load earlier messages", exact: true });
+  await load.scrollIntoViewIfNeeded();
+  const row = page.locator('[data-durable-id="61:0"]');
+  await row.evaluate((element) => element.setAttribute("data-history-probe", "original"));
+  const before = (await row.boundingBox())!.y;
+  await load.click();
+  await expect(page.locator("[data-durable-id]")).toHaveCount(60);
+  await expect(row).toHaveAttribute("data-history-probe", "original");
+  await expect(draft).toHaveValue("Keep this unsent draft");
+  await expect.poll(async () => Math.abs((await row.boundingBox())!.y - before)).toBeLessThan(6);
+  expect(requests).toHaveLength(1);
+});
+
+test("a stale history response cannot roll back a newer loaded/live snapshot", async ({ page }) => {
+  await connect(page, historyState(61, 90, 1));
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = false;
+  await page.route("**/api/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    started = true;
+    await blocked;
+    const stale = historyState(31, 90, 2);
+    stale.history!.view = request.view;
+    await route.fulfill({ status: 200, json: stale });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  await update(page, historyState(31, 91, 3));
+  release();
+  await expect(page.locator("[data-durable-id]")).toHaveCount(61);
+  await expect(page.getByText("Turn 91", { exact: false }).first()).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Loading earlier messages", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator('[data-durable-id="91:0"]')).toHaveCount(1);
+});
+
+test("mobile keyboard loading reaches the first page without losing focus or the draft", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 375, height: 667 });
+  await connect(page, historyState(61, 90, 1));
+  await page.route("**/api/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    const next = historyState(1, 90, 2, false);
+    next.history!.view = request.view;
+    await route.fulfill({ status: 200, json: next });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Mobile draft");
+  const load = page.getByRole("button", { name: "Load earlier messages", exact: true });
+  await load.focus();
+  await load.press("Enter");
+  await expect(load).toHaveCount(0);
+  await expect(page.locator("[data-durable-id]")).toHaveCount(90);
+  await expect(draft).toHaveValue("Mobile draft");
+  await expect.poll(() => page.evaluate(() => document.activeElement !== document.body)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test("history errors retry independently of uncertain message delivery", async ({ page }) => {
+  await connect(page, historyState(61, 90, 1));
+  let inputRequests = 0;
+  let historyRequests = 0;
+  await page.route("**/api/input", async (route) => {
+    inputRequests++;
+    await route.abort();
+  });
+  await page.route("**/api/history", async (route) => {
+    historyRequests++;
+    if (historyRequests === 1) {
+      await route.abort();
+      return;
+    }
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    const next = historyState(1, 90, 2, false);
+    next.history!.view = request.view;
+    await route.fulfill({ status: 200, json: next });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Uncertain input");
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Delivery");
+  await draft.fill("Newer draft");
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  const error = page
+    .locator('[data-slot="error-state"]')
+    .filter({ hasText: "History unavailable" });
+  await expect(error).toBeVisible();
+  await error.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.locator("[data-durable-id]")).toHaveCount(90);
+  await expect(error).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load earlier messages", exact: true }),
+  ).toHaveCount(0);
+  await expect(draft).toHaveValue("Newer draft");
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toHaveCount(1);
+  expect(inputRequests).toBe(1);
+  expect(historyRequests).toBe(2);
+});
+
+test("explicit gap recovery is ordered and never exposes message actions for a gap", async ({
+  page,
+}) => {
+  const initial = historyState(1, 10, 1, false, [{ after: 10, upTo: 100 }]);
+  initial.messages.push(...historyState(100, 110, 1).messages);
+  await connect(page, initial);
+  const requests: unknown[] = [];
+  await page.route("**/api/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    requests.push(request);
+    const next = historyState(1, 110, 2, false);
+    next.history!.view = request.view;
+    await route.fulfill({ status: 200, json: next });
+  });
+  await page.goto("/");
+  const marker = page.locator('[data-message-id="history-gap:10:100"]');
+  await expect(marker).toHaveCount(1);
+  await expect(marker.locator('[data-slot="aui_assistant-message-footer"]')).toHaveCount(0);
+  await marker.getByRole("button", { name: "Load missing messages", exact: true }).click();
+  await expect(marker).toHaveCount(0);
+  await expect(page.locator("[data-durable-id]")).toHaveCount(110);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ gap: { after: 10, upTo: 100 } });
+});
+
+test("a delayed response from a retired history epoch cannot replace the restarted view", async ({
+  page,
+}) => {
+  await connect(page, historyState(61, 90, 1));
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let started = false;
+  await page.route("**/api/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    started = true;
+    await blocked;
+    const stale = historyState(1, 90, 100, false);
+    stale.history!.view = request.view;
+    await route.fulfill({ status: 200, json: stale });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect.poll(() => started).toBe(true);
+  const restarted = historyState(31, 91, 1);
+  restarted.history!.epoch = "33333333-3333-4333-8333-333333333333";
+  await update(page, restarted);
+  release();
+  await expect(
+    page.getByRole("button", { name: "Loading earlier messages", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator("[data-durable-id]")).toHaveCount(61);
+  await expect(page.locator('[data-durable-id="91:0"]')).toHaveCount(1);
+  await expect(page.locator('[data-durable-id="1:0"]')).toHaveCount(0);
+});
+
+test("failed gap reads retry their original bounds without adding a second recovery banner", async ({
+  page,
+}) => {
+  const initial = historyState(1, 10, 1, false, [{ after: 10, upTo: 100 }]);
+  initial.messages.push(...historyState(100, 110, 1).messages);
+  await connect(page, initial);
+  const requests: unknown[] = [];
+  await page.route("**/api/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    requests.push(request);
+    if (requests.length === 1) {
+      await route.abort();
+      return;
+    }
+    const next = historyState(1, 110, 2, false);
+    next.history!.view = request.view;
+    await route.fulfill({ status: 200, json: next });
+  });
+  await page.goto("/");
+  const marker = page.locator('[data-message-id="history-gap:10:100"]');
+  await marker.getByRole("button", { name: "Load missing messages", exact: true }).click();
+  await expect(marker).toContainText("History could not be loaded");
+  await expect(page.locator('[data-slot="error-state"]')).toHaveCount(1);
+  await marker.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(marker).toHaveCount(0);
+  expect(requests).toHaveLength(2);
+  expect(requests[0]).toEqual(requests[1]);
 });
 
 test("idle composer is one surface with discoverable commands and no inert controls", async ({
@@ -228,7 +482,7 @@ test("official Thread distinguishes history loading from its welcome", async ({ 
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await page.route("**/api/events", async (route) => {
+  await page.route(/\/api\/events(?:\?.*)?$/, async (route) => {
     await gate;
     await route.fulfill({
       contentType: "text/event-stream",
@@ -955,7 +1209,10 @@ test("two official Threads keep their native drafts and action panels independen
   page,
   baseURL,
 }) => {
-  test.skip(!baseURL?.endsWith(":5173"), "Vite-only embedding fixture");
+  test.skip(
+    new URL(baseURL ?? "http://127.0.0.1:3000").port === "3000",
+    "Vite-only embedding fixture",
+  );
   await page.goto("/tests/fixtures/chat-reuse.html");
   const first = page.getByRole("region", { name: "First chat", exact: true });
   const second = page.getByRole("region", { name: "Second chat", exact: true });

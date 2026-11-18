@@ -15,20 +15,20 @@ This mapping is scoped to [pi-durable 1.5.2](pi-durable-features.md). A visual e
 
 ## 1. Conversation and messages
 
-| Capability             | assistant-ui composition                                         | Status/boundary                                                                                 |
-| ---------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Transcript and scroll  | Official Thread and its supplied viewport/footer/scroll controls | Adopted; centered reading surface and registered sticky composer                                |
-| Participant content    | Message Root and Parts                                           | Adopted; durable IDs and order retained, no automatic adjacent-assistant merging                |
-| Assistant text         | Thread's supplied MarkdownText element                           | Adopted: Markdown/GFM headings, lists, tables and fenced code with code-copy controls           |
-| User text              | MessagePart Text                                                 | Adopted: literal text, line breaks and indentation preserved                                    |
-| Message actions        | Thread's supplied action bar and More menu                       | Adopted Copy/Export; unsupported Refresh is omitted by runtime capability                       |
-| Streaming              | Source-backed transient render identity                          | Adopted for unambiguous task-to-entry handovers; ambiguous/missed boundaries use canonical rows |
-| Loading/empty          | Runtime state, skeleton and welcome composition                  | Adopted; initial loading is not an empty transcript                                             |
-| Earlier history/gaps   | Native LoadEarlier adapter is the preferred paging surface       | Host paging, gap recovery and merge logic remain pending; recent-window notice retained         |
-| Acknowledgement/retry  | Admission-aware composer submission and transport notices        | Preserves original payload/ID after uncertain delivery, not answer-completion claims            |
-| Interrupted answer     | Incomplete status and typed interruption receipt                 | Cancellation, error and output limit remain distinct; Continue stays separate                   |
-| Custom events/activity | Allowlisted text, omission and interruption parts                | Positioned omission receipts only; unknown custom entry data stays hidden                       |
-| Images/files/sources   | Image/File/Attachment/Source elements and part renderers         | Require actual host/provider data; not enabled by this text-only migration                      |
+| Capability             | assistant-ui composition                                         | Status/boundary                                                                                              |
+| ---------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Transcript and scroll  | Official Thread and its supplied viewport/footer/scroll controls | Adopted; centered reading surface and registered sticky composer                                             |
+| Participant content    | Message Root and Parts                                           | Adopted; durable IDs and order retained, no automatic adjacent-assistant merging                             |
+| Assistant text         | Thread's supplied MarkdownText element                           | Adopted: Markdown/GFM headings, lists, tables and fenced code with code-copy controls                        |
+| User text              | MessagePart Text                                                 | Adopted: literal text, line breaks and indentation preserved                                                 |
+| Message actions        | Thread's supplied action bar and More menu                       | Adopted Copy/Export; unsupported Refresh is omitted by runtime capability                                    |
+| Streaming              | Source-backed transient render identity                          | Adopted for unambiguous task-to-entry handovers; ambiguous/missed boundaries use canonical rows              |
+| Loading/empty          | Runtime state, skeleton and welcome composition                  | Adopted; initial loading is not an empty transcript                                                          |
+| Earlier history/gaps   | Native Thread LoadEarlier and supplied ErrorState recovery       | SDK-owned 50-entry pages/merge, retained view resume and explicit gap recovery; no false whole-history claim |
+| Acknowledgement/retry  | Admission-aware composer submission and transport notices        | Preserves original payload/ID after uncertain delivery, not answer-completion claims                         |
+| Interrupted answer     | Incomplete status and typed interruption receipt                 | Cancellation, error and output limit remain distinct; Continue stays separate                                |
+| Custom events/activity | Allowlisted text, omission and interruption parts                | Positioned omission receipts only; unknown custom entry data stays hidden                                    |
+| Images/files/sources   | Image/File/Attachment/Source elements and part renderers         | Require actual host/provider data; not enabled by this text-only migration                                   |
 
 Markdown does not enable raw HTML or code execution. Markdown image elements are disallowed rather than fetching remote URLs. Links are not verified citations. Neither Shiki nor Prism, math, Mermaid, maps nor arbitrary generative UI execution is installed just because the catalogue offers it.
 
@@ -42,9 +42,21 @@ SDK `aborted` is an interruption, `error` an error and `length` an incomplete ou
 
 Render aliases are transient and separate from canonical durable IDs. A pure projector transfers the previous live row key only to exactly one new, known single-message SDK assistant entry attributed to the same task after the observed append boundary, while that boundary remains in the window or is its immediate predecessor. Task/attempt and append boundaries distinguish retries and reused attempts; no text-prefix or timestamp matching occurs. React layout effects commit the per-Chat cache. Canonical entry/part IDs remain separate metadata; future durable actions must not target render aliases.
 
-Ambiguous multi-entry updates, another conversation/task, dropped boundaries and unattributed scheduler salvage fall back to canonical rows, not guesses. Tested success, Stop and model-error handovers retain the mounted row and Markdown part. Reconnect within the retained view keeps aliases; a full page load uses canonical history without browser persistence. Dropped rows lose their aliases. History paging and gap recovery remain deferred.
+Ambiguous multi-entry updates, another conversation/task, dropped boundaries and unattributed scheduler salvage fall back to canonical rows, not guesses. Tested success, Stop and model-error handovers retain the mounted row and Markdown part. Reconnect within the retained view keeps aliases; a full page load uses canonical history without browser persistence. Dropped rows lose their aliases. Paging preserves these evidence limits rather than treating loaded historical entries as a new live handover.
 
 Strict wire validation rejects duplicate message/part identities and unknown wire part types. Rejected frames retain history/drafts, disable new actions and show a sanitized error. A later valid frame clears only that frame error, preserving uncertain-operation retries.
+
+### Complete history access (Batch 3)
+
+`src/server/history.ts` binds one transient SDK `ConversationTranscript` to each browser view. The SDK's `entries()`, `loadEarlier()`, `fillGap()` and `resume` window own page boundaries, deduplication, ordering and gap detection. Each read loads at most 50 entries; record IDs are bounds, not contiguous counts. Loaded entries remain in the view as the watched recent window advances. Full canonical projection is recomputed over the loaded entries, but tool-result pairing never crosses an unresolved gap.
+
+Thread's supplied ghost LoadEarlier control binds to real `hasEarlier`/`onLoadEarlier`; its runtime manages loading state and its viewport handles prepends. Gap markers appear at their SDK boundaries using supplied ErrorState with actual Load missing messages/Retry callbacks, not fabricated assistant text. Markers have no durable message identity or copy/export actions. ErrorState's optional action/pending labels and disabled state describe history reads without changing its visual design.
+
+The read-only `/api/history` operation accepts a validated view ID and optional gap bounds; it never submits a run. History loading/errors/retry are independent of mutation admission, drafts and uncertain-operation retry IDs. Revisions within a view epoch reject stale page responses; retired epochs and closed observers cannot overwrite a replacement view. There is no browser SDK mount, raw entry/document forwarding, history database or localStorage layer.
+
+Disconnect stops the observer, not work. The cached SDK transcript resumes on reconnect and explicitly marks missing ranges. A detached view expires after 30 minutes. After host restart/cache loss, the browser's oldest-entry bound reconstructs one oldest page plus the latest window, with SDK gap markers for anything still missing. A full page refresh creates a new recent view; stored history remains pageable. A view UUID selects transient read state, not an authentication credential. The application is still one localhost conversation.
+
+An empty terminal SDK page ends paging without dropping retained rows. Failed reads retain visible history and expose a read retry; no provider request or delivery retry is implied. Loaded-history navigation/search and whole-session search remain later work.
 
 ## 2. Composer and run controls
 
@@ -101,6 +113,8 @@ ThreadList, sidebar/modal shells, forks, sharing and new-thread controls require
 
 Omit `onSend` for read-only mode. Otherwise it receives text and optional send mode, returning true only for confirmed admission. `onStop`, `onContinue`, `onReset` and `onWithdraw` are optional host callbacks. `state.controls` gates advanced controls.
 
+Optional `onLoadEarlier`/`onFillGap` bind history reads, with separate `historyLoading`, `historyGap`, `historyError` and `onRetryHistory`. Read-only embeddings may still page if their host supplies these callbacks. Without a paging adapter, the earlier-history notice remains informational.
+
 Native composer Send reaches the external-store `onNew` host adapter. Because native Send detaches its draft eagerly, the adapter immediately restores it if the composer is still empty. Only an unchanged draft clears after confirmed admission. Busy-mode slash commands use the same admission function without detachment. This preserves server authority without a second React draft store or an optimistic transcript.
 
 After uncertain input/control delivery, the host supplies `uncertain`, an error and `onRetry`, with `retryText` or `retryAction`. Retain the original operation/payload/request ID. Other mutations stay blocked while a new draft remains editable. Continue/reset/withdraw do not consume the composer draft. Reset handoff text survives a failed attempt.
@@ -109,7 +123,7 @@ The transport serializes mutations and keeps retry identity only until refresh. 
 
 ## Remaining work
 
-Source-backed live/committed identity and ordered text/reasoning/tool/omission projection retain the fallback limits above. History paging/gap recovery, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
+Source-backed live/committed identity, paged history/gap recovery and ordered text/reasoning/tool/omission projection retain the limits above. Loaded-turn navigation/search, media renderers, richer tool-specific result displays and application custom-event schemas remain unimplemented. The [catalogue review](assistant-ui-elements.md) distinguishes presentation candidates from host capabilities.
 
 ## shadcn gap decisions
 
