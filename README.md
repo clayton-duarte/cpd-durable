@@ -38,6 +38,24 @@ pnpm start
 
 Open **http://127.0.0.1:3000**. Start from the repository root. A missing API key fails startup without opening the session.
 
+## SSH loopback access
+
+For full-control access to an already running development instance on a trusted remote host, keep both Vite and the application server bound to that host's loopback interface as in [Run locally](#run-locally). Use normal SSH authentication and verify the host key through your usual trusted process. From the client computer, replace the synthetic destination below with your own SSH account and host:
+
+```sh
+ssh -o ExitOnForwardFailure=yes -L 127.0.0.1:5173:127.0.0.1:5173 -N user@example.invalid
+```
+
+While that SSH process remains connected, open **http://127.0.0.1:5173** on the client. Vite proxies `/api` to the remote host's loopback port 3000, so browser API requests, events, images and tool-related routes use the same forward; no separate backend forward is needed. The SSH client does not need provider credentials. Inject those only into the remote server process, as described above. Run only one application host against the remote data directory.
+
+The client listener is explicitly loopback-only. If client port 5173 is occupied, the forward fails; do not stop an existing preview just to make this forward. A different client port must be both free and accepted by the current server Host/Origin allowlist; `3000` is the other allowed loopback port, if it is free, and the browser URL must use that same port. Arbitrary ports are not accepted, and a configurable alternative requires separate work.
+
+**This is full-control access, not read-only sharing or multiuser authentication.** Anyone able to use the local forwarded endpoint can operate the app with the remote server account's authority, including executing commands and reading files or provider secrets available to that account. Trust the remote host, SSH account and client machine. SSH protects its transport and authenticates the SSH connection; the HTTP application does not establish a separate per-user identity. LAN/public exposure, other tunnels and reverse proxies remain separate decisions.
+
+Close the SSH process when finished. A tunnel disconnect only detaches browser observation; it does not stop SDK tasks, restart the host or delete data. The HTTP contract is tested with synthetic requests, not an end-to-end SSH server or authentication test.
+
+## Chat capabilities
+
 New chats default to OpenCode Go's `deepseek-v4.1-flash`, using pi-ai's native `opencode-go` provider (not OpenCode Zen or OpenRouter). **Chat details** offers a supplied model/thinking picker from the server's configured authenticated catalog; Save persists per chat across reopen and applies to subsequent requests. It also exposes SDK usage/recovery, committed context boundaries and manual compaction; occupancy/headroom remain unknown. See [context, configuration and usage](docs/chat-components.md#4-context-configuration-and-usage) for scope and retry limits.
 
 Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through Hono/SSE. Host tools include **read, write, edit, bash, powershell, grep, find and ls**. Calls, streaming output, results and failures appear in supplied tool disclosures. PowerShell needs `pwsh` or `powershell` installed; grep/find need host `rg` (ripgrep), while ls uses the SDK directory reader. Search-tool output limits are not command deadlines or filesystem boundaries; see [tool semantics](docs/chat-components.md#3-agent-activity-tools-and-tasks). Assistant Cloud and LAN access remain unimplemented. User text stays literal; assistant Markdown supports lists, tables and copyable code, without executing rendered code/raw HTML or fetching remote Markdown images. The existing dark theme remains the default.
@@ -131,7 +149,7 @@ This repository is public; its package remains marked private to prevent acciden
 
 Provider credentials are server-only. Requests go to OpenCode Go and the selected model provider; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics. Consult [OpenCode Go's privacy settings](https://opencode.ai/docs/go/#privacy); access to DeepSeek may require the workspace to allow Global regions. The application does not change those settings.
 
-The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. Do not expose it through a LAN bind, tunnel, reverse proxy or public host without a separate access-control decision.
+The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. The SSH loopback forward above is full-control access for a trusted user, not a sharing boundary. LAN/public binds, other tunnels and reverse proxies require a separate access-control decision.
 
 Transcript projection preserves ordered text, tool calls/results and omission receipts for unsupported content. Tool arguments and output are private conversation content, not sanitized diagnostics; raw provider diagnostics and arbitrary SDK documents stay server-side. Unambiguous live-to-entry handovers retain mounted row identity while keeping canonical durable IDs separate; cancellation, error and output limits differ. See [projection semantics and limits](docs/chat-components.md#transcript-identity-and-projection-batch-2).
 
