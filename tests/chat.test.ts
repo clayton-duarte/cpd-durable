@@ -196,6 +196,9 @@ describe("single durable chat", () => {
       "write",
       "edit",
       "bash",
+      "grep",
+      "find",
+      "ls",
       "powershell",
       "load_skill",
     ]);
