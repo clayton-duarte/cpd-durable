@@ -1,8 +1,19 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Tx } from "@earendil-works/pi-durable";
-import { DraftUpdateSchema, DraftViewSchema, type DraftView } from "../shared/drafts.ts";
+import {
+  DraftAttemptRequestSchema,
+  DraftUpdateSchema,
+  DraftViewSchema,
+  type DraftView,
+} from "../shared/drafts.ts";
 import { PendingImagesDoc } from "./attachment-catalog.ts";
 import { CatalogDoc, ChatLifecycleError, type ChatScope } from "./chats.ts";
+import {
+  DraftAttemptConflict,
+  draftAttemptFingerprint,
+  readDraftAttempt,
+  recordDraftAttempt,
+} from "./draft-attempts.ts";
 
 export const DraftDoc = defineDoc<DraftView>({
   kind: "cpd.composer-draft",
@@ -48,5 +59,37 @@ export async function saveDraft(scope: ChatScope, input: unknown) {
     draft.content = request.content;
     draft.revision++;
     return DraftViewSchema.parse(draft);
+  }, BACKGROUND_CONTEXT);
+}
+
+export async function readAttempt(scope: ChatScope, requestId: string) {
+  return scope.conversation.commit(async (tx) => {
+    await assertReadable(tx, scope);
+    return readDraftAttempt(tx, scope.conversation.id, requestId);
+  }, BACKGROUND_CONTEXT);
+}
+
+export async function saveAttempt(scope: ChatScope, input: unknown) {
+  const request = DraftAttemptRequestSchema.parse(input);
+  return scope.conversation.commit(async (tx) => {
+    await scope.assertWritable(tx);
+    const existing = await readDraftAttempt(tx, scope.conversation.id, request.requestId);
+    const record = { ...request, fingerprint: draftAttemptFingerprint(request) };
+    // Identical intent remains retryable after the user advances the draft.
+    if (existing) return recordDraftAttempt(tx, scope.conversation.id, record);
+    if (await tx.submissionByRequest(scope.conversation.id, request.requestId))
+      throw new DraftAttemptConflict();
+    const draft = await tx.doc(DraftDoc, scope.conversation.id);
+    if (
+      draft.revision !== request.draftRevision ||
+      draft.content.text !== request.text ||
+      JSON.stringify(draft.content.images.map((image) => image.id)) !==
+        JSON.stringify(request.images)
+    )
+      throw new ChatLifecycleError("Draft changed in another session.", 409);
+    const pending = await tx.doc(PendingImagesDoc, scope.conversation.id);
+    if (request.images.some((id) => !pending.items.some((image) => image.id === id)))
+      throw new ChatLifecycleError("Draft image is unavailable.", 409);
+    return recordDraftAttempt(tx, scope.conversation.id, record);
   }, BACKGROUND_CONTEXT);
 }

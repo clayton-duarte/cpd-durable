@@ -18,8 +18,10 @@ import {
   HistoryLoadSchema,
 } from "../shared/chat.ts";
 import { createHistory } from "./history.ts";
-import { readDraft, saveDraft } from "./drafts.ts";
-import { DraftUpdateSchema } from "../shared/drafts.ts";
+import { readAttempt, readDraft, saveAttempt, saveDraft } from "./drafts.ts";
+import { DraftAttemptRequestSchema, DraftUpdateSchema } from "../shared/drafts.ts";
+import { DraftAttemptConflict } from "./draft-attempts.ts";
+import { z } from "zod";
 import type { openChat } from "./chat.ts";
 import {
   ChatIdSchema,
@@ -261,6 +263,23 @@ export function createApp(
     if (!input.success) return c.json({ error: "Invalid draft." }, 400);
     return c.json(await saveDraft(c.get("scope"), input.data));
   });
+  routes.post("/draft/attempt", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    if (!c.req.header("content-type")?.startsWith("application/json"))
+      return c.json({ error: "Expected application/json." }, 415);
+    const input = DraftAttemptRequestSchema.safeParse(
+      await c.req.json<unknown>().catch(() => null),
+    );
+    if (!input.success) return c.json({ error: "Invalid draft attempt." }, 400);
+    return c.json(await saveAttempt(c.get("scope"), input.data));
+  });
+  routes.get("/draft/attempt/:requestId", async (c) => {
+    if (!chat.chats) return c.json({ error: "Draft service unavailable." }, 503);
+    const id = z.uuid().safeParse(c.req.param("requestId"));
+    if (!id.success) return c.json({ error: "Not found." }, 404);
+    const result = await readAttempt(c.get("scope"), id.data);
+    return result ? c.json(result) : c.json({ error: "Not found." }, 404);
+  });
 
   routes.post("/input", async (c) => {
     if (!c.req.header("content-type")?.startsWith("application/json")) {
@@ -464,7 +483,9 @@ export function createApp(
   app.route("/api/chats/:chatId", routes);
   app.route("/api", routes);
   app.onError((error, c) =>
-    error instanceof ChatLifecycleError || error instanceof AttachmentAccessError
+    error instanceof ChatLifecycleError ||
+    error instanceof AttachmentAccessError ||
+    error instanceof DraftAttemptConflict
       ? c.json({ error: error.message }, error.status)
       : error instanceof AdmissionIdentityError
         ? c.json({ error: "Request ID does not match its original action." }, 409)

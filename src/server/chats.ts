@@ -20,10 +20,15 @@ import { inspectContext } from "./context.ts";
 import type { Models } from "@earendil-works/pi-ai/models";
 import { modelChoices, sameSelection, selection } from "./configuration.ts";
 import type { Selection } from "../shared/configuration.ts";
-import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
+import {
+  admissionDigest,
+  checkAdmissionRequest,
+  imageRequestDigest,
+} from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
 import { DraftDoc } from "./drafts.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
+import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
 
 export const modelKey = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -162,6 +167,27 @@ export async function openChats(
           const metadata = await tx.doc(CatalogDoc);
           const item = metadata.items.find((entry) => entry.id === conversation.id);
           await assertWritable(tx);
+          const attempt = draft.requestId
+            ? await readDraftAttempt(tx, conversation.id, draft.requestId)
+            : undefined;
+          if (options?.draft?.attempt && !attempt) throw new DraftAttemptConflict();
+          if (attempt) {
+            const original = attempt.record;
+            if (
+              draft.type !== "input" ||
+              !options?.draft ||
+              options.draft.revision !== original.draftRevision ||
+              options.draft.text !== original.text ||
+              JSON.stringify(options.draft.images) !== JSON.stringify(original.images) ||
+              options.digest !==
+                imageRequestDigest({
+                  text: original.text.trim(),
+                  images: original.images,
+                  mode: original.mode,
+                })
+            )
+              throw new DraftAttemptConflict();
+          }
           if (options?.expectedModelKey !== undefined) {
             const current = selection(await tx.doc(AgentDoc, conversation.id));
             if (modelKey(current) !== options.expectedModelKey)
