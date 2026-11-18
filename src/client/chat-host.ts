@@ -7,6 +7,7 @@ export interface ChatProps {
   active?: boolean;
   readOnly?: boolean;
   onFork?: ((entryId: number) => void) | undefined;
+  onRegenerate?: ((entryId: number) => void) | undefined;
   title: string;
   description?: string;
   state: ChatState | null;

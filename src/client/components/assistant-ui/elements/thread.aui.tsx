@@ -31,6 +31,7 @@ import { ThreadNavigation } from "@/thread-navigation";
 import { ChatDetails } from "@/chat-details";
 import { AgentQuestions } from "@/agent-questions";
 import { ForkMessageAction } from "@/fork-message-action";
+import { RegenerateMessageAction } from "@/regenerate-message-action";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -799,6 +800,7 @@ const AssistantActionBar: FC = () => {
       className="aui-assistant-action-bar-root text-muted-foreground animate-in fade-in col-start-3 row-start-2 -ms-1 flex gap-1 duration-200"
     >
       <ForkMessageAction />
+      <RegenerateMessageAction />
       <ActionBarPrimitive.Copy render={<TooltipIconButton tooltip="Copy" />}>
         <AuiIf condition={(s) => s.message.isCopied}>
           <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />

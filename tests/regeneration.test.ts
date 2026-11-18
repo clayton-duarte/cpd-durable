@@ -512,6 +512,18 @@ describe("regeneration durable identity and recovery", () => {
     expect(response.status).toBe(202);
     const receipt = (await response.json()) as { branchId: string; submissionId: string };
     expect(await (await post()).json()).toEqual(receipt);
+    const conflicting = (suffix: string, body: unknown) =>
+      app.request(`${path}/${suffix}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    expect(
+      (await conflicting("input", { text: "Different", requestId: request.requestId })).status,
+    ).toBe(409);
+    expect(
+      (await conflicting("control", { type: "continue", requestId: request.requestId })).status,
+    ).toBe(409);
     expect(await (await get(`regenerations/${answerId}`)).json()).toEqual({
       operations: [{ ...receipt, requestId: request.requestId }],
     });
@@ -523,6 +535,39 @@ describe("regeneration durable identity and recovery", () => {
     await harness.waitForIdle(BACKGROUND_CONTEXT);
     expect(provider.calls).toHaveLength(1);
   });
+
+  it.each(["input", "control"])(
+    "production %s rejects subsequent regeneration with the same identity",
+    async (kind) => {
+      const request = input();
+      const chats = await openChats(harness, root, {}, provider.models);
+      const app = createApp({
+        conversation: root,
+        chats,
+        withdraw: (id) => harness.abortSubmission(id, BACKGROUND_CONTEXT, root.id),
+      });
+      const base = `http://localhost:3000/api/chats/${root.id}`;
+      const post = (suffix: string, body: unknown) =>
+        app.request(`${base}/${suffix}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      const body =
+        kind === "input"
+          ? { text: "Other input", requestId: request.requestId }
+          : { type: "reset", handoff: "", requestId: request.requestId };
+      expect((await post(kind, body)).status).toBe(202);
+      expect((await post("regenerate", request)).status).toBe(409);
+      expect((await chats.list()).chats).toHaveLength(1);
+      if (kind === "input") {
+        await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
+        provider.calls[0]!.finish("Answer");
+        await harness.waitForIdle(BACKGROUND_CONTEXT);
+        expect(provider.calls).toHaveLength(1);
+      } else expect(provider.calls).toHaveLength(0);
+    },
+  );
 
   it("linearizes concurrent configuration and admission without bypassing the guard", async () => {
     const request = input();

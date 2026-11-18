@@ -13,6 +13,7 @@ export default defineConfig({
     "codemode.spec.ts",
     "history-operations.spec.ts",
     "questions.spec.ts",
+    "regeneration.spec.ts",
   ],
   workers: 1,
   use: { baseURL },
