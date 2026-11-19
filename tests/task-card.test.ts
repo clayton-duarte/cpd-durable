@@ -39,3 +39,17 @@ it("rejects conflicting selection and disclosure at runtime", () => {
     "TaskCard selection cannot also disclose children",
   );
 });
+
+it("separates visible label and metadata outside their individually trimmed spans", () => {
+  const selection = renderToStaticMarkup(
+    createElement(TaskCard, {
+      label: "Architecture review",
+      meta: "idle · Model 2",
+      state: "waiting",
+      onSelect: () => {},
+      selected: true,
+      selectionLabel: "Selected tangent: Architecture review idle · Model 2",
+    }),
+  );
+  expect(selection).toMatch(/Architecture review<\/span> <span[^>]*>idle · Model 2<\/span>/);
+});

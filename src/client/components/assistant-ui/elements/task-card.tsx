@@ -125,10 +125,12 @@ export function TaskCard({
         {!onSelect && <span className="sr-only">{stateLabel ?? state}</span>}
         <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
         {meta !== undefined && (
-          <span className={cn(mono, "text-muted-foreground max-w-24 shrink-0 truncate")}>
+          <>
             {" "}
-            {meta}
-          </span>
+            <span className={cn(mono, "text-muted-foreground max-w-24 shrink-0 truncate")}>
+              {meta}
+            </span>
+          </>
         )}
         {elapsed !== undefined && (
           <span className={cn(mono, "text-muted-foreground shrink-0 tabular-nums")}>{elapsed}</span>
