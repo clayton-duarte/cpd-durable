@@ -29,6 +29,9 @@ test("immediate open tangents remain selectable, including running", async ({ pa
   await expect(
     main.getByRole("button", { name: "Selected tangent: Running task" }),
   ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    main.getByRole("button", { name: "Selected tangent: Running task" }).locator(".sr-only"),
+  ).toHaveCount(0);
   await main.getByRole("button", { name: "Open tangent: Failed task" }).click();
   await expect(page.getByTestId("selected")).toHaveText("failed");
   await expect(main.getByRole("button", { name: "Open tangent: Running task" })).toBeEnabled();

@@ -287,7 +287,29 @@ test("many admitted receipts leave both split composers inside the viewport", as
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(viewport);
-    for (const tab of ["Main", title]) {
+    const paneTabs = page.getByRole("tablist", { name: "Chat pane" });
+    const tabsBounds = await paneTabs.boundingBox();
+    expect(tabsBounds).not.toBeNull();
+    const tabs = paneTabs.getByRole("tab");
+    await expect(tabs).toHaveCount(2);
+    const firstTab = await tabs.nth(0).boundingBox();
+    const secondTab = await tabs.nth(1).boundingBox();
+    expect(firstTab).not.toBeNull();
+    expect(secondTab).not.toBeNull();
+    expect(firstTab!.height).toBeGreaterThanOrEqual(36);
+    expect(secondTab!.height).toBeGreaterThanOrEqual(36);
+    expect(firstTab!.x + firstTab!.width).toBeLessThanOrEqual(secondTab!.x + 1);
+    for (const [index, label] of ["Main", "Tangent"].entries()) {
+      const tab = tabs.nth(index);
+      const text = tab.locator("span");
+      await expect(text).toHaveText(label);
+      const bounds = await tab.boundingBox();
+      const textBounds = await text.boundingBox();
+      expect(textBounds!.x).toBeGreaterThanOrEqual(bounds!.x);
+      expect(textBounds!.x + textBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
+      expect(await text.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+    }
+    for (const tab of ["Main: Main", `Tangent: ${title}`]) {
       await page.getByRole("tab", { name: tab, exact: true }).focus();
       await page.keyboard.press("Enter");
       const input = page
@@ -299,6 +321,11 @@ test("many admitted receipts leave both split composers inside the viewport", as
       await input.focus();
       await expect(input).toBeFocused();
     }
+    const header = await page
+      .getByRole("tabpanel", { name: `Tangent: ${title}` })
+      .getByRole("heading", { name: `${title} · Model 2` })
+      .boundingBox();
+    expect(header!.y).toBeGreaterThanOrEqual(tabsBounds!.y + tabsBounds!.height);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,

@@ -122,7 +122,7 @@ export function TaskCard({
         className="hover:enabled:bg-foreground/[0.03] flex items-center gap-2.5 px-3.5 py-2.5 text-start transition-colors disabled:cursor-default"
       >
         <TaskStateIcon state={state} />
-        <span className="sr-only">{stateLabel ?? state}</span>
+        {!onSelect && <span className="sr-only">{stateLabel ?? state}</span>}
         <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
         {meta !== undefined && (
           <span className={cn(mono, "text-muted-foreground max-w-24 shrink-0 truncate")}>

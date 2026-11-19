@@ -78,12 +78,33 @@ test("mobile tabs switch visible context with keyboard without starting work", a
   await expect(page.locator(`[id="${controlledPanel}"]`)).toHaveAttribute("role", "tabpanel");
   await expect(page.getByTestId("chat-main")).toBeHidden();
   await expect(page.getByTestId("chat-a")).toBeVisible();
+  await page
+    .getByTestId("chat-a")
+    .getByRole("textbox", { name: "Message input" })
+    .fill("tangent draft");
   await tangentTab.focus();
   await page.keyboard.press("ArrowLeft");
   await expect(mainTab).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page.getByTestId("chat-main")).toBeVisible();
   await expect(page.getByTestId("chat-a")).toBeHidden();
+  await page
+    .getByTestId("chat-main")
+    .getByRole("textbox", { name: "Message input" })
+    .fill("main draft");
+  await mainTab.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(tangentTab).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByTestId("chat-a").getByRole("textbox", { name: "Message input" }),
+  ).toHaveValue("tangent draft");
+  await tangentTab.focus();
+  await page.keyboard.press("ArrowLeft");
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByTestId("chat-main").getByRole("textbox", { name: "Message input" }),
+  ).toHaveValue("main draft");
   await expect(
     page.getByRole("button", { name: "Selected tangent: Running tangent" }),
   ).toBeVisible();

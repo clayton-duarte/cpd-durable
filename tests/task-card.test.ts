@@ -15,11 +15,15 @@ it("retains the stock disclosure mode and accepts a domain-neutral selection lab
       onSelect: () => {},
       selected: true,
       selectionLabel: "Choose task",
+      stateLabel: "Working with details",
     }),
   );
   expect(selection).toContain('aria-label="Choose task"');
   expect(selection).toContain('aria-pressed="true"');
+  expect(selection).toContain('aria-description="Working with details"');
+  expect(selection).not.toContain('<span class="sr-only">Working with details</span>');
   expect(selection).not.toContain("aria-expanded");
+  expect(disclosure).toContain('<span class="sr-only">waiting</span>');
 });
 
 it("rejects conflicting selection and disclosure at runtime", () => {

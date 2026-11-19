@@ -74,24 +74,29 @@ export function TangentWorkspace(props: TangentWorkspaceProps) {
           }}
           className="md:hidden"
         >
-          <TabsList aria-label="Chat pane" className="max-w-full md:hidden">
+          <TabsList
+            aria-label="Chat pane"
+            className="grid h-11 w-full grid-cols-2 gap-1 p-1 md:hidden"
+          >
             <TabsTrigger
               id={`${panelId}-main-tab`}
               aria-controls={`${panelId}-main`}
               value="main"
-              className="min-w-0 truncate"
+              className="h-9 min-w-0 w-full px-3"
               title={main.title}
+              aria-label={`Main: ${main.title}`}
             >
-              {main.title}
+              <span className="min-w-0 truncate">Main</span>
             </TabsTrigger>
             <TabsTrigger
               id={`${panelId}-tangent-tab`}
               aria-controls={`${panelId}-tangent`}
               value="tangent"
-              className="min-w-0 truncate"
+              className="h-9 min-w-0 w-full px-3"
               title={selected.title}
+              aria-label={`Tangent: ${selected.title}`}
             >
-              {selected.title}
+              <span className="min-w-0 truncate">Tangent</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
