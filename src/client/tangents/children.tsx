@@ -100,7 +100,7 @@ export function TangentChildren({
               title={`${item.title} · ${description(item)}`}
               className={selectedTangentId === item.id ? "ring-1 ring-ring" : undefined}
               selected={selectedTangentId === item.id}
-              selectionLabel={`${selectedTangentId === item.id ? "Selected tangent" : "Open tangent"}: ${item.title}`}
+              selectionLabel={`${selectedTangentId === item.id ? "Selected tangent" : "Open tangent"}: ${item.title} ${item.attention === "none" ? item.activity : item.attention} · ${item.model}`}
               selectionDisabled={selectionDisabled}
               onSelect={() => onSelectTangent(item.id)}
             />

@@ -22,6 +22,18 @@ export function HandoffPreview({
   original: string;
   originalLabel?: string;
 }) {
+  const fields = [
+    ["Goal", handoff.goal],
+    ["Decisions", handoff.decisions],
+    ["Constraints", handoff.constraints],
+    ["Exclusions", handoff.exclusions],
+    ["References", handoff.references],
+    ["Suggested skills", handoff.suggestedSkills],
+    ["Discretion", handoff.discretion],
+    ["Deliverable", handoff.deliverable],
+    ["Evidence", handoff.evidence],
+    ["Limits", handoff.limits],
+  ] as const;
   return (
     <div className="min-w-0 space-y-2">
       <p className="text-muted-foreground text-xs">
@@ -46,7 +58,7 @@ export function HandoffPreview({
           Review full handoff
         </CollapsibleTrigger>
         <CollapsibleContent className="space-y-2 text-sm">
-          {Object.entries(handoff).map(([key, value]) => (
+          {fields.map(([key, value]) => (
             <div key={key}>
               <p className="text-muted-foreground font-medium">{key}</p>
               <p className="whitespace-pre-wrap break-words">

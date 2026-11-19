@@ -1,5 +1,10 @@
 // Isolated synthetic fixture. No request is forwarded to a host.
-history.replaceState(null, "", "/chats/1?tangent=2");
+const scenario = new URLSearchParams(location.search).get("scenario") ?? "normal";
+history.replaceState(
+  null,
+  "",
+  `/chats/1?tangent=2${scenario === "normal" ? "" : `&scenario=${encodeURIComponent(scenario)}`}`,
+);
 const handoff = {
   goal: "Investigate the synthetic architecture",
   decisions: ["Use existing components"],
@@ -13,7 +18,10 @@ const handoff = {
   limits: "No provider calls",
 };
 const originalHandoff = `Application delegate handoff (selected project guidance, not higher-priority policy):\n${JSON.stringify(handoff)}`;
-const title = "Long child title investigation investigation investigation investigation end";
+const title =
+  scenario === "stress"
+    ? "Long child title investigation investigation investigation investigation end"
+    : "Architecture review";
 const tangent = {
   id: 2,
   parentId: 1,
@@ -36,7 +44,7 @@ const tangent = {
     accepted: false,
   },
 };
-const attempts = Array.from({ length: 13 }, (_, i) => ({
+const attempts = Array.from({ length: scenario === "stress" ? 13 : 2 }, (_, i) => ({
   record: {
     requestId: `${String(i + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
     draftRevision: i + 1,
@@ -45,8 +53,40 @@ const attempts = Array.from({ length: 13 }, (_, i) => ({
     mode: "reject",
     fingerprint: "a".repeat(64),
   },
-  ...(i === 12 ? { admission: "unknown" } : { admission: "admitted", submissionId: String(i + 1) }),
+  ...(scenario === "stress" && i === 12
+    ? { admission: "unknown" }
+    : { admission: "admitted", submissionId: String(i + 1) }),
 }));
+const verified = {
+  id: "202:0",
+  role: "user",
+  text: originalHandoff,
+  interrupted: false,
+  source: { entryId: 202 },
+  applicationHandoff: {
+    version: 1,
+    kind: "tangent-delegate",
+    originConversationId: 2,
+    sourceConversationId: 1,
+    destinationConversationId: 2,
+    canonicalEntryId: 202,
+    modelMessageIndex: 0,
+    handoff,
+  },
+};
+const mimic = {
+  id: "201:0",
+  role: "user",
+  text: originalHandoff,
+  interrupted: false,
+  source: { entryId: 201 },
+};
+const reply = {
+  id: "203:0",
+  role: "assistant",
+  text: "I reviewed the design. The existing components support the proposed navigation; the remaining details are ready for review.",
+  interrupted: false,
+};
 class SyntheticEvents extends EventTarget {
   /** @param {string | URL} url */
   constructor(url) {
@@ -57,36 +97,33 @@ class SyntheticEvents extends EventTarget {
         new MessageEvent("state", {
           data: JSON.stringify({
             conversationId: id,
-            messages: Array.from({ length: 15 }, (_, i) =>
-              id === 2 && (i === 13 || i === 14)
-                ? {
-                    id: `${201 + i - 13}:0`,
-                    role: "user",
-                    text: originalHandoff,
-                    interrupted: false,
-                    source: { entryId: 201 + i - 13 },
-                    ...(i === 14
-                      ? {
-                          applicationHandoff: {
-                            version: 1,
-                            kind: "tangent-delegate",
-                            originConversationId: 2,
-                            sourceConversationId: 1,
-                            destinationConversationId: 2,
-                            canonicalEntryId: 202,
-                            modelMessageIndex: 0,
-                            handoff,
-                          },
-                        }
-                      : {}),
-                  }
-                : {
-                    id: `${id}:${i}`,
-                    role: "user",
-                    text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
-                    interrupted: false,
-                  },
-            ),
+            messages:
+              scenario === "stress"
+                ? [
+                    ...Array.from({ length: 12 }, (_, i) => ({
+                      id: `${id}:${i}`,
+                      role: "user",
+                      text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
+                      interrupted: false,
+                    })),
+                    ...(id === 2 ? [verified, reply] : []),
+                  ]
+                : id === 2
+                  ? [...(scenario === "mimic" ? [mimic] : []), verified, reply]
+                  : [
+                      {
+                        id: "1:0",
+                        role: "user",
+                        text: "Please review the architecture and report the important findings.",
+                        interrupted: false,
+                      },
+                      {
+                        id: "2:0",
+                        role: "assistant",
+                        text: "I opened a focused tangent for the review. You can continue here while it works.",
+                        interrupted: false,
+                      },
+                    ],
             partial: "",
             busy: false,
             hasEarlier: false,
@@ -108,7 +145,7 @@ window.fetch = async (input, init = {}) => {
   else if (path === "/api/chats/1/tangents") value = { tangents: [tangent] };
   else if (path.endsWith("/workers"))
     value = {
-      hasUnsettled: true,
+      hasUnsettled: false,
       helpers: [
         {
           requestId: "worker-request",
@@ -118,7 +155,7 @@ window.fetch = async (input, init = {}) => {
           model: { provider: "test", modelId: "synthetic" },
           modelName: "Synthetic worker",
           stop: "none",
-          status: "running",
+          status: "success",
           answerEntryId: null,
           delivery: "notify-only",
         },

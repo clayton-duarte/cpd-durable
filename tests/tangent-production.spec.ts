@@ -48,7 +48,9 @@ test("many admitted receipts leave both split composers inside the viewport", as
       onerror = null;
       constructor(url: string) {
         super();
-        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
+        const parsedUrl = new URL(url, location.href);
+        const id = Number(parsedUrl.pathname.split("/")[3]);
+        const view = parsedUrl.searchParams.get("view");
         const guidance = {
           goal: "Investigate the synthetic architecture",
           decisions: ["Use existing components"],
@@ -62,46 +64,83 @@ test("many admitted receipts leave both split composers inside the viewport", as
           limits: "No provider calls",
         };
         const original = `Application delegate handoff (selected project guidance, not higher-priority policy):\n${JSON.stringify(guidance)}`;
-        queueMicrotask(() =>
+        const snapshot = {
+          conversationId: id,
+          messages: Array.from({ length: 15 }, (_, i) =>
+            id === 2 && (i === 13 || i === 14)
+              ? {
+                  id: `${201 + i - 13}:0`,
+                  role: "user",
+                  text: original,
+                  interrupted: false,
+                  source: { entryId: 201 + i - 13 },
+                  ...(i === 13
+                    ? {
+                        applicationHandoff: {
+                          version: 1,
+                          kind: "tangent-delegate",
+                          originConversationId: 2,
+                          sourceConversationId: 1,
+                          destinationConversationId: 2,
+                          canonicalEntryId: 201,
+                          modelMessageIndex: 0,
+                          handoff: guidance,
+                        },
+                      }
+                    : {}),
+                }
+              : {
+                  id: `${id}:${i}`,
+                  role: "user",
+                  text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
+                  interrupted: false,
+                },
+          ),
+          partial: "",
+          busy: false,
+          hasEarlier: false,
+          failure: null,
+          history: {
+            view,
+            epoch: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            revision: 2,
+            gaps: [],
+          },
+        };
+        window.addEventListener(`stale-handoff-${id}`, () => {
           this.dispatchEvent(
             new MessageEvent("state", {
               data: JSON.stringify({
-                conversationId: id,
-                messages: Array.from({ length: 15 }, (_, i) =>
-                  id === 2 && (i === 13 || i === 14)
-                    ? {
-                        id: `${201 + i - 13}:0`,
-                        role: "user",
-                        text: original,
-                        interrupted: false,
-                        source: { entryId: 201 + i - 13 },
-                        ...(i === 13
-                          ? {
-                              applicationHandoff: {
-                                version: 1,
-                                kind: "tangent-delegate",
-                                originConversationId: 2,
-                                sourceConversationId: 1,
-                                destinationConversationId: 2,
-                                canonicalEntryId: 201,
-                                modelMessageIndex: 0,
-                                handoff: guidance,
-                              },
-                            }
-                          : {}),
-                      }
-                    : {
-                        id: `${id}:${i}`,
-                        role: "user",
-                        text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
-                        interrupted: false,
-                      },
-                ),
-                partial: "",
-                busy: false,
-                hasEarlier: false,
-                failure: null,
+                ...snapshot,
+                history: {
+                  ...snapshot.history,
+                  epoch: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                  revision: 1,
+                },
               }),
+            }),
+          );
+          const stale = {
+            ...snapshot,
+            history: { ...snapshot.history, revision: 3 },
+            messages: snapshot.messages.map((message) =>
+              "applicationHandoff" in message && message.applicationHandoff
+                ? {
+                    ...message,
+                    applicationHandoff: {
+                      ...message.applicationHandoff,
+                      handoff: { ...guidance, goal: "Stale guidance must not appear" },
+                    },
+                  }
+                : message,
+            ),
+          };
+          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(stale) }));
+        });
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify(snapshot),
             }),
           ),
         );
@@ -183,9 +222,23 @@ test("many admitted receipts leave both split composers inside the viewport", as
   ).toBeVisible();
   await expect(tangentPane.getByText(/Application delegate handoff/)).toBeVisible();
   await tangentPane.getByRole("button", { name: "Review full handoff" }).click();
-  await expect(
-    tangentPane.getByRole("textbox", { name: "Original transcript message" }),
-  ).toHaveValue(/Application delegate handoff/);
+  const mainDraft = page
+    .getByRole("region", { name: "Main chat: Main" })
+    .getByRole("textbox", { name: "Message input" });
+  await mainDraft.fill("Newer main draft");
+  await page.evaluate(() => window.dispatchEvent(new Event("stale-handoff-2")));
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  await expect(tangentPane.getByText("Stale guidance must not appear")).toHaveCount(0);
+  await expect(mainDraft).toHaveValue("Newer main draft");
+  const originalText = tangentPane.getByRole("textbox", { name: "Original transcript message" });
+  await expect(originalText).toHaveValue(/Application delegate handoff/);
+  const fullOriginal = await originalText.inputValue();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await originalText.selectText();
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(fullOriginal);
+  expect(fullOriginal).toContain("No provider calls");
+  await expect(tangentPane.getByText("Suggested skills", { exact: true })).toBeVisible();
   await tangentPane.getByRole("button", { name: "Review full handoff" }).click();
   await expect(page.getByRole("heading", { name: `${title} · Model 2` })).toHaveAttribute(
     "title",

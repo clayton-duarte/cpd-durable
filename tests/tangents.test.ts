@@ -19,6 +19,7 @@ import { resolveApplicationHandoffs } from "../src/server/handoff-presentation.t
 import { present } from "../src/server/presentation.ts";
 import { createHistory } from "../src/server/history.ts";
 import { ChatStateSchema } from "../src/shared/chat.ts";
+import { exportTranscripts } from "../src/server/export.ts";
 import {
   acceptReturn,
   admitTangentStart,
@@ -154,6 +155,16 @@ describe("interactive tangents", () => {
       const original = snapshot.messages.find((message) => message.source?.entryId === first.id)!;
       expect(original.applicationHandoff?.handoff.goal).toBe(handoff.goal);
       expect(original.text).toContain("Application delegate handoff");
+      const exported = await exportTranscripts(
+        { conversationIds: [String(child.id)], includeArchived: false },
+        async (id) =>
+          id === String(child.id) ? { conversation: child, archived: false } : undefined,
+      );
+      expect(
+        exported.entries
+          .find((entry) => entry.entryId === first.id)
+          ?.messages.flatMap((message) => message.textParts.map((part) => part.text)),
+      ).toContain(original.text);
       await watcher.stop();
       const history = createHistory(child, (view, entries) =>
         harness.commit((tx) => resolveApplicationHandoffs(tx, view, entries), context),
