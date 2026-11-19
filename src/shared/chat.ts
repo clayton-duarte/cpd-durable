@@ -4,6 +4,7 @@ import { AttachmentIdSchema, SavedImageReferenceSchema } from "./attachments.ts"
 import { TableDetailsSchema } from "./structured-table.ts";
 import { EditDiffSchema } from "./edit-diff.ts";
 import { DraftAdmissionSchema } from "./drafts.ts";
+import { ApplicationHandoffSchema } from "./application-handoff.ts";
 import { modelInputText } from "./direct-shell.ts";
 
 export const PROVIDER_ID = "opencode-go";
@@ -109,22 +110,39 @@ export const MessageOutcomeSchema = z.enum([
   "length",
   "incomplete",
 ]);
-export const ChatMessageSchema = z.strictObject({
-  id: z.string(),
-  role: z.enum(["user", "assistant"]),
-  text: z.string(),
-  interrupted: z.boolean(),
-  parts: z.array(ChatPartSchema).optional(),
-  outcome: MessageOutcomeSchema.optional(),
-  source: z
-    .strictObject({
-      entryId: RecordIdSchema,
-      feedbackModelIndex: z.number().int().nonnegative().safe().optional(),
-      // Known SDK assistant entries and direct-shell result entries carry task attribution.
-      taskId: RecordIdSchema.optional(),
-    })
-    .optional(),
-});
+export const ChatMessageSchema = z
+  .strictObject({
+    id: z.string(),
+    role: z.enum(["user", "assistant"]),
+    text: z.string(),
+    interrupted: z.boolean(),
+    parts: z.array(ChatPartSchema).optional(),
+    outcome: MessageOutcomeSchema.optional(),
+    applicationHandoff: z.preprocess((value) => {
+      const result = ApplicationHandoffSchema.safeParse(value);
+      return result.success ? result.data : undefined;
+    }, ApplicationHandoffSchema.optional()),
+    source: z
+      .strictObject({
+        entryId: RecordIdSchema,
+        feedbackModelIndex: z.number().int().nonnegative().safe().optional(),
+        // Known SDK assistant entries and direct-shell result entries carry task attribution.
+        taskId: RecordIdSchema.optional(),
+      })
+      .optional(),
+  })
+  .transform((message) => {
+    const handoff = message.applicationHandoff;
+    if (
+      handoff &&
+      (message.role !== "user" ||
+        message.source?.entryId !== handoff.canonicalEntryId ||
+        message.id !== `${handoff.canonicalEntryId}:0`)
+    ) {
+      return { ...message, applicationHandoff: undefined };
+    }
+    return message;
+  });
 
 export const ChatStateSchema = z
   .strictObject({

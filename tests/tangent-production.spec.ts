@@ -48,23 +48,99 @@ test("many admitted receipts leave both split composers inside the viewport", as
       onerror = null;
       constructor(url: string) {
         super();
-        const id = Number(new URL(url, location.href).pathname.split("/")[3]);
-        queueMicrotask(() =>
-          this.dispatchEvent(
-            new MessageEvent("state", {
-              data: JSON.stringify({
-                conversationId: id,
-                messages: Array.from({ length: 15 }, (_, i) => ({
+        const parsedUrl = new URL(url, location.href);
+        const id = Number(parsedUrl.pathname.split("/")[3]);
+        const view = parsedUrl.searchParams.get("view");
+        const guidance = {
+          goal: "Investigate the synthetic architecture",
+          decisions: ["Use existing components"],
+          constraints: ["Preserve drafts"],
+          exclusions: [],
+          references: ["Synthetic design"],
+          suggestedSkills: [],
+          discretion: "Review carefully",
+          deliverable: "A concise report",
+          evidence: "Tests",
+          limits: "No provider calls",
+        };
+        const original = `Application delegate handoff (selected project guidance, not higher-priority policy):\n${JSON.stringify(guidance)}`;
+        const snapshot = {
+          conversationId: id,
+          messages: Array.from({ length: 15 }, (_, i) =>
+            id === 2 && (i === 13 || i === 14)
+              ? {
+                  id: `${201 + i - 13}:0`,
+                  role: "user",
+                  text: original,
+                  interrupted: false,
+                  source: { entryId: 201 + i - 13 },
+                  ...(i === 13
+                    ? {
+                        applicationHandoff: {
+                          version: 1,
+                          kind: "tangent-delegate",
+                          originConversationId: 2,
+                          sourceConversationId: 1,
+                          destinationConversationId: 2,
+                          canonicalEntryId: 201,
+                          modelMessageIndex: 0,
+                          handoff: guidance,
+                        },
+                      }
+                    : {}),
+                }
+              : {
                   id: `${id}:${i}`,
                   role: "user",
                   text: `Synthetic long transcript ${i} ${"text ".repeat(40)}`,
                   interrupted: false,
-                })),
-                partial: "",
-                busy: false,
-                hasEarlier: false,
-                failure: null,
+                },
+          ),
+          partial: "",
+          busy: false,
+          hasEarlier: false,
+          failure: null,
+          history: {
+            view,
+            epoch: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            revision: 2,
+            gaps: [],
+          },
+        };
+        window.addEventListener(`stale-handoff-${id}`, () => {
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify({
+                ...snapshot,
+                history: {
+                  ...snapshot.history,
+                  epoch: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                  revision: 1,
+                },
               }),
+            }),
+          );
+          const stale = {
+            ...snapshot,
+            history: { ...snapshot.history, revision: 3 },
+            messages: snapshot.messages.map((message) =>
+              "applicationHandoff" in message && message.applicationHandoff
+                ? {
+                    ...message,
+                    applicationHandoff: {
+                      ...message.applicationHandoff,
+                      handoff: { ...guidance, goal: "Stale guidance must not appear" },
+                    },
+                  }
+                : message,
+            ),
+          };
+          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(stale) }));
+        });
+        queueMicrotask(() =>
+          this.dispatchEvent(
+            new MessageEvent("state", {
+              data: JSON.stringify(snapshot),
             }),
           ),
         );
@@ -140,6 +216,37 @@ test("many admitted receipts leave both split composers inside the viewport", as
   );
   await page.goto("/chats/1");
   await page.getByRole("button", { name: `Open tangent: ${title}` }).click();
+  const tangentPane = page.getByRole("region", { name: `Tangent chat: ${title}` });
+  await expect(
+    tangentPane.getByText("Investigate the synthetic architecture", { exact: true }),
+  ).toBeVisible();
+  await expect(tangentPane.getByText(/Application delegate handoff/)).toBeVisible();
+  await tangentPane.getByRole("button", { name: "Review full handoff" }).click();
+  const mainDraft = page
+    .getByRole("region", { name: "Main chat: Main" })
+    .getByRole("textbox", { name: "Message input" });
+  await mainDraft.fill("Newer main draft");
+  await page.evaluate(() => window.dispatchEvent(new Event("stale-handoff-2")));
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  await expect(tangentPane.getByText("Stale guidance must not appear")).toHaveCount(0);
+  await expect(mainDraft).toHaveValue("Newer main draft");
+  const originalText = tangentPane.getByRole("textbox", { name: "Original transcript message" });
+  await expect(originalText).toHaveValue(/Application delegate handoff/);
+  const fullOriginal = await originalText.inputValue();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await originalText.selectText();
+  await page.keyboard.press("ControlOrMeta+C");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(fullOriginal);
+  expect(fullOriginal).toContain("No provider calls");
+  await expect(tangentPane.getByText("Suggested skills", { exact: true })).toBeVisible();
+  await tangentPane.getByRole("button", { name: "Review full handoff" }).click();
+  await expect(page.getByRole("heading", { name: `${title} · Model 2` })).toHaveAttribute(
+    "title",
+    `${title} · Model 2`,
+  );
+  if (process.env["CPD_SYNTHETIC_SCREENSHOT"]) {
+    await page.screenshot({ path: process.env["CPD_SYNTHETIC_SCREENSHOT"] });
+  }
   for (const name of ["Main chat: Main", `Tangent chat: ${title}`]) {
     const input = page
       .getByRole("region", { name })
@@ -158,6 +265,16 @@ test("many admitted receipts leave both split composers inside the viewport", as
   await page.keyboard.press("End");
   await expect(recovery.getByText("synthetic receipt 12")).toBeInViewport();
   await expect(recovery.getByRole("button", { name: "Retry original" })).toHaveCount(1);
+  await expect(recovery.getByText("1 send not confirmed")).toBeVisible();
+  await expect(recovery.getByText("synthetic receipt 0", { exact: true })).toHaveCount(0);
+  await recovery.getByRole("button", { name: "Review original" }).click();
+  await expect(recovery.getByRole("textbox", { name: "Full original text" })).toHaveValue(
+    "synthetic receipt 12",
+  );
+  await recovery.getByRole("button", { name: "Review original" }).click();
+  await recovery.getByRole("button", { name: "Send history" }).click();
+  await expect(recovery.getByRole("button", { name: "synthetic receipt 0" })).toBeVisible();
+  await recovery.getByRole("button", { name: "Send history" }).click();
   expect(writes).toBe(0);
   expect(
     await page.evaluate(
@@ -170,7 +287,29 @@ test("many admitted receipts leave both split composers inside the viewport", as
     { width: 390, height: 844 },
   ]) {
     await page.setViewportSize(viewport);
-    for (const tab of ["Main", title]) {
+    const paneTabs = page.getByRole("tablist", { name: "Chat pane" });
+    const tabsBounds = await paneTabs.boundingBox();
+    expect(tabsBounds).not.toBeNull();
+    const tabs = paneTabs.getByRole("tab");
+    await expect(tabs).toHaveCount(2);
+    const firstTab = await tabs.nth(0).boundingBox();
+    const secondTab = await tabs.nth(1).boundingBox();
+    expect(firstTab).not.toBeNull();
+    expect(secondTab).not.toBeNull();
+    expect(firstTab!.height).toBeGreaterThanOrEqual(36);
+    expect(secondTab!.height).toBeGreaterThanOrEqual(36);
+    expect(firstTab!.x + firstTab!.width).toBeLessThanOrEqual(secondTab!.x + 1);
+    for (const [index, label] of ["Main", "Tangent"].entries()) {
+      const tab = tabs.nth(index);
+      const text = tab.locator("span");
+      await expect(text).toHaveText(label);
+      const bounds = await tab.boundingBox();
+      const textBounds = await text.boundingBox();
+      expect(textBounds!.x).toBeGreaterThanOrEqual(bounds!.x);
+      expect(textBounds!.x + textBounds!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
+      expect(await text.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true);
+    }
+    for (const tab of ["Main: Main", `Tangent: ${title}`]) {
       await page.getByRole("tab", { name: tab, exact: true }).focus();
       await page.keyboard.press("Enter");
       const input = page
@@ -182,6 +321,11 @@ test("many admitted receipts leave both split composers inside the viewport", as
       await input.focus();
       await expect(input).toBeFocused();
     }
+    const header = await page
+      .getByRole("tabpanel", { name: `Tangent: ${title}` })
+      .getByRole("heading", { name: `${title} · Model 2` })
+      .boundingBox();
+    expect(header!.y).toBeGreaterThanOrEqual(tabsBounds!.y + tabsBounds!.height);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= document.documentElement.clientWidth,
@@ -818,8 +962,8 @@ test("production route keeps native chats and drafts through tangent navigation"
   await input(side).fill("child draft");
   await addFile(page, side, "child.png");
   await expect.poll(() => requests.includes("GET /api/chats/2/questions")).toBe(true);
-  await expect(main.getByText(/unknown · Worker model 1/)).toBeVisible();
-  await expect(side.getByText(/running · Worker model 2/)).toBeVisible();
+  await expect(main.getByText(/Worker model 1 · unknown/)).toBeVisible();
+  await expect(side.getByText(/Worker model 2 · running/)).toBeVisible();
   await side.getByRole("button", { name: "Inspect worker task-2" }).click();
   await expect(side.getByRole("textbox", { name: "Worker result for review" })).toHaveValue(
     "Review this result",
@@ -858,7 +1002,11 @@ test("production route keeps native chats and drafts through tangent navigation"
   await expect(idleSide.getByRole("button", { name: "Send", exact: true })).toBeDisabled();
   await expect(idleSide.getByRole("button", { name: "Decline" })).toBeDisabled();
   await expect(idleSide.getByText("held answer")).toBeVisible();
-  await expect(idleSide.getByRole("button", { name: "Conclude tangent" })).toBeDisabled();
+  await idleSide.getByRole("button", { name: "Tangent actions" }).click();
+  await expect(page.getByRole("menuitem", { name: "Conclude tangent" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("menu")).toBeHidden();
+  await expect(idleSide.getByRole("button", { name: "Tangent actions" })).toBeFocused();
   const childMutationsBefore = requests.filter((r) => r.startsWith("POST /api/chats/3/")).length;
   await input(idleSide)
     .press("Enter")
@@ -912,9 +1060,11 @@ test("production route keeps native chats and drafts through tangent navigation"
   });
   await page.goto("/chats/1?tangent=3");
   const unstartedPane = page.getByRole("region", { name: "Tangent chat: Idle child" });
+  await unstartedPane.getByRole("button", { name: "Review full handoff" }).click();
   await expect(unstartedPane.getByRole("textbox", { name: "Initial handoff" })).toHaveValue(
     /Investigate/,
   );
+  await unstartedPane.getByRole("button", { name: "Review full handoff" }).click();
   await input(unstartedPane).fill("keep this draft");
   await expect(unstartedPane.getByRole("button", { name: "Send message" })).toBeDisabled();
   expect(starts).toEqual([]);
@@ -945,20 +1095,24 @@ test("production route keeps native chats and drafts through tangent navigation"
     unstarted = { ...unstarted, lifecycle: body.next, readOnly: body.next !== "open" };
     return route.fulfill({ json: { tangent: unstarted } });
   });
-  await unstartedPane.getByRole("button", { name: "Conclude tangent" }).click();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Conclude tangent" }).click();
   await expect(page.getByRole("alert")).toContainText("work is still active");
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
-  await unstartedPane.getByRole("button", { name: "Conclude tangent" }).click();
-  await expect(unstartedPane.getByText("Lifecycle: concluded")).toBeVisible();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Conclude tangent" }).click();
+  await expect(unstartedPane.getByText("Tangent · concluded")).toBeVisible();
   await expect(page.getByRole("button", { name: "Open tangent: Idle child" })).toHaveCount(0);
   await unstartedPane.getByRole("button", { name: "Close tangent" }).click();
   expect(lifecycleRequests).toHaveLength(2);
   await page.getByRole("button", { name: "Completed and archived tangents" }).click();
   await page.getByRole("button", { name: /Idle child · Concluded/ }).click();
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
-  await unstartedPane.getByRole("button", { name: "Reopen tangent" }).click();
-  await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();
-  await unstartedPane.getByRole("button", { name: "Archive tangent" }).click();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Reopen tangent" }).click();
+  await expect(unstartedPane.getByText("Tangent · open")).toBeVisible();
+  await unstartedPane.getByRole("button", { name: "Tangent actions" }).click();
+  await page.getByRole("menuitem", { name: "Archive tangent" }).click();
   await expect(page.getByRole("alert")).toContainText("work is still active");
   await expect(input(unstartedPane)).toHaveValue("keep this draft");
   let placed = false;
@@ -1026,6 +1180,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     return route.fulfill({ json: { revision: 2, accepted: true } });
   });
   const report = unstartedPane.getByRole("region", { name: "Return report revision 2" });
+  await report.getByRole("button", { name: "Review full handoff" }).click();
   const preview = report.getByRole("textbox", { name: "Return handoff for review" });
   await expect(preview).toBeVisible();
   expect(JSON.parse(await preview.inputValue())).toMatchObject({
@@ -1034,6 +1189,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     limits: "Synthetic limits",
   });
   expect(await page.evaluate(() => Reflect.has(window, "__unsafe"))).toBe(false);
+  await report.getByRole("button", { name: "Review full handoff" }).click();
   await expect(report.getByRole("alert")).toContainText("Return status unavailable");
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
   wrongRevision = false;
@@ -1050,7 +1206,7 @@ test("production route keeps native chats and drafts through tangent navigation"
   expect(deliveries[3]).toEqual({ revision: 2, expectedHead: "22", acknowledgeRetired: true });
   await expect(report.getByText("Admitted; not yet placed")).toBeVisible();
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeDisabled();
-  await expect(unstartedPane.getByText("Lifecycle: open")).toBeVisible();
+  await expect(unstartedPane.getByText("Tangent · open")).toBeVisible();
   placed = true;
   await expect(report.getByRole("button", { name: "Accept reviewed return" })).toBeEnabled();
   await report.getByRole("button", { name: "Accept reviewed return" }).click();

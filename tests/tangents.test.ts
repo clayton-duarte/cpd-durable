@@ -8,11 +8,18 @@ import {
   Harness,
   InboxDoc,
   type ConversationId,
+  type EntryRecord,
+  type Tx,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 import { testModels } from "./models.ts";
+import { resolveApplicationHandoffs } from "../src/server/handoff-presentation.ts";
+import { present } from "../src/server/presentation.ts";
+import { createHistory } from "../src/server/history.ts";
+import { ChatStateSchema } from "../src/shared/chat.ts";
+import { exportTranscripts } from "../src/server/export.ts";
 import {
   acceptReturn,
   admitTangentStart,
@@ -23,6 +30,7 @@ import {
   prepareTangent,
   recordReturn,
   returnDeliveryStatus,
+  TangentsDoc,
   type TangentHooks,
 } from "../src/server/tangents/index.ts";
 
@@ -109,6 +117,227 @@ async function fixture() {
 }
 
 describe("interactive tangents", () => {
+  it("projects only the actual placed initial input, including after reopen, not a literal mimic", async () => {
+    const f = await fixture();
+    let harness = f.harness;
+    try {
+      const created = await admitTangentStart(harness, { ...f.request, start: true }, f.hooks);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      const child = (await harness.conversation(created.id as ConversationId, context))!;
+      const firstPage = await child.entries({ order: "ascending" }, 50, undefined, context);
+      const first = firstPage.items.find((entry) => entry.kind === "pi.user")!;
+      expect(first.model?.[0]?.role).toBe("user");
+      const firstAnnotations = await harness.commit(
+        (tx) => resolveApplicationHandoffs(tx, child.id, firstPage.items),
+        context,
+      );
+      expect(firstAnnotations.get(first.id)).toMatchObject({
+        kind: "tangent-delegate",
+        canonicalEntryId: first.id,
+        destinationConversationId: child.id,
+        modelMessageIndex: 0,
+      });
+      for (const changed of [
+        { ...first, kind: "pi.system" },
+        { ...first, model: [...first.model!, first.model![0]!] },
+        { ...first, model: [{ role: "assistant", content: "not a user" }] },
+      ]) {
+        const invalid = firstPage.items.map((entry) =>
+          entry.id === first.id ? (changed as EntryRecord) : entry,
+        );
+        expect(
+          (await harness.commit((tx) => resolveApplicationHandoffs(tx, child.id, invalid), context))
+            .size,
+        ).toBe(0);
+      }
+      const watcher = await child.watch(context);
+      const snapshot = present(watcher.value, false, [], firstAnnotations);
+      const original = snapshot.messages.find((message) => message.source?.entryId === first.id)!;
+      expect(original.applicationHandoff?.handoff.goal).toBe(handoff.goal);
+      expect(original.text).toContain("Application delegate handoff");
+      const exported = await exportTranscripts(
+        { conversationIds: [String(child.id)], includeArchived: false },
+        async (id) =>
+          id === String(child.id) ? { conversation: child, archived: false } : undefined,
+      );
+      expect(
+        exported.entries
+          .find((entry) => entry.entryId === first.id)
+          ?.messages.flatMap((message) => message.textParts.map((part) => part.text)),
+      ).toContain(original.text);
+      await watcher.stop();
+      const history = createHistory(child, (view, entries) =>
+        harness.commit((tx) => resolveApplicationHandoffs(tx, view, entries), context),
+      );
+      let published: unknown;
+      const subscription = await history.subscribe(crypto.randomUUID(), async (state) => {
+        published = state;
+      });
+      const publishedState = ChatStateSchema.parse(published);
+      expect(publishedState.history?.revision).toBeGreaterThan(0);
+      expect(
+        publishedState.messages.find((message) => message.source?.entryId === first.id)
+          ?.applicationHandoff,
+      ).toEqual(firstAnnotations.get(first.id));
+      await subscription.unsubscribe();
+      f.provider.calls[1]!.finish("done");
+      await child.waitForIdle(context);
+      const literal = first.model![0]!;
+      if (literal.role !== "user" || typeof literal.content !== "string")
+        throw new Error("Expected text");
+      const mimic = await child.submit({ type: "input", content: literal.content }, context);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(3));
+      f.provider.calls[2]!.finish("done");
+      await child.waitForIdle(context);
+      const page = await child.entries({ order: "ascending" }, 50, undefined, context);
+      const userEntries = page.items.filter((entry) => entry.kind === "pi.user");
+      expect(userEntries).toHaveLength(2);
+      const annotations = await harness.commit(
+        (tx) => resolveApplicationHandoffs(tx, child.id, page.items),
+        context,
+      );
+      expect(annotations.has(userEntries[0]!.id)).toBe(true);
+      expect(annotations.has(userEntries[1]!.id)).toBe(false);
+      await harness.close(context);
+      harness = await f.open();
+      const reopened = (await harness.conversation(created.id as ConversationId, context))!;
+      const reopenedPage = await reopened.entries({ order: "ascending" }, 50, undefined, context);
+      const reopenedAnnotations = await harness.commit(
+        (tx) => resolveApplicationHandoffs(tx, reopened.id, reopenedPage.items),
+        context,
+      );
+      expect(reopenedAnnotations.get(first.id)).toEqual(firstAnnotations.get(first.id));
+      expect(reopenedAnnotations.has(userEntries[1]!.id)).toBe(false);
+      expect(
+        (
+          await harness.commit(
+            (tx) => resolveApplicationHandoffs(tx, f.main.id, reopenedPage.items),
+            context,
+          )
+        ).size,
+      ).toBe(0);
+      await harness.commit(async (tx) => {
+        const item = (await tx.doc(TangentsDoc)).tangents.find((value) => value.id === created.id)!;
+        item.startSubmissionId = mimic.id;
+      }, context);
+      expect(
+        (
+          await harness.commit(
+            (tx) => resolveApplicationHandoffs(tx, reopened.id, reopenedPage.items),
+            context,
+          )
+        ).size,
+      ).toBe(0);
+    } finally {
+      await harness.close(context);
+    }
+  });
+  it("fails closed on lookup budgets and unplaced submissions", async () => {
+    const doc = vi.fn();
+    const tooMany = Array.from({ length: 501 }, (_, id) => ({ id })) as unknown as EntryRecord[];
+    expect(
+      (await resolveApplicationHandoffs({ doc } as unknown as Tx, 1 as ConversationId, tooMany))
+        .size,
+    ).toBe(0);
+    expect(doc).not.toHaveBeenCalled();
+    const entry = {
+      id: 10,
+      conversationId: 2,
+      kind: "pi.user",
+      model: [{ role: "user", content: "literal" }],
+    } as unknown as EntryRecord;
+    const submission = vi.fn(async () => ({
+      type: "input",
+      requestId: "tangent-start:2",
+      conversationId: 2,
+      status: "queued",
+    }));
+    const tx = {
+      doc: async () => ({
+        tangents: [
+          { id: 2, parentId: 1, startSubmissionId: 7, versions: [{ kind: "delegate", handoff }] },
+        ],
+      }),
+      submission,
+    } as unknown as Tx;
+    expect((await resolveApplicationHandoffs(tx, 2 as ConversationId, [entry])).size).toBe(0);
+    expect(submission).toHaveBeenCalledOnce();
+  });
+
+  it("annotates a delivered return, not a notification, including only visible fork history", async () => {
+    const f = await fixture();
+    try {
+      const child = await prepareTangent(f.harness, f.request, f.hooks);
+      await recordReturn(
+        f.harness,
+        child.id as ConversationId,
+        f.main.id,
+        { requestId: "return-projection", tangentId: child.id, expectedRevision: 1, handoff },
+        f.hooks,
+      );
+      const before = await f.main.entries({ order: "ascending" }, 50, undefined, context);
+      expect(
+        (
+          await f.harness.commit(
+            (tx) => resolveApplicationHandoffs(tx, f.main.id, before.items),
+            context,
+          )
+        ).size,
+      ).toBe(0);
+      await deliverReturn(f.harness, f.main.id, f.main.id, child.id as ConversationId, 2, f.hooks);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      const page = await f.main.entries({ order: "ascending" }, 50, undefined, context);
+      const annotations = await f.harness.commit(
+        (tx) => resolveApplicationHandoffs(tx, f.main.id, page.items),
+        context,
+      );
+      expect(annotations.size).toBe(1);
+      const [entryId, annotation] = [...annotations][0]!;
+      expect(annotation).toMatchObject({
+        kind: "tangent-return",
+        sourceConversationId: child.id,
+        destinationConversationId: f.main.id,
+      });
+      f.provider.calls[1]!.finish("done");
+      await f.main.waitForIdle(context);
+      const forkAt = await f.harness.commit(
+        (tx) =>
+          tx.forkConversation(f.main.id, entryId as typeof f.request.sourceEntryId, {
+            ownership: { kind: "ownerless" },
+          }),
+        context,
+      );
+      const forkBefore = await f.harness.commit(
+        (tx) =>
+          tx.forkConversation(f.main.id, f.request.sourceEntryId, {
+            ownership: { kind: "ownerless" },
+          }),
+        context,
+      );
+      const visible = (await f.harness.conversation(forkAt.id, context))!;
+      const earlier = (await f.harness.conversation(forkBefore.id, context))!;
+      const visibleEntries = await visible.entries({ order: "ascending" }, 50, undefined, context);
+      const earlierEntries = await earlier.entries({ order: "ascending" }, 50, undefined, context);
+      expect(
+        (
+          await f.harness.commit(
+            (tx) => resolveApplicationHandoffs(tx, visible.id, visibleEntries.items),
+            context,
+          )
+        ).has(entryId),
+      ).toBe(true);
+      expect(
+        (
+          await f.harness.commit(
+            (tx) => resolveApplicationHandoffs(tx, earlier.id, earlierEntries.items),
+            context,
+          )
+        ).size,
+      ).toBe(0);
+    } finally {
+      await f.harness.close(context);
+    }
+  });
   it("pins policy selection and rejects a stale policy without re-resolving retries", async () => {
     const f = await fixture();
     try {

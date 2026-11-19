@@ -1,7 +1,7 @@
 "use client";
 
 // assistant-ui task-card.tsx at 03c06506107f55a7bc11bed616a2fed06af8a8ba;
-// locally formatted, with stateLabel added for truthful accessible status text.
+// locally formatted, with stateLabel and a mutually exclusive selection action added.
 import { Children, type ComponentProps, type ReactNode, useState } from "react";
 import { Ban, CheckIcon, ChevronRightIcon, Loader2Icon, XIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -53,12 +53,16 @@ export function TaskCard({
   result,
   open,
   onOpenChange,
+  onSelect,
+  selectionLabel,
+  selected,
+  selectionDisabled,
   children,
   className,
   ...props
 }: Omit<
   ComponentProps<"div">,
-  "children" | "label" | "state" | "result" | "open" | "onOpenChange"
+  "children" | "label" | "state" | "result" | "open" | "onOpenChange" | "onSelect"
 > & {
   label: string;
   meta?: string | undefined;
@@ -67,11 +71,30 @@ export function TaskCard({
   elapsed?: string | undefined;
   actions?: ReactNode | undefined;
   result?: ReactNode | undefined;
-  open?: boolean | undefined;
-  onOpenChange?: ((open: boolean) => void) | undefined;
-  children?: ReactNode | undefined;
-}) {
+} & (
+    | {
+        onSelect: () => void;
+        selectionLabel: string;
+        selected: boolean;
+        selectionDisabled?: boolean | undefined;
+        children?: never;
+        open?: never;
+        onOpenChange?: never;
+      }
+    | {
+        onSelect?: never;
+        selectionLabel?: never;
+        selected?: never;
+        selectionDisabled?: never;
+        children?: ReactNode | undefined;
+        open?: boolean | undefined;
+        onOpenChange?: ((open: boolean) => void) | undefined;
+      }
+  )) {
   const hasTranscript = Children.toArray(children).length > 0;
+  if (onSelect && (hasTranscript || open !== undefined || onOpenChange !== undefined)) {
+    throw new Error("TaskCard selection cannot also disclose children");
+  }
   const inert = open !== undefined && onOpenChange === undefined;
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const isOpen = open ?? uncontrolledOpen;
@@ -90,18 +113,24 @@ export function TaskCard({
     >
       <button
         type="button"
-        aria-expanded={hasTranscript ? isOpen : undefined}
-        disabled={!hasTranscript || inert}
-        onClick={toggle}
+        aria-expanded={!onSelect && hasTranscript ? isOpen : undefined}
+        aria-pressed={onSelect ? selected : undefined}
+        aria-label={onSelect ? selectionLabel : undefined}
+        aria-description={onSelect ? stateLabel : undefined}
+        disabled={onSelect ? selectionDisabled : !hasTranscript || inert}
+        onClick={onSelect ?? toggle}
         className="hover:enabled:bg-foreground/[0.03] flex items-center gap-2.5 px-3.5 py-2.5 text-start transition-colors disabled:cursor-default"
       >
         <TaskStateIcon state={state} />
-        <span className="sr-only">{stateLabel ?? state}</span>
+        {!onSelect && <span className="sr-only">{stateLabel ?? state}</span>}
         <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
         {meta !== undefined && (
-          <span className={cn(mono, "text-muted-foreground max-w-24 shrink-0 truncate")}>
-            {meta}
-          </span>
+          <>
+            {" "}
+            <span className={cn(mono, "text-muted-foreground max-w-24 shrink-0 truncate")}>
+              {meta}
+            </span>
+          </>
         )}
         {elapsed !== undefined && (
           <span className={cn(mono, "text-muted-foreground shrink-0 tabular-nums")}>{elapsed}</span>

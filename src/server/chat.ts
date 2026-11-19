@@ -25,6 +25,8 @@ import { readConfiguredExtensions } from "./extensions/config.ts";
 import { loadConfiguredExtensions } from "./extensions/loader.ts";
 import { openConfiguredMcp } from "./mcp/config.ts";
 import { createSavedPrompts } from "./saved-prompts.ts";
+import { resolveApplicationHandoffs } from "./handoff-presentation.ts";
+import type { ConversationId, EntryRecord } from "@earendil-works/pi-durable";
 
 export type TangentPolicy = {
   resolveModel(): Promise<ResolvedTangentModel>;
@@ -239,6 +241,8 @@ export async function openChat(
       tangents,
       workers,
       handoffs,
+      projectApplicationHandoffs: (view: ConversationId, entries: readonly EntryRecord[]) =>
+        harness!.commit((tx) => resolveApplicationHandoffs(tx, view, entries), BACKGROUND_CONTEXT),
       withdraw: (id: SubmissionId) =>
         harness!.abortSubmission(id, BACKGROUND_CONTEXT, conversation.id),
       async close() {

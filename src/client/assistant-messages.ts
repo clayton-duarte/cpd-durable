@@ -1,5 +1,6 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { ChatMessage, ChatPart, ChatState } from "../shared/chat.ts";
+import { ApplicationHandoffSchema } from "../shared/application-handoff.ts";
 
 export interface AssistantProjection {
   snapshot: ChatState | null;
@@ -55,6 +56,7 @@ function committedMessage(
   const toolsRunning = parts.some(
     (part) => part.type === "tool-call" && (part.state === "pending" || part.state === "running"),
   );
+  const handoff = ApplicationHandoffSchema.safeParse(message.applicationHandoff);
   return {
     id: displayId,
     role: message.role,
@@ -66,6 +68,12 @@ function committedMessage(
       custom: {
         durableId: message.id,
         ...(message.source ? { sourceEntryId: message.source.entryId } : {}),
+        ...(handoff.success &&
+        message.role === "user" &&
+        message.id === `${handoff.data.canonicalEntryId}:0` &&
+        message.source?.entryId === handoff.data.canonicalEntryId
+          ? { applicationHandoff: handoff.data }
+          : {}),
         ...(message.role === "assistant" &&
         parts.some((part) => part.type === "text" && part.text.length > 0) &&
         message.source?.feedbackModelIndex !== undefined

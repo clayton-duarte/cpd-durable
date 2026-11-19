@@ -4,15 +4,22 @@ import {
   ConversationTranscript,
   type ConversationView,
   type EntryId,
+  type EntryRecord,
+  type ConversationId,
   type TranscriptView,
 } from "@earendil-works/pi-durable";
 import type { ChatState } from "../shared/chat.ts";
 import type { openChat } from "./chat.ts";
 import { present } from "./presentation.ts";
+import type { ApplicationHandoff } from "../shared/application-handoff.ts";
 
 type Conversation = Awaited<ReturnType<typeof openChat>>["conversation"];
 type Listener = (state: ChatState) => Promise<void>;
 type Watch = Awaited<ReturnType<Conversation["watch"]>>;
+type ResolveHandoffs = (
+  view: ConversationId,
+  entries: readonly EntryRecord[],
+) => Promise<ReadonlyMap<number, ApplicationHandoff>>;
 
 // One transient SDK transcript per browser view, not a second transcript store.
 // Detaching stops observation, not work; the retained transcript can resume.
@@ -26,9 +33,11 @@ class HistoryView {
   revision = 0;
   readonly id: string;
   readonly conversation: Conversation;
-  constructor(id: string, conversation: Conversation) {
+  readonly resolveHandoffs: ResolveHandoffs | undefined;
+  constructor(id: string, conversation: Conversation, resolveHandoffs?: ResolveHandoffs) {
     this.id = id;
     this.conversation = conversation;
+    this.resolveHandoffs = resolveHandoffs;
     this.transcript = new ConversationTranscript(
       (query, limit, context) => conversation.entries(query, limit, undefined, context),
       { pageSize: 50 },
@@ -41,7 +50,14 @@ class HistoryView {
       item.kind === "gap" ? [{ after: item.after, upTo: item.upTo }] : [],
     );
     const entries = view.items.flatMap((item) => (item.kind === "entry" ? [item.entry] : []));
-    const state = present({ ...window, entries }, false, gaps);
+    // Association is optional display evidence; its failure must not hide history.
+    let handoffs: ReadonlyMap<number, ApplicationHandoff> | undefined;
+    try {
+      handoffs = await this.resolveHandoffs?.(this.conversation.id, entries);
+    } catch {
+      // History remains authoritative even if the optional association is unavailable.
+    }
+    const state = present({ ...window, entries }, false, gaps, handoffs);
     state.window = {
       entryIds: window.entries.map((entry) => entry.id),
       ...(window.before !== undefined ? { beforeEntryId: window.before } : {}),
@@ -147,7 +163,7 @@ class HistoryView {
   }
 }
 
-export function createHistory(conversation: Conversation) {
+export function createHistory(conversation: Conversation, resolveHandoffs?: ResolveHandoffs) {
   const views = new Map<string, HistoryView>();
   const expiry = new Map<string, ReturnType<typeof setTimeout>>();
   function retain(id: string) {
@@ -159,7 +175,7 @@ export function createHistory(conversation: Conversation) {
       retain(id);
       let view = views.get(id);
       if (!view) {
-        view = new HistoryView(id, conversation);
+        view = new HistoryView(id, conversation, resolveHandoffs);
         views.set(id, view);
       }
       let delivered = false;

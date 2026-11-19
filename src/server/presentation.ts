@@ -10,6 +10,7 @@ import { SavedImageReferenceSchema, ImageMimeSchema } from "../shared/attachment
 import { DirectShellResultSchema } from "../shared/direct-shell.ts";
 import { TableDetailsSchema } from "../shared/structured-table.ts";
 import { presentEditDiff } from "./edit-diff-presentation.ts";
+import type { ApplicationHandoff } from "../shared/application-handoff.ts";
 
 // Allowlist presentation fields; unknown payloads and provider diagnostics never cross the wire.
 const RecordIdSchema = z.number().int().positive().safe();
@@ -170,6 +171,7 @@ export function present(
   view: ConversationView,
   canContinue = false,
   gaps: readonly { after: number; upTo: number }[] = [],
+  handoffs: ReadonlyMap<number, ApplicationHandoff> = new Map(),
 ): ChatState {
   const live = LiveSchema.parse(view.docs["pi.live"] ?? {});
   const inbox = InboxSchema.parse(view.docs["pi.inbox"] ?? {});
@@ -356,6 +358,12 @@ export function present(
         parts,
         interrupted: outcome === "interrupted",
         ...(outcome ? { outcome } : {}),
+        ...(entry.kind === "pi.user" &&
+        message.role === "user" &&
+        index === 0 &&
+        handoffs.has(entry.id)
+          ? { applicationHandoff: handoffs.get(entry.id)! }
+          : {}),
         source: {
           entryId: entry.id,
           ...(entry.kind === "pi.assistant" &&

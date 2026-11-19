@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TooltipIconButton } from "@/components/assistant-ui/elements/tooltip-icon-button";
+import { XIcon } from "lucide-react";
 import { TangentChildren, type TangentChildView, type WorkerChildView } from "./children";
 
 export interface TangentWorkspaceProps {
@@ -73,16 +74,29 @@ export function TangentWorkspace(props: TangentWorkspaceProps) {
           }}
           className="md:hidden"
         >
-          <TabsList aria-label="Chat pane" className="md:hidden">
-            <TabsTrigger id={`${panelId}-main-tab`} aria-controls={`${panelId}-main`} value="main">
-              {main.title}
+          <TabsList
+            aria-label="Chat pane"
+            className="grid h-11 w-full grid-cols-2 gap-1 p-1 md:hidden"
+          >
+            <TabsTrigger
+              id={`${panelId}-main-tab`}
+              aria-controls={`${panelId}-main`}
+              value="main"
+              className="h-9 min-w-0 w-full px-3"
+              title={main.title}
+              aria-label={`Main: ${main.title}`}
+            >
+              <span className="min-w-0 truncate">Main</span>
             </TabsTrigger>
             <TabsTrigger
               id={`${panelId}-tangent-tab`}
               aria-controls={`${panelId}-tangent`}
               value="tangent"
+              className="h-9 min-w-0 w-full px-3"
+              title={selected.title}
+              aria-label={`Tangent: ${selected.title}`}
             >
-              {selected.title}
+              <span className="min-w-0 truncate">Tangent</span>
             </TabsTrigger>
           </TabsList>
         </Tabs>
@@ -112,13 +126,22 @@ export function TangentWorkspace(props: TangentWorkspaceProps) {
               hidden={selectedId !== item.id}
               className={selectedId === item.id ? "flex min-h-0 flex-1 flex-col" : undefined}
             >
-              <header className="flex items-center justify-between gap-2">
-                <h2>
-                  {item.title} · {item.model}
+              <header className="flex min-w-0 items-center justify-between gap-2 px-2">
+                <h2
+                  className="flex min-w-0 flex-1 items-center gap-1 text-sm font-medium"
+                  title={`${item.title} · ${item.model}`}
+                  aria-label={`${item.title} · ${item.model}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">{item.title}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-muted-foreground max-w-28 shrink-0 truncate text-xs">
+                    {item.model}
+                  </span>
                 </h2>
-                <Button
+                <TooltipIconButton
                   type="button"
-                  variant="outline"
+                  tooltip="Close tangent"
+                  aria-label="Close tangent"
                   onClick={() => {
                     const opener = strip.current?.querySelector<HTMLButtonElement>(
                       'button[aria-pressed="true"]',
@@ -128,8 +151,8 @@ export function TangentWorkspace(props: TangentWorkspaceProps) {
                     opener?.focus();
                   }}
                 >
-                  Close tangent
-                </Button>
+                  <XIcon />
+                </TooltipIconButton>
               </header>
               <TangentChildren
                 parentId={item.id}

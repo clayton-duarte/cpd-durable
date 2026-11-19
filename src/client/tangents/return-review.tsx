@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { HandoffPreview } from "./handoff-preview";
 import type { TangentView } from "../../shared/tangents.ts";
 
 const StatusSchema = z.strictObject({
@@ -192,10 +192,12 @@ export function ReturnReview({
         Return report from {item.title} ·{" "}
         {item.model.name ?? `${item.model.provider}/${item.model.modelId}`} · revision {revision}
       </p>
-      <Textarea
-        readOnly
-        aria-label="Return handoff for review"
-        value={JSON.stringify(item.latestHandoff.handoff, null, 2)}
+      <HandoffPreview
+        handoff={item.latestHandoff.handoff}
+        kind="return"
+        placed={status?.placed}
+        original={JSON.stringify(item.latestHandoff.handoff, null, 2)}
+        originalLabel="Return handoff for review"
       />
       <p>
         {!status
