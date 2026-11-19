@@ -126,6 +126,7 @@ export function TaskCard({
         <span className="min-w-0 flex-1 truncate text-[13.5px]">{label}</span>
         {meta !== undefined && (
           <span className={cn(mono, "text-muted-foreground max-w-24 shrink-0 truncate")}>
+            {" "}
             {meta}
           </span>
         )}

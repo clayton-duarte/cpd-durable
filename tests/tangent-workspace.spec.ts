@@ -25,6 +25,10 @@ test("immediate open tangents remain selectable, including running", async ({ pa
   await expect(
     main.getByRole("button", { name: "Selected tangent: Running task" }),
   ).toHaveAccessibleName("Selected tangent: Running task needs-input · Model Alpha");
+  const selectedButton = main.getByRole("button", { name: "Selected tangent: Running task" });
+  const visibleText = (await selectedButton.textContent())!.replace(/\s+/g, " ").trim();
+  expect(visibleText).toBe("Running task needs-input · Model Alpha");
+  expect(await selectedButton.getAttribute("aria-label")).toContain(visibleText);
   await expect(page.getByTestId("selected")).toHaveText("running");
   await expect(
     main.getByRole("button", { name: "Selected tangent: Running task" }),
