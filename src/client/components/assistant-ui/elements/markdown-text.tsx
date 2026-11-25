@@ -65,21 +65,24 @@ const MarkdownTextImpl: FC<MarkdownTextProps> = ({ components, componentsByLangu
 export const MarkdownText = memo(MarkdownTextImpl);
 
 const CodeHeader: FC<CodeHeaderProps> = ({ language, code }) => {
-  const { isCopied, copyToClipboard } = useCopyToClipboard();
+  const { isCopied, copyError, copyToClipboard } = useCopyToClipboard();
   const onCopy = () => {
     if (!code || isCopied) return;
-    copyToClipboard(code);
+    void copyToClipboard(code);
   };
 
   return (
-    <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex items-center justify-between rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs">
+    <div className="aui-code-header-root border-border/50 bg-muted/50 mt-3 flex flex-wrap items-center justify-between gap-x-2 rounded-t-xl border border-b-0 px-3.5 py-1.5 text-xs">
       <span className="aui-code-header-language text-muted-foreground font-medium lowercase">
         {language}
       </span>
-      <TooltipIconButton tooltip="Copy" onClick={onCopy}>
+      <TooltipIconButton tooltip={isCopied ? "Copied" : "Copy"} type="button" onClick={onCopy}>
         {!isCopied && <CopyIcon className="animate-in zoom-in-75 fade-in duration-150" />}
         {isCopied && <CheckIcon className="animate-in zoom-in-50 fade-in duration-200 ease-out" />}
       </TooltipIconButton>
+      <span role="status" className={cn(copyError ? "text-destructive w-full pb-1" : "sr-only")}>
+        {copyError ?? (isCopied ? "Copied" : "")}
+      </span>
     </div>
   );
 };

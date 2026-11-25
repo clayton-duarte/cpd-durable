@@ -18,7 +18,7 @@ type Request =
   | { path: "/api/input"; body: ChatInput; onClear?: (revision: number) => void }
   | { path: "/api/control"; body: ChatControl }
   | { path: "/api/shell"; body: { requestId: string; command: string; includeInContext: boolean } }
-  | { path: "/api/withdraw"; body: { id: string } }
+  | { path: "/api/withdraw"; body: { id: string }; onWithdrawn?: () => void }
   | { path: "/api/stop"; body?: never };
 
 export function useChat(chatId?: string, observing = true) {
@@ -199,6 +199,9 @@ export function useChat(chatId?: string, observing = true) {
       }
       if (request.path === "/api/withdraw") {
         const { status } = WithdrawResultSchema.parse(await response.json());
+        // This callback stays on the original request through uncertain retries.
+        // A successful HTTP response alone does not establish withdrawal.
+        if (status === "aborted") request.onWithdrawn?.();
         setNotice(
           status === "aborted"
             ? "Queued input withdrawn."
@@ -221,13 +224,9 @@ export function useChat(chatId?: string, observing = true) {
         } else if (request.path === "/api/shell") {
           setShellRequestId(request.body.requestId);
           setShellTaskId(receipt.id);
-        } else if (request.body.mode === "steer") {
-          setNotice(
-            "Steering input admitted. It takes effect at an eligible boundary, not immediately.",
-          );
-        } else if (request.body.mode === "followUp") {
-          setNotice("Follow-up input admitted. If busy, it waits for the current response.");
         }
+        // Routine input admission is reflected by the cleared composer and queue,
+        // not a persistent status banner.
       }
       uncertain.current = null;
       setRetry(null);
@@ -329,8 +328,12 @@ export function useChat(chatId?: string, observing = true) {
         path: "/api/control",
         body: { type: "reset", handoff, requestId: crypto.randomUUID() },
       }),
-    withdraw: async (id: string) => {
-      await perform({ path: "/api/withdraw", body: { id } });
+    withdraw: async (id: string, onWithdrawn?: () => void) => {
+      await perform({
+        path: "/api/withdraw",
+        body: { id },
+        ...(onWithdrawn ? { onWithdrawn } : {}),
+      });
     },
   };
 }

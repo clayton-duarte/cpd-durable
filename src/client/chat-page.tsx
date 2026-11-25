@@ -1,9 +1,11 @@
 import { Chat } from "./chat.tsx";
 import type { ThreadView } from "../shared/threads.ts";
+import type { ModelRole } from "../shared/model-policy.ts";
 import { useChat } from "./use-chat.ts";
 
 export function ChatPage({
   chatId,
+  modelRole,
   active = true,
   readOnly = false,
   settingsTarget,
@@ -23,6 +25,7 @@ export function ChatPage({
   onUnsavedDraft,
 }: {
   chatId?: string;
+  modelRole?: ModelRole | undefined;
   active?: boolean;
   readOnly?: boolean;
   settingsTarget?: HTMLElement | null | undefined;
@@ -46,6 +49,7 @@ export function ChatPage({
     <main className="h-full min-h-0">
       <Chat
         chatId={chatId}
+        modelRole={modelRole}
         active={active}
         readOnly={readOnly}
         settingsTarget={settingsTarget}

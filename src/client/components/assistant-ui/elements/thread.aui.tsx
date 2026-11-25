@@ -17,6 +17,8 @@ import {
   ReasoningTrigger,
 } from "@/components/assistant-ui/elements/reasoning.aui";
 import { ToolFallback } from "@/components/assistant-ui/elements/tool-fallback.aui";
+import { ToolTimeline } from "./tool-timeline";
+import { activityGroups } from "@/activity-groups";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -74,6 +76,8 @@ import {
   Loader2Icon,
   SquareIcon,
   PlayIcon,
+  Clock3Icon,
+  XIcon,
 } from "lucide-react";
 import {
   createContext,
@@ -88,11 +92,15 @@ import {
 
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
 
+const CompactActivityContext = createContext(false);
+
 const DefaultToolGroup: FC<PropsWithChildren<{ group: ThreadGroupPart }>> = ({
   group,
   children,
 }) => {
   const [open, setOpen] = useState(false);
+  const compact = useContext(CompactActivityContext);
+  if (compact) return <>{children}</>;
 
   return (
     <ToolGroupRoot
@@ -105,6 +113,63 @@ const DefaultToolGroup: FC<PropsWithChildren<{ group: ThreadGroupPart }>> = ({
     </ToolGroupRoot>
   );
 };
+
+function PartActivityTimeline({ group, children }: PropsWithChildren<{ group: ThreadGroupPart }>) {
+  const nested = useContext(CompactActivityContext);
+  const [open, setOpen] = useState(false);
+  const content = useAuiState((s) => s.message.content);
+  const tools = group.indices.filter((index) => content[index]?.type === "tool-call").length;
+  const thinking = group.indices.some((index) => content[index]?.type === "reasoning");
+  const label = [
+    thinking && "Thinking",
+    tools > 0 && `${tools} tool ${tools === 1 ? "call" : "calls"}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const issues = group.counts.incomplete;
+  const summary = `${label}${issues ? ` · ${issues} failed, cancelled or unavailable` : ""}`;
+  if (nested) return <>{children}</>;
+  return (
+    <CompactActivityContext.Provider value={true}>
+      <ToolTimeline
+        steps={[
+          { id: "activity", verb: "Activity", chip: "", icon: Loader2Icon, content: children },
+        ]}
+        visibleSteps={1}
+        streaming={group.status.type === "running"}
+        open={open || group.counts.requiresAction > 0}
+        onOpenChange={setOpen}
+        restingLabel={summary}
+        activeLabel={`${summary} · working`}
+        stats={[]}
+      />
+    </CompactActivityContext.Provider>
+  );
+}
+
+function ActivityReasoning({ group, children }: PropsWithChildren<{ group: ThreadGroupPart }>) {
+  const compact = useContext(CompactActivityContext);
+  const running = group.status.type === "running";
+  if (compact)
+    return (
+      <div
+        data-slot="timeline-reasoning"
+        aria-busy={running}
+        className="border-l border-border ps-3 py-1 text-muted-foreground"
+      >
+        <p className="mb-1 text-xs font-medium">Thinking</p>
+        <ReasoningText>{children}</ReasoningText>
+      </div>
+    );
+  return (
+    <ReasoningRoot variant="ghost" streaming={running}>
+      <ReasoningTrigger active={running} duration={reasoningDuration(group.timing)} />
+      <ReasoningContent aria-busy={running}>
+        <ReasoningText>{children}</ReasoningText>
+      </ReasoningContent>
+    </ReasoningRoot>
+  );
+}
 
 const shouldShowComposerResume = (s: AssistantState) =>
   !!s.thread.canResume && s.composer.type === "thread" && s.composer.isEmpty;
@@ -203,7 +268,8 @@ const ThreadHistorySkeleton: FC = () => (
 );
 
 export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS, autoFocus = true }) => {
-  const isEmpty = useAuiState(isNewChatView);
+  const host = useChatHost();
+  const isEmpty = useAuiState(isNewChatView) && !host.state?.controls?.queue.length;
 
   return (
     <ThreadComponentsContext.Provider value={components}>
@@ -216,6 +282,9 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
   const host = useChatHost();
   const isReplyPane = host.visibleFromEntryId !== undefined;
+  const hasThreadMap =
+    !isReplyPane &&
+    !!host.threads?.some((thread) => host.chatId === undefined || thread.parentId === host.chatId);
 
   return (
     <ThreadPrimitive.Root
@@ -233,16 +302,16 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
         className="relative flex min-h-0 flex-1 flex-col overflow-x-auto overflow-y-scroll"
       >
         <ChatSettings />
-        {!isReplyPane && <ConversationMapAui side="right" className="hidden md:block" />}
+        {hasThreadMap && <ConversationMapAui side="right" />}
         <div
           className={cn(
             "flex min-w-0 flex-1 flex-col",
-            isReplyPane ? "px-4 pt-3" : "px-4 pt-4 md:px-5",
+            isReplyPane ? "px-4 pt-3" : "mx-auto w-full max-w-[768px] px-4 pt-4 md:px-5",
             isEmpty && !isReplyPane && "justify-center",
           )}
         >
-          <div className={cn(!isReplyPane && "md:pe-10")}>
-            {!isReplyPane && (
+          <div data-slot="aui_transcript-content" className={cn(hasThreadMap && "pe-8 md:pe-10")}>
+            {!isReplyPane && !host.state?.controls?.queue.length && (
               <AuiIf condition={isNewChatView}>
                 <Welcome />
               </AuiIf>
@@ -252,7 +321,8 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
             </AuiIf>
             <ThreadLoadEarlier />
             <div data-slot="aui_message-group" className="flex flex-col gap-y-6 empty:hidden">
-              <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
+              <CompactMessages />
+              <PendingInputs />
             </div>
           </div>
 
@@ -268,7 +338,7 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
             <ThreadFollowupSuggestions />
             <AgentQuestions />
             <Composer autoFocus={autoFocus} reply={isReplyPane} />
-            {!isReplyPane && (
+            {!isReplyPane && !host.state?.controls?.queue.length && (
               <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
                 <ThreadSuggestions />
               </AuiIf>
@@ -299,7 +369,139 @@ const useQuoteEntry = () =>
     return typeof id === "number" ? id : undefined;
   });
 
-const ThreadMessage: FC = () => {
+const userBubbleClass =
+  "aui-user-message-content peer text-foreground rounded-(--composer-radius) px-4 py-2 leading-[22px] wrap-break-word empty:hidden";
+
+// Inbox observations, not optimistic or committed transcript messages. Share the
+// native user bubble presentation without fabricating runtime/source identities.
+function PendingInputs() {
+  const host = useChatHost();
+  const queue = host.state?.controls?.queue ?? [];
+  if (!queue.length) return null;
+  return (
+    <div
+      data-slot="pending-inputs"
+      role="group"
+      aria-label="Pending messages"
+      className="flex min-w-0 flex-col gap-3"
+    >
+      {queue.map((item) => (
+        <div
+          key={item.id}
+          data-slot="pending-user-message"
+          data-pending-id={item.id}
+          className="flex min-w-0 justify-end px-2"
+        >
+          <div
+            className={cn(
+              userBubbleClass,
+              "min-w-0 max-w-[85%] border border-dashed border-muted-foreground/35 bg-muted/50",
+            )}
+          >
+            <div className="mb-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Clock3Icon className="size-3 shrink-0" aria-hidden />
+              <span
+                title={
+                  item.mode === "steer"
+                    ? "Awaiting an eligible steering boundary; not yet placed."
+                    : "Awaiting follow-up placement; not yet delivered."
+                }
+              >
+                {item.mode === "steer" ? "Steering · pending" : "Queued · pending"}
+              </span>
+              {!host.connected && <span>· reconnecting</span>}
+              {host.onWithdraw && !host.readOnly && host.onSend && (
+                <TooltipIconButton
+                  tooltip="Withdraw pending message"
+                  aria-label={`Withdraw pending message: ${item.text}`}
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="ms-auto size-5 shrink-0"
+                  disabled={!host.available || host.active === false}
+                  onClick={() => {
+                    void host.onWithdraw?.(item.id);
+                  }}
+                >
+                  <XIcon className="size-3" />
+                </TooltipIconButton>
+              )}
+            </div>
+            <p className="m-0 whitespace-pre-wrap text-sm">{item.text}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+const MESSAGE_COMPONENTS = { Message: ThreadMessage };
+
+function ActivityTimeline({ indices }: { indices: number[] }) {
+  const [open, setOpen] = useState(false);
+  const host = useChatHost();
+  const messages = useAuiState((s) => s.thread.messages);
+  const entries = indices.map((index) => messages[index]!);
+  const tools = entries.flatMap((message) => message.content.filter((p) => p.type === "tool-call"));
+  const thinking = entries.some((message) => message.content.some((p) => p.type === "reasoning"));
+  const running = entries.some((message) => message.status?.type === "running");
+  const states = entries.flatMap((message): unknown[] => {
+    const states: unknown = message.metadata.custom["toolStates"];
+    return states && typeof states === "object" ? Object.values(states) : [];
+  });
+  const issues = states.filter(
+    (state) => state === "error" || state === "cancelled" || state === "unavailable",
+  ).length;
+  const label = [
+    thinking && "Thinking",
+    tools.length > 0 && `${tools.length} tool ${tools.length === 1 ? "call" : "calls"}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const sourceOpen =
+    host.highlightsEntryId !== undefined &&
+    entries.some(
+      (message) => String(message.metadata.custom["sourceEntryId"]) === host.highlightsEntryId,
+    );
+  return (
+    <CompactActivityContext.Provider value={true}>
+      <ToolTimeline
+        className="px-2"
+        steps={indices.map((index) => ({
+          id: messages[index]!.id,
+          verb: "Activity",
+          chip: "",
+          icon: Loader2Icon,
+          content: <ThreadPrimitive.MessageByIndex index={index} components={MESSAGE_COMPONENTS} />,
+        }))}
+        visibleSteps={indices.length}
+        streaming={running}
+        open={open || sourceOpen}
+        onOpenChange={setOpen}
+        restingLabel={`${label}${issues ? ` · ${issues} failed, cancelled or unavailable` : ""}`}
+        activeLabel={`${label} · working${issues ? ` · ${issues} failed, cancelled or unavailable` : ""}`}
+        stats={[]}
+      />
+    </CompactActivityContext.Provider>
+  );
+}
+
+function CompactMessages() {
+  const messages = useAuiState((s) => s.thread.messages);
+  return activityGroups(messages).map((group) =>
+    group.activity ? (
+      <ActivityTimeline key={group.id} indices={group.indices} />
+    ) : (
+      <ThreadPrimitive.MessageByIndex
+        key={group.id}
+        index={group.indices[0]!}
+        components={MESSAGE_COMPONENTS}
+      />
+    ),
+  );
+}
+
+function ThreadMessage() {
   const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
     useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
@@ -310,7 +512,7 @@ const ThreadMessage: FC = () => {
   if (isSpoken) return <SpokenMessage />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
-};
+}
 
 type VoiceRunPosition = "single" | "start" | "middle" | "end";
 
@@ -531,6 +733,9 @@ const ThreadSuggestionItem: FC = () => {
 
 const Composer: FC<{ autoFocus: boolean; reply: boolean }> = ({ autoFocus, reply }) => {
   const { ComposerFooter } = useContext(ThreadComponentsContext);
+  const host = useChatHost();
+  const composing = useRef(false);
+  const busy = !!host.state?.busy;
   return (
     <ComposerPrimitive.TriggerPopoverRoot>
       <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col gap-2">
@@ -546,11 +751,38 @@ const Composer: FC<{ autoFocus: boolean; reply: boolean }> = ({ autoFocus, reply
           <ComposerQuotePreview />
           <ComposerPrimitive.Input
             placeholder={reply ? "Reply…" : "Send a message… Type / for commands"}
-            className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[13px]/5 outline-none"
+            className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[14px]/5 outline-none"
             rows={1}
             autoFocus={autoFocus}
             enterKeyHint="send"
             aria-label="Message input"
+            aria-description={
+              busy
+                ? "Enter to steer; Command+Enter to queue; Shift+Enter for a new line."
+                : undefined
+            }
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
+            onKeyDown={(event) => {
+              if (
+                !busy ||
+                event.key !== "Enter" ||
+                event.shiftKey ||
+                event.altKey ||
+                composing.current ||
+                event.nativeEvent.isComposing ||
+                event.nativeEvent.keyCode === 229 ||
+                event.currentTarget.getAttribute("aria-expanded") === "true"
+              )
+                return;
+              event.preventDefault();
+              if (!event.repeat && host.available && !host.shell)
+                void host.submitDraft(event.metaKey || event.ctrlKey ? "followUp" : "steer", true);
+            }}
           />
           <ComposerAction />
         </ComposerPrimitive.AttachmentDropzone>
@@ -562,6 +794,9 @@ const Composer: FC<{ autoFocus: boolean; reply: boolean }> = ({ autoFocus, reply
 
 const ComposerAction: FC = () => {
   const { ComposerExtra } = useContext(ThreadComponentsContext);
+  const host = useChatHost();
+  const empty = useAuiState((s) => s.composer.isEmpty);
+  const busy = !!host.state?.busy;
   // The stop control only cancels the send while no run it could stop is going.
   const isSending = useAuiState(
     (s) =>
@@ -577,6 +812,22 @@ const ComposerAction: FC = () => {
         {ComposerExtra && <ComposerExtra />}
       </div>
       <div className="flex items-center gap-1.5">
+        {busy && !empty && host.onSend && (
+          <TooltipIconButton
+            tooltip="Steer (Enter); ⌘ Enter to queue"
+            aria-label="Steer message"
+            type="button"
+            variant="default"
+            size="icon"
+            className="aui-composer-send size-7 rounded-full"
+            disabled={!host.available || !!host.shell}
+            onClick={() => {
+              void host.submitDraft("steer", true);
+            }}
+          >
+            <ArrowUpIcon className="size-4" />
+          </TooltipIconButton>
+        )}
         <AuiIf condition={(s) => s.thread.capabilities.dictation}>
           <AuiIf condition={(s) => s.composer.dictation == null}>
             <ComposerPrimitive.Dictate
@@ -723,6 +974,7 @@ const AssistantMessage: FC = () => {
   const groupBy = TaskGroupComponent ? taskAwareGroupBy : messageGroupBy;
 
   const source = useThreadSource();
+  const compact = useContext(CompactActivityContext);
   const ACTION_BAR_PT = "pt-1.5";
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
   const ACTION_BAR_HEIGHT = `min-h-7.5 ${ACTION_BAR_PT}`;
@@ -736,7 +988,10 @@ const AssistantMessage: FC = () => {
       data-quote-entry={useQuoteEntry()}
       data-message-status={useAuiState((s) => s.message.status?.type)}
       data-thread-source={source ? "" : undefined}
-      className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150"
+      className={cn(
+        "relative",
+        !compact && "fade-in slide-in-from-bottom-1 animate-in -mb-7.5 pb-7.5 duration-150",
+      )}
     >
       <div
         data-slot="aui_assistant-message-content"
@@ -746,7 +1001,7 @@ const AssistantMessage: FC = () => {
           {({ part, children }) => {
             switch (part.type) {
               case "group-chainOfThought":
-                return <div data-slot="aui_chain-of-thought">{children}</div>;
+                return <PartActivityTimeline group={part}>{children}</PartActivityTimeline>;
               case "group-task":
                 return TaskGroupComponent ? <TaskGroupComponent group={part} /> : null;
               case "group-tool":
@@ -758,15 +1013,7 @@ const AssistantMessage: FC = () => {
                 if (ReasoningGroup) {
                   return <ReasoningGroup group={part}>{children}</ReasoningGroup>;
                 }
-                const running = part.status.type === "running";
-                return (
-                  <ReasoningRoot variant="ghost" streaming={running}>
-                    <ReasoningTrigger active={running} duration={reasoningDuration(part.timing)} />
-                    <ReasoningContent aria-busy={running}>
-                      <ReasoningText>{children}</ReasoningText>
-                    </ReasoningContent>
-                  </ReasoningRoot>
-                );
+                return <ActivityReasoning group={part}>{children}</ActivityReasoning>;
               }
               case "text":
                 return <MarkdownText />;
@@ -812,7 +1059,12 @@ const AssistantMessage: FC = () => {
       <AuiIf condition={(s) => !s.message.metadata.custom["historyMarker"]}>
         <div
           data-slot="aui_assistant-message-footer"
-          className={cn("ms-2 flex items-center", ACTION_BAR_HEIGHT)}
+          className={cn(
+            "ms-2 flex items-center",
+            compact
+              ? "absolute end-0 top-full z-10 rounded-md bg-background shadow-sm"
+              : ACTION_BAR_HEIGHT,
+          )}
         >
           <BranchPicker />
           <AssistantActionBar />
@@ -927,12 +1179,7 @@ const UserMessage: FC = () => {
       <UserMessageAttachments />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
-        <div
-          className={cn(
-            "aui-user-message-content peer text-foreground rounded-(--composer-radius) px-4 py-2 leading-[22px] wrap-break-word empty:hidden",
-            !handoff && "bg-muted",
-          )}
-        >
+        <div className={cn(userBubbleClass, !handoff && "bg-muted")}>
           {handoff && content[0]?.type === "text" ? (
             <HandoffPreview
               handoff={handoff.handoff}

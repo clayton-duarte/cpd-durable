@@ -5,9 +5,11 @@ import type { DraftAdmission } from "../shared/drafts.ts";
 import type { DirectShellStatusSchema } from "../shared/direct-shell.ts";
 import type { z } from "zod";
 import type { ThreadView } from "../shared/threads.ts";
+import type { ModelRole } from "../shared/model-policy.ts";
 
 export interface ChatProps {
   chatId?: string | undefined;
+  modelRole?: ModelRole | undefined;
   draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
   onUnsavedDraft?: (chatId: string) => void;
   active?: boolean;
@@ -62,14 +64,14 @@ export interface ChatProps {
   onStop?: () => Promise<void>;
   onContinue?: () => Promise<boolean>;
   onReset?: (handoff: string) => Promise<boolean>;
-  onWithdraw?: (id: string) => Promise<void>;
+  onWithdraw?: (id: string, onWithdrawn?: () => void) => Promise<void>;
 }
 
 type ChatHost = ChatProps & {
   available: boolean;
   localError: string | null;
   clearLocalError: () => void;
-  submitDraft: (mode: SendMode) => Promise<boolean>;
+  submitDraft: (mode: SendMode, nativeInput?: boolean) => Promise<boolean>;
   readDraft: () => string;
   draftVersion: () => number;
   applyPrompt: (version: number, text: string, mode: "append" | "replace") => boolean;
