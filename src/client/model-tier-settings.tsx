@@ -5,6 +5,7 @@ import {
   ModelSelectorContent,
 } from "@/components/assistant-ui/elements/model-selector";
 import { Button } from "@/components/ui/button";
+import { supportsThinking, thinkingLabel } from "../shared/configuration.ts";
 import {
   ModelPolicySchema,
   ModelPolicyViewSchema,
@@ -22,13 +23,9 @@ export type ModelTierSettingsApi = {
 };
 
 const roles = [
-  ["main", "Main", "High-capability model for new main threads."],
-  [
-    "tangent",
-    "Tangent",
-    "Mid-tier model for new tangents and explicitly selected mid-tier workers.",
-  ],
-  ["worker", "Worker", "Economical model for new workers by default."],
+  ["main", "Main", "Model for all main chats."],
+  ["tangent", "Tangent", "Model for all tangents, message threads, and mid-tier workers."],
+  ["worker", "Worker", "Model for workers using the economical tier."],
 ] as const;
 const key = (value: { provider: string; modelId: string }) =>
   JSON.stringify([value.provider, value.modelId]);
@@ -42,7 +39,6 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [reload, setReload] = useState(0);
-  const [needsEffort, setNeedsEffort] = useState<string[]>([]);
   const generation = useRef(0);
   const request = useRef(0);
   const saveController = useRef<AbortController | null>(null);
@@ -75,7 +71,7 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
   }, [api, reload]);
 
   async function save() {
-    if (!data || !draft || pending || loading || error || needsEffort.length) return;
+    if (!data || !draft || pending || loading || error) return;
     setPending(true);
     const version = generation.current;
     const id = ++request.current;
@@ -99,7 +95,7 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
         throw new Error("Unrecognized save acknowledgement");
       setData({ ...response, choices: data.choices });
       if (generation.current === version) setDraft(response.assignments);
-      setNotice("Saved for new threads and workers. Existing conversations are unchanged.");
+      setNotice("Saved for existing and new chats and workers. In-flight requests are unchanged.");
     } catch {
       if (request.current !== id) return;
       setError(
@@ -114,7 +110,7 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
       <h3 className="font-medium">Model tiers</h3>
       <p>
         Assign available models to roles. These labels describe your intent, not a capability
-        guarantee. Existing conversations are unchanged.
+        guarantee. Saving updates existing chats, including any per-chat selections.
       </p>
       {error && (
         <div role="alert">
@@ -140,51 +136,58 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
               <p>{description}</p>
               <p>
                 {selected
-                  ? `${selected.provider}/${selected.modelId} · thinking ${selected.thinkingLevel}`
+                  ? `${selected.provider}/${selected.modelId} · thinking: ${thinkingLabel(selected.thinkingLevel)}`
                   : role === "main"
                     ? "Host default until configured."
                     : "Not configured — select a model."}
               </p>
-              {selected && (!choice || !choice.thinkingLevels.includes(selected.thinkingLevel)) && (
-                <p role="status">
-                  This model or thinking level is unavailable. Choose an available selection.
-                </p>
-              )}
+              {selected &&
+                (!choice || !supportsThinking(choice.thinkingLevels, selected.thinkingLevel)) && (
+                  <p role="status">
+                    This model or thinking level is unavailable. Choose an available selection.
+                  </p>
+                )}
               <ModelSelectorRoot
                 models={data.choices.map((item) => ({
                   id: key(item),
                   name: `${item.provider}/${item.modelId}`,
                   description: item.name,
-                  efforts: item.thinkingLevels.map((level) => ({ id: level, name: level })),
+                  efforts: (["default", ...item.thinkingLevels] as const).map((level) => ({
+                    id: level,
+                    name: thinkingLabel(level),
+                    disabled: !supportsThinking(item.thinkingLevels, level),
+                  })),
                 }))}
                 value={selected ? key(selected) : ""}
                 {...(selected ? { effort: selected.thinkingLevel } : {})}
                 onValueChange={(value) => {
                   const next = data.choices.find((item) => key(item) === value);
                   if (!next) return;
-                  const supported =
-                    selected && next.thinkingLevels.includes(selected.thinkingLevel);
-                  const level = supported ? selected.thinkingLevel : next.thinkingLevels[0];
-                  if (!level) return;
+                  if (selected && key(selected) === value) return;
                   generation.current++;
                   setDraft({
                     ...draft,
                     [role]: {
                       provider: next.provider,
                       modelId: next.modelId,
-                      thinkingLevel: level,
+                      thinkingLevel: "default",
                     },
                   });
-                  setNeedsEffort((old) =>
-                    supported ? old.filter((item) => item !== role) : [...new Set([...old, role])],
-                  );
                 }}
                 onEffortChange={(level) => {
-                  const supported = choice?.thinkingLevels.find((item) => item === level);
-                  if (!selected || !supported) return;
+                  const supported =
+                    level === "default"
+                      ? level
+                      : choice?.thinkingLevels.find((item) => item === level);
+                  if (
+                    !selected ||
+                    !supported ||
+                    selected.thinkingLevel === supported ||
+                    !supportsThinking(choice?.thinkingLevels ?? [], supported)
+                  )
+                    return;
                   generation.current++;
                   setDraft({ ...draft, [role]: { ...selected, thinkingLevel: supported } });
-                  setNeedsEffort((old) => old.filter((item) => item !== role));
                 }}
               >
                 <ModelSelectorTrigger
@@ -193,19 +196,6 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
                 />
                 <ModelSelectorContent searchable />
               </ModelSelectorRoot>
-              {needsEffort.includes(role) && (
-                <div>
-                  <p role="status">
-                    Confirm a supported thinking level for this model before saving.
-                  </p>
-                  <Button
-                    variant="outline"
-                    onClick={() => setNeedsEffort((old) => old.filter((item) => item !== role))}
-                  >
-                    Confirm thinking {selected?.thinkingLevel}
-                  </Button>
-                </div>
-              )}
             </div>
           );
         })}
@@ -217,14 +207,13 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
           pending ||
           loading ||
           !!error ||
-          !!needsEffort.length ||
           Object.values(draft).some(
             (selection) =>
               selection &&
               !data.choices.some(
                 (choice) =>
                   key(choice) === key(selection) &&
-                  choice.thinkingLevels.includes(selection.thinkingLevel),
+                  supportsThinking(choice.thinkingLevels, selection.thinkingLevel),
               ),
           )
         }
@@ -232,14 +221,14 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
           void save();
         }}
       >
-        Save model tiers
+        Apply models to all chats
       </Button>
       <Button
         variant="outline"
         disabled={pending || loading}
         onClick={() => setReload((n) => n + 1)}
       >
-        Refresh saved settings
+        Reload saved tiers and model list
       </Button>
       {notice && <p role="status">{notice}</p>}
     </section>

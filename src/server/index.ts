@@ -2,15 +2,13 @@ import { once } from "node:events";
 import { resolve } from "node:path";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { createModels } from "@earendil-works/pi-ai/models";
-import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { z } from "zod";
 import { createApp } from "./app.ts";
 import { openChat } from "./chat.ts";
 import { workingDirectory } from "./execution.ts";
 
 const ConfigSchema = z.object({
-  OPENCODE_API_KEY: z.string().trim().min(1),
   CPD_DATA_DIR: z.string().min(1).default("./data"),
   CPD_CWD: z.string().min(1).default("~"),
   CPD_EXTENSIONS_CONFIG: z.string().min(1).optional(),
@@ -18,12 +16,11 @@ const ConfigSchema = z.object({
 });
 const config = ConfigSchema.safeParse(process.env);
 if (!config.success) {
-  console.error("Set OPENCODE_API_KEY in the server environment or .env before starting.");
+  console.error("Invalid CPD server configuration.");
   process.exitCode = 1;
 } else {
   process.umask(0o077);
-  const models = createModels();
-  models.setProvider(opencodeGoProvider());
+  let models: ModelRuntime | undefined;
   let app: ReturnType<typeof createApp> | undefined;
   let chat: Awaited<ReturnType<typeof openChat>> | undefined;
   let stopping = false;
@@ -39,22 +36,27 @@ if (!config.success) {
     if (stopping) return;
     stopping = true;
     server.close();
-    void (chat?.close() ?? Promise.resolve()).then(
-      () => {
-        if ("closeAllConnections" in server) server.closeAllConnections();
-      },
-      () => {
-        console.error("Session could not close cleanly.");
-        if ("closeAllConnections" in server) server.closeAllConnections();
-        process.exitCode = 1;
-      },
-    );
+    void (chat?.close() ?? Promise.resolve())
+      .then(() => models?.settleCredentialWrites())
+      .then(
+        () => {
+          if ("closeAllConnections" in server) server.closeAllConnections();
+        },
+        () => {
+          console.error("Session could not close cleanly.");
+          if ("closeAllConnections" in server) server.closeAllConnections();
+          process.exitCode = 1;
+        },
+      );
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
   try {
     await once(server, "listening");
     if (!stopping) {
+      models = await ModelRuntime.create();
+    }
+    if (!stopping && models) {
       chat = await openChat(
         resolve(config.data.CPD_DATA_DIR),
         models,

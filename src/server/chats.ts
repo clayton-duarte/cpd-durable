@@ -21,25 +21,35 @@ import { slugaWithId } from "../shared/slugs.ts";
 import { accounting } from "./accounting.ts";
 import { inspectContext } from "./context.ts";
 import type { Models } from "@earendil-works/pi-ai/models";
-import { modelChoices, sameSelection, selection } from "./configuration.ts";
-import type { Selection } from "../shared/configuration.ts";
+import { modelChange, modelChoices, sameSelection, selection } from "./configuration.ts";
+import { supportsThinking, type Selection } from "../shared/configuration.ts";
+import type { ModelPolicy } from "../shared/model-policy.ts";
 import {
   admissionDigest,
   checkAdmissionRequest,
   imageRequestDigest,
 } from "./attachment-catalog.ts";
 import { AttachmentAccessError } from "./attachment-routes.ts";
-import { assertMainModelDecisionTx, type createModelPolicy } from "./model-policy.ts";
+import {
+  assertMainModelDecisionTx,
+  readModelPolicyTx,
+  type createModelPolicy,
+} from "./model-policy.ts";
 import { inspectParentTangents, TangentsDoc, type TangentHooks } from "./tangents/index.ts";
 import type { ThreadHooks } from "./threads.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
-import { helperHasUnsettled } from "./helpers.ts";
+import { helperHasUnsettled, retierWorkers } from "./helpers.ts";
 import { DraftDoc } from "./drafts.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
 import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
 import { draftInputText } from "../shared/draft-intent.ts";
 import { assertBranchIdentityAvailable, reserveBranchIdentity } from "./branch-identity.ts";
-import { createRegeneration, regenerableAnswer, RegenerationError } from "./regeneration.ts";
+import {
+  createRegeneration,
+  regenerableAnswer,
+  RegenerationError,
+  RegenerationsDoc,
+} from "./regeneration.ts";
 import {
   compactIntentUnsettled,
   DirectShellDoc,
@@ -88,6 +98,49 @@ export const CatalogDoc = defineDoc<{
   initial: () => ({ items: [] }),
   checkpointWhen: () => true,
 });
+
+/** Change the SDK's saved selection, not the history or any already pinned request. */
+export async function applyModelTiers(tx: Tx, policy: ModelPolicy) {
+  const { items } = await tx.doc(CatalogDoc);
+  const tangents = new Map((await tx.doc(TangentsDoc)).tangents.map((item) => [item.id, item]));
+  const prepared = new Map(
+    (await tx.doc(RegenerationsDoc)).operations
+      .filter((item) => item.submissionId === undefined)
+      .map((item) => [item.branchId, item]),
+  );
+  const deleted = new Set(items.filter((item) => item.status === "deleted").map((item) => item.id));
+  for (const item of items) {
+    if (deleted.has(item.id) || deleted.has(item.threadParentId ?? item.tangentParentId ?? 0))
+      continue;
+    const id = item.id as ConversationId;
+    const next = item.kind === undefined ? policy.assignments.main : policy.assignments.tangent;
+    if (next) {
+      const agent = await tx.doc(AgentDoc, id);
+      const tangent = tangents.get(item.id);
+      const regeneration = prepared.get(item.id);
+      // Update pristine preparations without blessing any independent changes.
+      const safe =
+        (!tangent ||
+          tangent.startSubmissionId !== undefined ||
+          tangent.initialAgent === JSON.stringify(agent)) &&
+        (!regeneration || regeneration.agentDigest === admissionDigest(agent));
+      if (safe) {
+        await configure(tx, id, modelChange(next));
+        if (tangent) {
+          tangent.model = { selection: next, revision: policy.revision, assignment: "tangent" };
+          if (tangent.startSubmissionId === undefined) tangent.initialAgent = JSON.stringify(agent);
+        }
+        if (regeneration) regeneration.agentDigest = admissionDigest(agent);
+      }
+    }
+    await retierWorkers(tx, id, policy.assignments);
+  }
+}
+
+async function applyMainTier(tx: Tx, id: ConversationId) {
+  const main = (await readModelPolicyTx(tx)).assignments.main;
+  if (main) await configure(tx, id, modelChange(main));
+}
 
 /** Assigns a readable, stable URL fragment once; later title edits do not rewrite it. */
 export function ensureChatSlug(item: CatalogItem) {
@@ -311,6 +364,7 @@ export async function openChats(
       const catalog = await tx.doc(CatalogDoc);
       const source = catalog.items.find((item) => item.id === sourceId && !item.status);
       if (!source) throw new RegenerationError("Chat unavailable.", 409);
+      await applyMainTier(tx, branchId);
       catalog.items.push({
         id: branchId,
         title: `Regeneration of ${source.title}`.slice(0, 80),
@@ -338,6 +392,7 @@ export async function openChats(
       const catalog = await tx.doc(CatalogDoc);
       const source = catalog.items.find((item) => item.id === sourceId);
       if (!source || source.status) throw new BranchOperationError("Source chat unavailable.", 409);
+      await applyMainTier(tx, branchId);
       catalog.items.push({
         id: branchId,
         title: `Edit of ${source.title}`.slice(0, 80),
@@ -398,7 +453,7 @@ export async function openChats(
         const choice = choices.find(
           (choice) => choice.provider === next.provider && choice.modelId === next.modelId,
         );
-        if (!choice || !choice.thinkingLevels.includes(next.thinkingLevel))
+        if (!choice || !supportsThinking(choice.thinkingLevels, next.thinkingLevel))
           throw new ChatLifecycleError("Model or thinking level is unavailable.", 409);
         await harness.commit(async (tx) => {
           await assertCanAdmit(tx);
@@ -412,10 +467,7 @@ export async function openChats(
               "Configuration changed. Refresh before choosing again.",
               409,
             );
-          await configure(tx, conversation.id, {
-            model: { provider: next.provider, modelId: next.modelId },
-            thinkingLevel: next.thinkingLevel,
-          });
+          await configure(tx, conversation.id, modelChange(next));
         }, BACKGROUND_CONTEXT);
       },
       archived:
@@ -788,6 +840,7 @@ export async function openChats(
         const record = await tx.forkConversation(parent.id as ConversationId, entryId, {
           ownership: { kind: "ownerless" },
         });
+        await applyMainTier(tx, record.id);
         const item: CatalogItem = {
           id: record.id,
           title: `Fork of ${parent.title}`.slice(0, 80),
@@ -892,12 +945,7 @@ export async function openChats(
         const chosen = prepared && "decision" in prepared ? prepared.decision.selection : null;
         await configure(tx, record.id, {
           ...defaults,
-          ...(chosen
-            ? {
-                model: { provider: chosen.provider, modelId: chosen.modelId },
-                thinkingLevel: chosen.thinkingLevel,
-              }
-            : {}),
+          ...(chosen ? modelChange(chosen) : {}),
         });
         const created: CatalogItem = {
           id: record.id,

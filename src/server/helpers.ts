@@ -20,12 +20,15 @@ import {
   type HelperLaunch,
 } from "../shared/helpers.ts";
 import type { Selection } from "../shared/configuration.ts";
+import type { Assignments } from "../shared/model-policy.ts";
+import { modelChange } from "./configuration.ts";
 
 type Item = {
   request: HelperLaunch;
   taskId: number;
   childId: number | null;
   model: { provider: string; modelId: string } | null;
+  pendingSelection?: Selection;
   receipt: { status: "success" | "failure" | "cancelled"; answerEntryId: number | null } | null;
 };
 export type WorkerAgentSelection = {
@@ -86,7 +89,11 @@ export const ForegroundHelperTask = defineTask<Input, { phase: "run" }, null>({
           return;
         }
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: task.id } });
-        await configure(tx, child.id, task.input.agent);
+        await configure(tx, child.id, {
+          ...task.input.agent,
+          ...(item.pendingSelection ? modelChange(item.pendingSelection) : {}),
+        });
+        delete item.pendingSelection;
         item.childId = child.id;
         childId = child.id;
       }, context);
@@ -183,14 +190,14 @@ export async function launchHelper(
       thinkingLevel: agent.thinkingLevel ?? null,
       cwd: agent.cwd ?? null,
     };
-    const model = { provider: chosen.selection.provider, modelId: chosen.selection.modelId };
-    const worker = { ...saved, model, thinkingLevel: chosen.selection.thinkingLevel };
+    const change = modelChange(chosen.selection);
+    const worker = { ...saved, ...change };
     const taskId = await tx.createTask(
       request.mode === "background" ? BackgroundHelperTask : ForegroundHelperTask,
       { request, agent: worker },
       { ownership: { kind: "conversation" }, background: request.mode === "background" },
     );
-    doc.items.push({ request, taskId, childId: null, model, receipt: null });
+    doc.items.push({ request, taskId, childId: null, model: change.model, receipt: null });
     return String(taskId);
   }, BACKGROUND_CONTEXT);
 }
@@ -259,6 +266,20 @@ export async function helperHasUnsettled(tx: Tx, conversationId: ConversationId)
       return true;
   }
   return false;
+}
+
+export async function retierWorkers(tx: Tx, parentId: ConversationId, tiers: Assignments) {
+  if (!tiers.worker && !tiers.tangent) return;
+  const doc = await tx.doc(HelpersDoc, parentId);
+  for (const item of doc.items) {
+    const next = item.request.modelRole === "mid" ? tiers.tangent : tiers.worker;
+    if (!next || item.receipt) continue;
+    const task = await tx.task(item.taskId as TaskId);
+    if (!task || task.state.status === "terminal") continue;
+    if (item.childId === null) item.pendingSelection = next;
+    else await configure(tx, item.childId as ConversationId, modelChange(next));
+    item.model = { provider: next.provider, modelId: next.modelId };
+  }
 }
 
 /** Conservative projection: missing task records and outcomes stay unknown. */

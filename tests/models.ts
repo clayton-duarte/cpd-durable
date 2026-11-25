@@ -12,6 +12,7 @@ import { MODEL_ID, PROVIDER_ID } from "../src/shared/chat.ts";
 
 type TestCall = {
   context: TranscriptContext;
+  modelId: string;
   partial(text: string): void;
   finish(text: string, usage?: Usage): void;
   tools(calls: Omit<ToolCall, "type">[]): void;
@@ -27,7 +28,11 @@ export function testModels(onCall?: (call: TestCall) => void) {
     },
   });
   const provider = opencodeGoProvider();
-  function stream(context: TranscriptContext, options?: Pick<SimpleStreamOptions, "signal">) {
+  function stream(
+    modelId: string,
+    context: TranscriptContext,
+    options?: Pick<SimpleStreamOptions, "signal">,
+  ) {
     const events = createAssistantMessageEventStream();
     let message: AssistantMessage = {
       role: "assistant",
@@ -53,6 +58,7 @@ export function testModels(onCall?: (call: TestCall) => void) {
     options?.signal?.addEventListener("abort", abort, { once: true });
     const call: TestCall = {
       context,
+      modelId,
       partial(text) {
         message = { ...message, content: [{ type: "text", text }] };
         events.push({ type: "text_delta", contentIndex: 0, delta: text, partial: message });
@@ -94,8 +100,8 @@ export function testModels(onCall?: (call: TestCall) => void) {
   }
   models.setProvider({
     ...provider,
-    stream: (_model, context, options) => stream(context, options),
-    streamSimple: (_model, context, options) => stream(context, options),
+    stream: (model, context, options) => stream(model.id, context, options),
+    streamSimple: (model, context, options) => stream(model.id, context, options),
   });
   return { models, calls };
 }

@@ -151,8 +151,8 @@ export function createRegeneration(harness: Harness, catalog: RegenerationCatalo
       );
       const recordBranchRequest = await catalog.reserveBranchRequest(tx, request);
       const branch = await tx.forkConversation(sourceId, at, { ownership: { kind: "ownerless" } });
-      const agentDigest = admissionDigest(await tx.doc(AgentDoc, branch.id));
       await catalog.register(tx, { sourceId, entryId, branchId: branch.id, forkEntryId: at });
+      const agentDigest = admissionDigest(await tx.doc(AgentDoc, branch.id));
       recordSource();
       recordBranchRequest();
       const operation: Operation = {

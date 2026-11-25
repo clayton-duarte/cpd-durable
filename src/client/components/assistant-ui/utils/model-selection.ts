@@ -14,6 +14,7 @@ import {
 export type ModelSelectorEffortOption = {
   id: string;
   name: string;
+  disabled?: boolean;
 };
 
 export const DEFAULT_EFFORT_OPTIONS: readonly ModelSelectorEffortOption[] = [

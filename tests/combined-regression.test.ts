@@ -46,7 +46,11 @@ async function fixture(configured = true) {
   const choices = policy.choices.filter((c) => c.thinkingLevels.length > 0);
   const select = (index: number) => {
     const c = choices[index % choices.length]!;
-    return { provider: c.provider, modelId: c.modelId, thinkingLevel: c.thinkingLevels.at(-1)! };
+    return {
+      provider: c.provider,
+      modelId: c.modelId,
+      thinkingLevel: c.thinkingLevels.filter((level) => level !== "max").at(-1)!,
+    };
   };
   const economical = select(0),
     mid = select(1);
@@ -106,7 +110,7 @@ async function fixture(configured = true) {
 }
 
 describe("combined production regression", () => {
-  it("preserves the prepared tangent snapshot across controls and global policy changes", async () => {
+  it("preserves a prepared tangent's handoff while applying model policy changes", async () => {
     const f = await fixture();
     try {
       const child = await f.create();
@@ -144,6 +148,7 @@ describe("combined production regression", () => {
           expected: { revision: policy.revision, assignments: policy.assignments },
           assignments: { ...policy.assignments, ...assignments },
         });
+        expect((await scope.configuration()).selection).toEqual(assignments.tangent);
       }
       expect(f.provider.calls).toHaveLength(0);
       const start = { requestId: "start-pinned", expectedHandoffRevision: 1 };

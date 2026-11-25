@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vite-plus/test";
@@ -8,9 +8,16 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 const children: ChildProcess[] = [];
 const directories: string[] = [];
 
-function start(dataDir: string, key = "test-only") {
+function start(dataDir: string, piDir: string) {
   const child = spawn(process.execPath, ["--import", "tsx", "src/server/index.ts"], {
-    env: { ...process.env, CPD_DATA_DIR: dataDir, OPENCODE_API_KEY: key },
+    env: {
+      ...process.env,
+      CPD_DATA_DIR: dataDir,
+      PI_CODING_AGENT_DIR: piDir,
+      OPENCODE_API_KEY: "",
+      OPENAI_API_KEY: "",
+      PI_OFFLINE: "1",
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(child);
@@ -40,17 +47,38 @@ afterEach(async () => {
 it("rejects a second host before opening storage and restarts after a hard kill", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cpd-host-test-"));
   directories.push(directory);
-  const first = start(directory);
+  const piDir = join(directory, "pi");
+  await mkdir(piDir);
+  await writeFile(
+    join(piDir, "auth.json"),
+    JSON.stringify({
+      openai: {
+        type: "oauth",
+        access: "test-only",
+        refresh: "test-only",
+        expires: Date.now() + 3600000,
+      },
+      anthropic: { type: "api_key", key: "test-only" },
+    }),
+  );
+  const first = start(directory, piDir);
   await vi.waitFor(() => expect(first.output()).toContain("CPD Durable:"), { timeout: 10_000 });
+  const policy = await fetch("http://127.0.0.1:3000/api/model-policy");
+  expect(policy.ok).toBe(true);
+  const body = (await policy.json()) as { choices: { provider: string }[] };
+  expect(body.choices.map(({ provider }) => provider)).toEqual(
+    expect.arrayContaining(["openai", "anthropic"]),
+  );
+  expect(JSON.stringify(body)).not.toContain("test-only");
   const secondDirectory = join(directory, "second-host");
-  const second = start(secondDirectory);
+  const second = start(secondDirectory, piDir);
   await once(second.child, "exit");
   expect(second.child.exitCode).toBe(1);
   await expect(stat(secondDirectory)).rejects.toMatchObject({ code: "ENOENT" });
   const killed = once(first.child, "exit");
   first.child.kill("SIGKILL");
   await killed;
-  const resumed = start(directory);
+  const resumed = start(directory, piDir);
   await vi.waitFor(() => expect(resumed.output()).toContain("CPD Durable:"), { timeout: 10_000 });
   expect((await stat(join(directory, "session.sqlite"))).mode & 0o777).toBe(0o600);
   // Startup alone must not send anything to the real provider.
@@ -61,13 +89,13 @@ it("rejects a second host before opening storage and restarts after a hard kill"
   await reader.cancel();
 });
 
-it("missing credentials fail closed before creating session files", async () => {
+it("invalid server configuration fails before creating session files", async () => {
   const directory = await mkdtemp(join(tmpdir(), "cpd-config-test-"));
   directories.push(directory);
-  const data = join(directory, "not-created");
-  const host = start(data, "");
+  const piDir = join(directory, "not-created");
+  const host = start("", piDir);
   await once(host.child, "exit");
   expect(host.child.exitCode).toBe(1);
-  expect(host.output()).toContain("Set OPENCODE_API_KEY");
-  await expect(stat(data)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(host.output()).toContain("Invalid CPD server configuration");
+  await expect(stat(piDir)).rejects.toMatchObject({ code: "ENOENT" });
 });

@@ -8,6 +8,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
 import {
+  applyModelTiers,
   assertInteractiveChat,
   createTangentCatalogHooks,
   createThreadCatalogHooks,
@@ -16,6 +17,7 @@ import {
 } from "./chats.ts";
 import { createTangentRoutes } from "./tangent-routes.ts";
 import { createThreadRoutes } from "./thread-routes.ts";
+import { createThreadContextExtension } from "./thread-context.ts";
 import type { TangentHooks } from "./tangents/index.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
 import type { Tx } from "@earendil-works/pi-durable";
@@ -101,6 +103,10 @@ export async function openChat(
     );
     await mkdir(dataDir, { recursive: true, mode: 0o700 });
     storage = await openNodeSqliteStorage(join(dataDir, "session.sqlite"));
+    const threadStorage = storage;
+    execution.registry.install(
+      createThreadContextExtension((id, context) => threadStorage.conversation(id, context)),
+    );
     harness = await Harness.open(
       storage,
       {
@@ -130,7 +136,7 @@ export async function openChat(
       modelTools: null,
       maxTurns: null,
     };
-    const modelPolicy = createModelPolicy(harness, models);
+    const modelPolicy = createModelPolicy(harness, models, applyModelTiers);
     const chats = await openChats(harness, conversation, defaults, models, modelPolicy);
     const handoffs = createHandoffRoutes({
       harness,
