@@ -110,6 +110,7 @@ function StartPanel({
 export function MainThreadView({
   mainId,
   title,
+  focusComposer,
   active,
   readOnly,
   settingsTarget,
@@ -127,6 +128,7 @@ export function MainThreadView({
 }: {
   mainId: string;
   title: string;
+  focusComposer?: number | undefined;
   active: boolean;
   readOnly: boolean;
   settingsTarget: HTMLElement | null;
@@ -302,6 +304,7 @@ export function MainThreadView({
             <WorkerPanel chatId={mainId} active={active && visible} readOnly={readOnly} />
             <ChatPage
               chatId={mainId}
+              focusComposer={focusComposer}
               active={active && visible}
               readOnly={readOnly}
               settingsTarget={settingsTarget}

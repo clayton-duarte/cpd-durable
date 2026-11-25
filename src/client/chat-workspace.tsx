@@ -62,6 +62,8 @@ function Workspace() {
   const [settingsTarget, setSettingsTarget] = useState<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [focusRequest, setFocusRequest] = useState<{ chatId: string; token: number } | null>(null);
+  const focusSequence = useRef(0);
   const creation = useRef<string | null>(null);
   const inFlight = useRef(false);
   const [reload, setReload] = useState(0);
@@ -268,6 +270,7 @@ function Workspace() {
   function switchChat(id: string) {
     setPanelDraft(null);
     setSelectionQuote(null);
+    setFocusRequest((current) => (current?.chatId === id ? current : null));
     sidebar.setOpenMobile(false);
     void navigate({ to: CHATS_PATH, params: { chatId: pathFor(id) }, search: {} });
   }
@@ -304,6 +307,7 @@ function Workspace() {
           : { rootId: created.id, chats: [created] },
       );
       creation.current = null;
+      setFocusRequest({ chatId: created.id, token: ++focusSequence.current });
       switchChat(created.id);
       setReload((value) => value + 1);
     } catch {
@@ -711,6 +715,7 @@ function Workspace() {
                 >
                   <MainThreadView
                     mainId={id}
+                    focusComposer={focusRequest?.chatId === id ? focusRequest.token : undefined}
                     title={catalog?.chats.find((item) => item.id === id)?.title ?? "Main chat"}
                     draftGuards={draftGuards}
                     onUnsavedDraft={onUnsavedDraft}
