@@ -4,6 +4,7 @@ import type { ChatState, SendMode, HistoryGap } from "../shared/chat.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
 import type { DirectShellStatusSchema } from "../shared/direct-shell.ts";
 import type { z } from "zod";
+import type { ThreadView } from "../shared/threads.ts";
 
 export interface ChatProps {
   chatId?: string | undefined;
@@ -11,9 +12,19 @@ export interface ChatProps {
   onUnsavedDraft?: (chatId: string) => void;
   active?: boolean;
   readOnly?: boolean;
+  settingsTarget?: HTMLElement | null | undefined;
+  settingsIncludeDefaults?: boolean | undefined;
   mutationAllowed?: (() => boolean) | undefined;
   canRequestTangent?: boolean;
   inputBlockedReason?: string | undefined;
+  /** Message-thread panel: show only messages saved after this entry. */
+  visibleFromEntryId?: number | undefined;
+  initialQuote?: { text: string; messageId: string } | undefined;
+  /** Host-owned message-thread index for reply affordances and the conversation map. */
+  threads?: readonly ThreadView[] | null | undefined;
+  /** Saved entry whose thread panel is open; highlighted in the transcript. */
+  highlightsEntryId?: string | undefined;
+  onReplyInThread?: ((entryId: number, quote?: string) => void) | undefined;
   onFork?: ((entryId: number) => void) | undefined;
   onRegenerate?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;

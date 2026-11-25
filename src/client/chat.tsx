@@ -48,6 +48,7 @@ import {
 } from "./draft-persistence.tsx";
 import { parseDirectShell } from "../shared/direct-shell.ts";
 import { draftInputText, type DraftIntent } from "../shared/draft-intent.ts";
+import { QuoteTextSchema } from "../shared/quote.ts";
 export type { ChatProps } from "./chat-host.ts";
 
 const convertMessage = (message: ThreadMessageLike) => message;
@@ -396,50 +397,6 @@ function PersistenceBridge({
             </div>
           );
         })}
-      {recovery.attempts.some(
-        (attempt) =>
-          attempt.admission === "admitted" || confirmed.includes(attempt.record.requestId),
-      ) && (
-        <CollapsibleRoot>
-          <CollapsibleTrigger render={<Button variant="ghost" size="sm" />}>
-            Send history
-          </CollapsibleTrigger>
-          <CollapsibleContent className="px-3 text-sm">
-            <p>Admitted means accepted for processing, not that a response completed.</p>
-            {recovery.attempts
-              .filter(
-                (attempt) =>
-                  attempt.admission === "admitted" || confirmed.includes(attempt.record.requestId),
-              )
-              .map((attempt) => (
-                <CollapsibleRoot key={attempt.record.requestId}>
-                  <CollapsibleTrigger
-                    render={<Button variant="ghost" size="sm" className="max-w-full truncate" />}
-                  >
-                    {attempt.record.text.slice(0, 100) || "Image send"}
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <Textarea
-                      readOnly
-                      aria-label="Full original text"
-                      value={attempt.record.text}
-                    />
-                    <p>
-                      Mode: {attempt.record.mode}. Draft revision: {attempt.record.draftRevision}.
-                    </p>
-                    <p>Request: {attempt.record.requestId}</p>
-                    <p>
-                      {attempt.record.images.length
-                        ? `Images: ${attempt.record.images.join(", ")}`
-                        : "No images"}
-                    </p>
-                    {attempt.admission === "admitted" && <p>Submission: {attempt.submissionId}</p>}
-                  </CollapsibleContent>
-                </CollapsibleRoot>
-              ))}
-          </CollapsibleContent>
-        </CollapsibleRoot>
-      )}
       {recovery.capped && (
         <Button type="button" variant="outline" onClick={() => void recovery.loadMore()}>
           Load older attempts
@@ -471,6 +428,14 @@ export function Chat(props: ChatProps) {
   useLayoutEffect(() => {
     committedProjection.current = projection;
   }, [projection]);
+  const visibleMessages = useMemo(() => {
+    const from = props.visibleFromEntryId;
+    if (from === undefined) return projection.messages;
+    return projection.messages.filter((message) => {
+      const entryId = message.metadata?.custom?.["sourceEntryId"];
+      return typeof entryId !== "number" || entryId > from;
+    });
+  }, [projection.messages, props.visibleFromEntryId]);
   const displayMessages = useMemo(() => {
     if (
       !props.shell ||
@@ -482,10 +447,10 @@ export function Chat(props: ChatProps) {
           ),
       )
     )
-      return projection.messages;
+      return visibleMessages;
     const partId = `shell:${props.shell.taskId}`;
     return [
-      ...projection.messages,
+      ...visibleMessages,
       {
         id: partId,
         role: "assistant" as const,
@@ -506,7 +471,7 @@ export function Chat(props: ChatProps) {
         status: { type: "running" as const },
       },
     ];
-  }, [projection.messages, props.shell, props.state?.messages]);
+  }, [visibleMessages, props.shell, props.state?.messages]);
   const messages = useExternalMessageConverter({
     messages: displayMessages,
     callback: convertMessage,
@@ -597,8 +562,9 @@ export function Chat(props: ChatProps) {
     ) => {
       const composer = runtimeRef.current?.thread.composer;
       setLocalError(null);
-      const shell = nativeSend ? parseDirectShell(draft) : undefined;
-      if (intent && !props.canRequestTangent) {
+      const tangent = intent?.kind === "tangent-handoff-request";
+      const shell = nativeSend && !intent ? parseDirectShell(draft) : undefined;
+      if (tangent && !props.canRequestTangent) {
         setLocalError("Choose an available / command from the list; command text was not sent.");
         return false;
       }
@@ -616,14 +582,18 @@ export function Chat(props: ChatProps) {
       if (
         !available ||
         !props.onSend ||
-        (intent && !props.canRequestTangent) ||
+        (tangent && !props.canRequestTangent) ||
         (mode === "reject" && props.state?.busy) ||
         (mode === "steer" && !props.state?.busy)
       )
         return false;
       const text = draftInputText(draft, intent);
       if (text === undefined) {
-        setLocalError("Enter a goal with a single complete tangent command.");
+        setLocalError(
+          tangent
+            ? "Enter a goal with a single complete tangent command."
+            : "Enter a reply with your quote.",
+        );
         return false;
       }
 
@@ -746,12 +716,22 @@ export function Chat(props: ChatProps) {
           return;
         }
       }
-      await admit(
+      const quote = message.metadata?.custom?.["quote"];
+      const quoteText = QuoteTextSchema.safeParse(
+        quote && typeof quote === "object" && "text" in quote ? quote.text : undefined,
+      );
+      if (quote !== undefined && !quoteText.success) {
+        setLocalError("Select a quote of at most 4,000 characters.");
+        persistence.current?.endSend();
+        return;
+      }
+      const admitted = await admit(
         text,
         "reject",
         true,
         (message.attachments ?? []).map((attachment) => attachment.id),
         (() => {
+          if (quoteText.success) return { kind: "quote", text: quoteText.data } as const;
           const match = /(?:^|\s)\/(tangent|side)(?=\s|$)/u.exec(text);
           if (!match) return undefined;
           const intent: DraftIntent = {
@@ -762,6 +742,18 @@ export function Chat(props: ChatProps) {
           return draftInputText(text, intent) === undefined ? undefined : intent;
         })(),
       );
+      if (
+        !admitted &&
+        quoteText.success &&
+        quote &&
+        typeof quote === "object" &&
+        "messageId" in quote &&
+        typeof quote.messageId === "string" &&
+        composer &&
+        !composer.getState().quote &&
+        composer.getState().text === text
+      )
+        composer.setQuote({ text: quoteText.data, messageId: quote.messageId });
       persistence.current?.endSend();
     },
     [admit, props.chatId, props.state?.conversationId],
@@ -807,6 +799,9 @@ export function Chat(props: ChatProps) {
         : {}),
   });
   runtimeRef.current = runtime;
+  useLayoutEffect(() => {
+    if (props.initialQuote && props.onSend) runtime.thread.composer.setQuote(props.initialQuote);
+  }, [runtime, props.initialQuote, props.onSend !== undefined]);
   useLayoutEffect(() => {
     const id = props.chatId;
     const guards = props.draftGuards?.current;
@@ -901,7 +896,25 @@ export function Chat(props: ChatProps) {
         available,
         localError,
         clearLocalError: () => setLocalError(null),
-        submitDraft: (mode) => admit(runtime.thread.composer.getState().text, mode),
+        submitDraft: async (mode) => {
+          const composer = runtime.thread.composer;
+          const { text, quote } = composer.getState();
+          const checked = QuoteTextSchema.safeParse(quote?.text);
+          if (quote && !checked.success) {
+            setLocalError("Select a quote of at most 4,000 characters.");
+            return false;
+          }
+          const admitted = await admit(
+            text,
+            mode,
+            false,
+            undefined,
+            checked.success ? { kind: "quote", text: checked.data } : undefined,
+          );
+          if (admitted && quote && composer.getState().quote === quote)
+            composer.setQuote(undefined);
+          return admitted;
+        },
         requestTangent: (command) => {
           const snapshot = selectionSnapshot.current;
           selectionSnapshot.current = null;

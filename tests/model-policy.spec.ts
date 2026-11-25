@@ -1,3 +1,4 @@
+import { openChatSetting } from "./fixtures/chat-settings.ts";
 import { expect, test } from "@playwright/test";
 
 test("settings save, conflict reload and unavailable catalog retain the user's draft", async ({
@@ -14,7 +15,10 @@ test("settings save, conflict reload and unavailable catalog retain the user's d
   await page.route("**/api/**", (route) => route.abort());
   await page.route("**/api/chats", (route) =>
     route.fulfill({
-      json: { rootId: "1", chats: [{ id: "1", title: "Chat", running: false, status: "regular" }] },
+      json: {
+        rootId: "1",
+        chats: [{ id: "1", slug: "1", title: "Chat", running: false, status: "regular" }],
+      },
     }),
   );
   await page.route("**/api/model-policy", async (route) => {
@@ -35,7 +39,7 @@ test("settings save, conflict reload and unavailable catalog retain the user's d
     return route.fulfill({ json: { revision, assignments } });
   });
   await page.goto("/chats/1");
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await openChatSetting(page, "Model defaults");
   await expect(page.getByText("Host default until configured.")).toBeVisible();
   for (const role of ["Main", "Tangent", "Worker"]) {
     await page.getByRole("combobox", { name: `${role} model` }).click();
@@ -81,7 +85,10 @@ test("late save acknowledgements preserve newer edits and are ignored after clos
   await page.route("**/api/**", (route) => route.abort());
   await page.route("**/api/chats", (route) =>
     route.fulfill({
-      json: { rootId: "1", chats: [{ id: "1", title: "Chat", running: false, status: "regular" }] },
+      json: {
+        rootId: "1",
+        chats: [{ id: "1", slug: "1", title: "Chat", running: false, status: "regular" }],
+      },
     }),
   );
   await page.route("**/api/model-policy", async (route) => {
@@ -96,7 +103,7 @@ test("late save acknowledgements preserve newer edits and are ignored after clos
     await route.fulfill({ json: { revision, assignments } }).catch(() => {});
   });
   await page.goto("/chats/1");
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await openChatSetting(page, "Model defaults");
   await page.getByRole("combobox", { name: "Main model" }).click();
   await page
     .getByRole("option", { name: /example\/one/ })
@@ -118,6 +125,6 @@ test("late save acknowledgements preserve newer edits and are ignored after clos
   await expect.poll(() => !!release).toBe(true);
   await page.getByRole("button", { name: "Close", exact: true }).click();
   release!();
-  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await openChatSetting(page, "Model defaults");
   await expect(page.getByText("example/two · thinking off")).toBeVisible();
 });

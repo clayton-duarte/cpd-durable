@@ -85,7 +85,7 @@ export async function saveAttempt(scope: ChatScope, input: unknown) {
   const request = DraftAttemptRequestSchema.parse(input);
   return scope.conversation.commit(async (tx) => {
     await scope.assertWritable(tx);
-    if (request.intent) {
+    if (request.intent?.kind === "tangent-handoff-request") {
       const item = (await tx.doc(CatalogDoc)).items.find(
         (entry) => entry.id === scope.conversation.id,
       );
@@ -97,6 +97,8 @@ export async function saveAttempt(scope: ChatScope, input: unknown) {
       )
         throw new DraftAttemptConflict();
     }
+    if (request.intent && draftInputText(request.text, request.intent) === undefined)
+      throw new DraftAttemptConflict();
     const existing = await readDraftAttempt(tx, scope.conversation.id, request.requestId);
     const record = { ...request, fingerprint: draftAttemptFingerprint(request) };
     // Identical intent remains retryable after the user advances the draft.

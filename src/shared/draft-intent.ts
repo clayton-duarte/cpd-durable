@@ -1,16 +1,27 @@
 import { z } from "zod";
 import { modelInputText } from "./direct-shell.ts";
+import { QuoteTextSchema, quotedReply } from "./quote.ts";
 
-export const DraftIntentSchema = z.strictObject({
-  kind: z.literal("tangent-handoff-request"),
-  version: z.literal(1),
-  command: z.enum(["tangent", "side"]),
-});
+export const DraftIntentSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("tangent-handoff-request"),
+    version: z.literal(1),
+    command: z.enum(["tangent", "side"]),
+  }),
+  z.strictObject({
+    kind: z.literal("quote"),
+    text: QuoteTextSchema,
+  }),
+]);
 export type DraftIntent = z.infer<typeof DraftIntentSchema>;
 
 /** Returns undefined for malformed or ambiguous commands, never an arbitrary replacement. */
 export function draftInputText(text: string, intent?: DraftIntent): string | undefined {
   if (!intent) return modelInputText(text);
+  if (intent.kind === "quote") {
+    const reply = modelInputText(text);
+    return reply ? quotedReply(reply, intent.text) : undefined;
+  }
   const matches = [...text.matchAll(/(?:^|\s)\/(tangent|side)(?=\s|$)/gu)];
   if (matches.length !== 1 || matches[0]?.[1] !== intent.command) return undefined;
   const match = matches[0];

@@ -88,7 +88,7 @@ const defaultComponents = memoizeMarkdownComponents({
   h1: ({ className, ...props }) => (
     <h1
       className={cn(
-        "aui-md-h1 mt-5 mb-2 scroll-m-20 text-xl font-semibold first:mt-0 last:mb-0",
+        "aui-md-h1 mt-5 mb-2 scroll-m-20 text-[17px]/[22px] font-semibold first:mt-0 last:mb-0",
         className,
       )}
       {...props}
@@ -97,7 +97,7 @@ const defaultComponents = memoizeMarkdownComponents({
   h2: ({ className, ...props }) => (
     <h2
       className={cn(
-        "aui-md-h2 mt-5 mb-2 scroll-m-20 text-lg font-semibold first:mt-0 last:mb-0",
+        "aui-md-h2 mt-5 mb-2 scroll-m-20 text-[15px]/[22px] font-semibold first:mt-0 last:mb-0",
         className,
       )}
       {...props}
@@ -106,7 +106,7 @@ const defaultComponents = memoizeMarkdownComponents({
   h3: ({ className, ...props }) => (
     <h3
       className={cn(
-        "aui-md-h3 mt-4 mb-1.5 scroll-m-20 text-base font-semibold first:mt-0 last:mb-0",
+        "aui-md-h3 mt-4 mb-1.5 scroll-m-20 text-sm/[22px] font-semibold first:mt-0 last:mb-0",
         className,
       )}
       {...props}
@@ -115,7 +115,7 @@ const defaultComponents = memoizeMarkdownComponents({
   h4: ({ className, ...props }) => (
     <h4
       className={cn(
-        "aui-md-h4 mt-3.5 mb-1 scroll-m-20 text-base font-medium first:mt-0 last:mb-0",
+        "aui-md-h4 mt-3.5 mb-1 scroll-m-20 text-sm/[22px] font-medium first:mt-0 last:mb-0",
         className,
       )}
       {...props}
@@ -134,7 +134,7 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   p: ({ className, ...props }) => (
-    <p className={cn("aui-md-p my-3 leading-relaxed first:mt-0 last:mb-0", className)} {...props} />
+    <p className={cn("aui-md-p my-3 leading-[1.6] first:mt-0 last:mb-0", className)} {...props} />
   ),
   a: ({ className, ...props }) => (
     <a
@@ -211,7 +211,7 @@ const defaultComponents = memoizeMarkdownComponents({
     />
   ),
   li: ({ className, ...props }) => (
-    <li className={cn("aui-md-li leading-relaxed", className)} {...props} />
+    <li className={cn("aui-md-li leading-[1.6]", className)} {...props} />
   ),
   strong: ({ className, ...props }) => (
     <strong className={cn("aui-md-strong font-semibold", className)} {...props} />

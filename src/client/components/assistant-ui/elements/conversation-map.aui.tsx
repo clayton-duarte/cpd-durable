@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuiState, useThreadViewport } from "@assistant-ui/react";
 import type { ThreadMessage } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
+import { useChatHost } from "@/chat-host";
 import { ConversationMap, type ConversationMapEntry } from "./conversation-map";
 
 const TITLE_LENGTH = 72;
@@ -301,7 +302,44 @@ export function ConversationMapAui({
   const [visibleIds, setVisibleIds] = useState<readonly string[]>([]);
   const scheduleRef = useRef<(() => void) | undefined>(undefined);
 
-  const { entries, turnOf, turnKey } = useConversationProjection(messages);
+  const { entries, turns, turnOf, turnKey } = useConversationProjection(messages);
+  const host = useChatHost();
+  const threadList = host.threads ?? [];
+  const openThread = host.onReplyInThread;
+  // Threads are host data, not transcript structure: the rail keeps its cached
+  // turn projection and only decorates turns that own one.
+  const railEntries = useMemo((): readonly ConversationMapEntry[] => {
+    if (threadList.length === 0) return entries;
+    const byEntry = new Map<string, (typeof threadList)[number][]>();
+    for (const thread of threadList) {
+      const list = byEntry.get(thread.sourceEntryId);
+      if (list) list.push(thread);
+      else byEntry.set(thread.sourceEntryId, [thread]);
+    }
+    const heads = new Map(turns.map((turn) => [turn.head.id, turn]));
+    return entries.map((entry) => {
+      const turn = heads.get(entry.id);
+      if (!turn) return entry;
+      const found = turn.members.flatMap((member) => {
+        const entryId = member.metadata.custom["sourceEntryId"];
+        return typeof entryId === "number" ? (byEntry.get(String(entryId)) ?? []) : [];
+      });
+      const first = found[0];
+      if (!first) return entry;
+      return {
+        ...entry,
+        thread: {
+          entryId: first.sourceEntryId,
+          replies: found.reduce((total, thread) => total + thread.replyCount, 0),
+          repliesCapped: found.some((thread) => thread.replyCountCapped),
+          // A working thread is not a request for the reader; only a blocked
+          // question is.
+          needsYou: found.some((thread) => thread.activity === "waiting"),
+          running: found.some((thread) => thread.activity === "running"),
+        },
+      };
+    });
+  }, [entries, turns, threadList]);
 
   const turnOfRef = useRef(turnOf);
 
@@ -397,10 +435,18 @@ export function ConversationMapAui({
         style={{ height: Math.max(0, viewportHeight - footerHeight) }}
       >
         <ConversationMap
-          entries={entries}
+          entries={railEntries}
           activeId={activeId}
           visibleIds={visibleIds}
           onSelect={select}
+          {...(openThread
+            ? {
+                onOpenThread: (entryId: string) => {
+                  const value = Number(entryId);
+                  if (Number.isSafeInteger(value) && value > 0) openThread(value);
+                },
+              }
+            : {})}
           side={side === "right" ? "left" : "right"}
         />
       </div>

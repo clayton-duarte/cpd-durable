@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useMatchRoute, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import {
   AssistantRuntimeProvider,
   useExternalStoreRuntime,
@@ -7,23 +7,20 @@ import {
 } from "@assistant-ui/react";
 import { ThreadListSidebar } from "@/components/assistant-ui/elements/threadlist-sidebar.aui";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
-import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
+import { SidebarInset, SidebarProvider, useSidebar } from "@/components/ui/sidebar";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ChatCatalogSchema, ChatSummarySchema, type ChatCatalog } from "../shared/chats.ts";
+import { idFromSlug } from "../shared/slugs.ts";
+import type { ThreadView } from "../shared/threads.ts";
+import { CHATS_PATH, THREADS_PATH } from "./paths.ts";
+import { useThreads } from "./threads/use-threads.ts";
+import { ThreadPanel } from "./threads/panel.tsx";
 import { MainThreadView } from "./tangents/main-thread-view.tsx";
 import { ApiErrorSchema } from "../shared/chat.ts";
 import { MessageBranches } from "@/components/assistant-ui/elements/message-branches";
 import { Button } from "@/components/ui/button";
 import { RegenerationReceiptSchema, RecentRegenerationsSchema } from "../shared/regeneration.ts";
 import type { z } from "zod";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
-import { Settings } from "./settings.tsx";
 import {
   EditBranchReceiptSchema,
   RecentEditOperationsSchema,
@@ -42,18 +39,27 @@ import {
 
 export function ChatWorkspace() {
   return (
-    <SidebarProvider>
+    <SidebarProvider
+      style={{ "--sidebar-width": "clamp(13rem, 24vw, 28rem)" } as React.CSSProperties}
+    >
       <Workspace />
     </SidebarProvider>
   );
 }
 
 function Workspace() {
-  const { chatId } = useParams({ from: "/chats/{-$chatId}" });
-  const search = useSearch({ from: "/chats/{-$chatId}" });
-  const navigate = useNavigate({ from: "/chats/{-$chatId}" });
+  const { chatId: chatParam } = useParams({ from: CHATS_PATH });
+  // Slugs carry readable titles; identity is the numeric prefix, so links keep
+  // working after a rename and legacy id-only links still resolve.
+  const chatId = idFromSlug(chatParam);
+  const search = useSearch({ from: CHATS_PATH });
+  const navigate = useNavigate();
+  const matchRoute = useMatchRoute();
+  const threadParams = matchRoute({ to: THREADS_PATH });
+  const urlThreadId = threadParams ? idFromSlug(threadParams.threadSlug) : undefined;
   const sidebar = useSidebar();
   const [catalog, setCatalog] = useState<ChatCatalog>();
+  const [settingsTarget, setSettingsTarget] = useState<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const creation = useRef<string | null>(null);
@@ -105,7 +111,28 @@ function Workspace() {
   const mutationVersion = useRef(0);
   const managementInFlight = useRef(false);
   const cancelDelete = useRef<HTMLButtonElement>(null);
+  const [panelDraft, setPanelDraft] = useState<{ parentId: string; entryId: string } | null>(null);
+  const panelEntry = panelDraft?.parentId === chatId ? (panelDraft?.entryId ?? null) : null;
+  const [selectionQuote, setSelectionQuote] = useState<{
+    parentId: string;
+    entryId: string;
+    text: string;
+  } | null>(null);
   const selected = catalog?.chats.find((item) => item.id === chatId);
+  const threadIndex = useThreads(chatId, !!selected);
+  const threads = threadIndex.threads;
+  const openThread: ThreadView | undefined =
+    urlThreadId !== undefined
+      ? threads?.find((thread) => thread.id === urlThreadId)
+      : panelEntry !== null
+        ? threads?.find((thread) => thread.sourceEntryId === panelEntry)
+        : undefined;
+  const threadOpen = urlThreadId !== undefined || panelEntry !== null;
+  // The panel can show the source message before any thread exists, so an
+  // unsent panel reads the saved entry directly instead of forking one.
+  const panelEntryId =
+    openThread?.sourceEntryId ??
+    (urlThreadId === undefined ? (panelEntry ?? undefined) : undefined);
   const family = (catalog?.chats ?? []).filter(
     (item) =>
       (item.status === "regular" || item.id === selected?.id) &&
@@ -206,18 +233,43 @@ function Workspace() {
     };
   }, [reload]);
 
+  const pathFor = useCallback(
+    (id: string | undefined) => catalog?.chats.find((item) => item.id === id)?.slug ?? id ?? "",
+    [catalog],
+  );
   useEffect(() => {
     if (!chatId && catalog) {
       const fallback =
         catalog.chats.find((item) => item.id === catalog.rootId && item.status === "regular") ??
         catalog.chats.find((item) => item.status === "regular");
-      if (fallback) void navigate({ params: { chatId: fallback.id }, replace: true });
+      if (fallback)
+        void navigate({
+          to: CHATS_PATH,
+          params: { chatId: fallback.slug },
+          search: {},
+          replace: true,
+        });
     }
-  }, [chatId, catalog, navigate]);
+  }, [chatId, catalog, navigate, pathFor]);
 
-  function switchChat(id: string) {
+  function openThreadUrl(thread: ThreadView) {
     sidebar.setOpenMobile(false);
-    void navigate({ params: { chatId: id }, search: {} });
+    void navigate({
+      to: THREADS_PATH,
+      params: { chatId: pathFor(thread.parentId), threadSlug: thread.slug },
+    });
+  }
+  function closeThread() {
+    setPanelDraft(null);
+    setSelectionQuote(null);
+    if (urlThreadId !== undefined && chatId)
+      void navigate({ to: CHATS_PATH, params: { chatId: pathFor(chatId) }, search: {} });
+  }
+  function switchChat(id: string) {
+    setPanelDraft(null);
+    setSelectionQuote(null);
+    sidebar.setOpenMobile(false);
+    void navigate({ to: CHATS_PATH, params: { chatId: pathFor(id) }, search: {} });
   }
   async function create() {
     if (inFlight.current || managementInFlight.current) return;
@@ -293,7 +345,12 @@ function Workspace() {
       if (chatId === id && action !== "unarchive") {
         const fallback = next.chats.find((item) => item.status === "regular");
         sidebar.setOpenMobile(false);
-        void navigate({ params: { chatId: fallback?.id }, replace: true });
+        void navigate({
+          to: CHATS_PATH,
+          params: { chatId: pathFor(fallback?.id) },
+          search: {},
+          replace: true,
+        });
       }
     } catch (error) {
       setError(
@@ -540,6 +597,31 @@ function Workspace() {
       },
     },
   });
+  const threadPanel = threadOpen && chatId && (
+    <ThreadPanel
+      parentId={chatId}
+      {...(panelEntryId === undefined ? {} : { entryId: panelEntryId })}
+      {...(openThread ? { thread: openThread } : {})}
+      quote={
+        selectionQuote?.parentId === chatId && selectionQuote.entryId === panelEntryId
+          ? selectionQuote
+          : undefined
+      }
+      onDismissQuote={() => setSelectionQuote(null)}
+      threadMissing={urlThreadId !== undefined && threads !== null && !openThread}
+      readOnly={selected?.status === "archived"}
+      onClose={closeThread}
+      onCreated={(thread) => {
+        setPanelDraft(null);
+        setSelectionQuote(null);
+        openThreadUrl(thread);
+        threadIndex.refresh();
+      }}
+      onRecheck={threadIndex.refresh}
+      draftGuards={draftGuards}
+      onUnsavedDraft={onUnsavedDraft}
+    />
+  );
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadListSidebar
@@ -552,154 +634,198 @@ function Workspace() {
         }}
       />
       <SidebarInset className="h-dvh min-w-0 overflow-hidden">
-        <header className="flex h-12 shrink-0 items-center gap-2 px-3">
-          <SidebarTrigger />
-          <span className="truncate text-sm">{selected?.title ?? "Chats"}</span>
-          <Dialog>
-            <DialogTrigger render={<Button variant="ghost" size="sm" />}>Settings</DialogTrigger>
-            <DialogContent className="max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Settings</DialogTitle>
-                <DialogDescription>
-                  Application-wide defaults for future conversations and workers.
-                </DialogDescription>
-              </DialogHeader>
-              <Settings />
-            </DialogContent>
-          </Dialog>
-          {selected?.parentId && (
-            <span className="truncate text-xs text-muted-foreground">
-              Entry {selected.forkEntryId} from {parent?.title ?? "unavailable source"}
-            </span>
-          )}
-          {parent && (
-            <Button size="sm" variant="ghost" onClick={() => switchChat(parent.id)}>
-              Open source chat
-            </Button>
-          )}
-          {family.length > 1 && (
-            <MessageBranches
-              aria-label="Saved conversation branches"
-              className="shrink-0 [&>p]:hidden"
-              variants={family.map((item) => item.title)}
-              index={family.findIndex((item) => item.id === selected?.id)}
-              previousLabel="Show previous saved branch"
-              nextLabel="Show next saved branch"
-              onIndexChange={(index) => {
-                const next = family[index];
-                if (next) switchChat(next.id);
-              }}
-            />
-          )}
-        </header>
-        {error && (
-          <ErrorState
-            title="Chats unavailable"
-            detail={error}
-            retrying={creating}
-            onRetry={() => {
-              if (creation.current) void create();
-              else {
-                setError(null);
-                setReload((value) => value + 1);
-              }
-            }}
-          />
-        )}
-        {catalog && chatId && !selected && (
-          <ErrorState
-            title="Chat not found"
-            retrying={false}
-            detail="This chat is not available in this session."
-            actionLabel={
-              fallback
-                ? fallback.id === catalog.rootId
-                  ? "Open original chat"
-                  : "Open another chat"
-                : "New chat"
-            }
-            onRetry={() => {
-              if (fallback) switchChat(fallback.id);
-              else void create();
-            }}
-          />
-        )}
-        <div className="relative min-h-0 flex-1">
-          {mounted.map((id) => (
-            <div
-              key={id}
-              inert={id !== selected?.id || archiving === id}
-              aria-hidden={id !== selected?.id}
-              className="absolute inset-0 flex min-h-0 flex-col"
-              style={{ visibility: id === selected?.id ? "visible" : "hidden" }}
-            >
-              <MainThreadView
-                mainId={id}
-                title={catalog?.chats.find((item) => item.id === id)?.title ?? "Main chat"}
-                draftGuards={draftGuards}
-                onUnsavedDraft={onUnsavedDraft}
-                active={id === selected?.id}
-                readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
-                selectedTangent={
-                  id === selected?.id && search.tangent !== undefined
-                    ? String(search.tangent)
-                    : undefined
-                }
-                onSelectTangent={(tangent) => {
-                  if (id === activeChatId.current)
-                    void navigate({ params: { chatId: id }, search: { tangent: Number(tangent) } });
-                }}
-                onCloseTangent={() => {
-                  if (id === activeChatId.current)
-                    void navigate({ params: { chatId: id }, search: {} });
-                }}
-                onFork={(entryId) => {
-                  if (managementInFlight.current || inFlight.current || id !== activeChatId.current)
-                    return;
-                  setError(null);
-                  setForking({ sourceId: id, at: String(entryId), requestId: crypto.randomUUID() });
-                }}
-                onRegenerate={(entryId) => {
-                  if (
-                    managementInFlight.current ||
-                    inFlight.current ||
-                    regenerating ||
-                    editing ||
-                    id !== activeChatId.current
-                  )
-                    return;
-                  setError(null);
-                  const existing = uncertainRegenerations.current.get(`${id}:${entryId}`);
-                  setRegenerationUncertain(existing !== undefined);
-                  setRegenerating({
-                    sourceId: id,
-                    entryId: String(entryId),
-                    requestId: existing ?? crypto.randomUUID(),
-                  });
-                }}
-                onEdit={(entryId, text) => {
-                  if (
-                    managementInFlight.current ||
-                    inFlight.current ||
-                    editing ||
-                    regenerating ||
-                    id !== activeChatId.current
-                  )
-                    return;
-                  setError(null);
-                  setEditUncertain(false);
-                  setSelectedRecovery(null);
-                  setEditing({
-                    sourceId: id,
-                    entryId: String(entryId),
-                    text,
-                    requestId: crypto.randomUUID(),
-                  });
+        <ResizablePanelGroup orientation="horizontal" className="min-h-0 flex-1">
+          <ResizablePanel
+            id="main-chat"
+            minSize="40%"
+            className="flex h-full min-h-0 min-w-0 flex-col"
+          >
+            <header className="flex h-12 shrink-0 items-center gap-2 border-b px-5">
+              <span className="truncate text-sm font-semibold">{selected?.title ?? "Chats"}</span>
+              {selected?.parentId && (
+                <span className="truncate text-xs text-muted-foreground">
+                  Entry {selected.forkEntryId} from {parent?.title ?? "unavailable source"}
+                </span>
+              )}
+              {parent && (
+                <Button size="sm" variant="ghost" onClick={() => switchChat(parent.id)}>
+                  Open source chat
+                </Button>
+              )}
+              {family.length > 1 && (
+                <MessageBranches
+                  aria-label="Saved conversation branches"
+                  className="shrink-0 [&>p]:hidden"
+                  variants={family.map((item) => item.title)}
+                  index={family.findIndex((item) => item.id === selected?.id)}
+                  previousLabel="Show previous saved branch"
+                  nextLabel="Show next saved branch"
+                  onIndexChange={(index) => {
+                    const next = family[index];
+                    if (next) switchChat(next.id);
+                  }}
+                />
+              )}
+              <div ref={setSettingsTarget} className="ms-auto shrink-0" />
+            </header>
+            {error && (
+              <ErrorState
+                title="Chats unavailable"
+                detail={error}
+                retrying={creating}
+                onRetry={() => {
+                  if (creation.current) void create();
+                  else {
+                    setError(null);
+                    setReload((value) => value + 1);
+                  }
                 }}
               />
+            )}
+            {catalog && chatId && !selected && (
+              <ErrorState
+                title="Chat not found"
+                retrying={false}
+                detail="This chat is not available in this session."
+                actionLabel={
+                  fallback
+                    ? fallback.id === catalog.rootId
+                      ? "Open original chat"
+                      : "Open another chat"
+                    : "New chat"
+                }
+                onRetry={() => {
+                  if (fallback) switchChat(fallback.id);
+                  else void create();
+                }}
+              />
+            )}
+            <div className="relative min-h-0 min-w-0 flex-1">
+              {mounted.map((id) => (
+                <div
+                  key={id}
+                  inert={id !== selected?.id || archiving === id}
+                  aria-hidden={id !== selected?.id}
+                  className="absolute inset-0 flex min-h-0 flex-col"
+                  style={{ visibility: id === selected?.id ? "visible" : "hidden" }}
+                >
+                  <MainThreadView
+                    mainId={id}
+                    title={catalog?.chats.find((item) => item.id === id)?.title ?? "Main chat"}
+                    draftGuards={draftGuards}
+                    onUnsavedDraft={onUnsavedDraft}
+                    active={id === selected?.id}
+                    readOnly={catalog?.chats.find((item) => item.id === id)?.status === "archived"}
+                    settingsTarget={settingsTarget}
+                    threads={id === selected?.id ? threads : null}
+                    highlightsEntryId={id === selected?.id ? panelEntryId : undefined}
+                    onReplyInThread={(entryId, quote) => {
+                      if (id !== activeChatId.current || !chatId) return;
+                      const source = { parentId: chatId, entryId: String(entryId) };
+                      setSelectionQuote(quote === undefined ? null : { ...source, text: quote });
+                      const existing = threads?.find(
+                        (thread) => thread.sourceEntryId === source.entryId,
+                      );
+                      if (existing) {
+                        setPanelDraft(null);
+                        openThreadUrl(existing);
+                      } else {
+                        setPanelDraft(source);
+                        if (urlThreadId !== undefined)
+                          void navigate({
+                            to: CHATS_PATH,
+                            params: { chatId: pathFor(id) },
+                            search: {},
+                          });
+                      }
+                    }}
+                    selectedTangent={
+                      id === selected?.id && search.tangent !== undefined
+                        ? String(search.tangent)
+                        : undefined
+                    }
+                    onSelectTangent={(tangent) => {
+                      if (id === activeChatId.current)
+                        void navigate({
+                          to: CHATS_PATH,
+                          params: { chatId: pathFor(id) },
+                          search: { tangent: Number(tangent) },
+                        });
+                    }}
+                    onCloseTangent={() => {
+                      if (id === activeChatId.current)
+                        void navigate({
+                          to: CHATS_PATH,
+                          params: { chatId: pathFor(id) },
+                          search: {},
+                        });
+                    }}
+                    onFork={(entryId) => {
+                      if (
+                        managementInFlight.current ||
+                        inFlight.current ||
+                        id !== activeChatId.current
+                      )
+                        return;
+                      setError(null);
+                      setForking({
+                        sourceId: id,
+                        at: String(entryId),
+                        requestId: crypto.randomUUID(),
+                      });
+                    }}
+                    onRegenerate={(entryId) => {
+                      if (
+                        managementInFlight.current ||
+                        inFlight.current ||
+                        regenerating ||
+                        editing ||
+                        id !== activeChatId.current
+                      )
+                        return;
+                      setError(null);
+                      const existing = uncertainRegenerations.current.get(`${id}:${entryId}`);
+                      setRegenerationUncertain(existing !== undefined);
+                      setRegenerating({
+                        sourceId: id,
+                        entryId: String(entryId),
+                        requestId: existing ?? crypto.randomUUID(),
+                      });
+                    }}
+                    onEdit={(entryId, text) => {
+                      if (
+                        managementInFlight.current ||
+                        inFlight.current ||
+                        editing ||
+                        regenerating ||
+                        id !== activeChatId.current
+                      )
+                        return;
+                      setError(null);
+                      setEditUncertain(false);
+                      setSelectedRecovery(null);
+                      setEditing({
+                        sourceId: id,
+                        entryId: String(entryId),
+                        text,
+                        requestId: crypto.randomUUID(),
+                      });
+                    }}
+                  />
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          </ResizablePanel>
+          {!sidebar.isMobile && threadPanel && (
+            <>
+              <ResizableHandle withHandle aria-label="Resize main chat and thread" />
+              <ResizablePanel id="message-thread" defaultSize="39%" minSize="25%">
+                {threadPanel}
+              </ResizablePanel>
+            </>
+          )}
+        </ResizablePanelGroup>
+        {sidebar.isMobile && threadPanel}
       </SidebarInset>
       <AlertDialog
         open={regenerating !== null}

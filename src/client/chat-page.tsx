@@ -1,13 +1,21 @@
 import { Chat } from "./chat.tsx";
+import type { ThreadView } from "../shared/threads.ts";
 import { useChat } from "./use-chat.ts";
 
 export function ChatPage({
   chatId,
   active = true,
   readOnly = false,
+  settingsTarget,
+  settingsIncludeDefaults,
   mutationAllowed,
   canRequestTangent = false,
   inputBlockedReason,
+  visibleFromEntryId,
+  initialQuote,
+  threads,
+  highlightsEntryId,
+  onReplyInThread,
   onFork,
   onRegenerate,
   onEdit,
@@ -17,9 +25,16 @@ export function ChatPage({
   chatId?: string;
   active?: boolean;
   readOnly?: boolean;
+  settingsTarget?: HTMLElement | null | undefined;
+  settingsIncludeDefaults?: boolean | undefined;
   mutationAllowed?: (() => boolean) | undefined;
   canRequestTangent?: boolean;
   inputBlockedReason?: string | undefined;
+  visibleFromEntryId?: number | undefined;
+  initialQuote?: { text: string; messageId: string } | undefined;
+  threads?: readonly ThreadView[] | null | undefined;
+  highlightsEntryId?: string | undefined;
+  onReplyInThread?: ((entryId: number, quote?: string) => void) | undefined;
   onFork?: ((entryId: number) => void) | undefined;
   onRegenerate?: ((entryId: number) => void) | undefined;
   onEdit?: ((entryId: number, text: string) => void) | undefined;
@@ -33,9 +48,16 @@ export function ChatPage({
         chatId={chatId}
         active={active}
         readOnly={readOnly}
+        settingsTarget={settingsTarget}
+        settingsIncludeDefaults={settingsIncludeDefaults}
         mutationAllowed={mutationAllowed}
         canRequestTangent={canRequestTangent}
         inputBlockedReason={inputBlockedReason}
+        {...(visibleFromEntryId === undefined ? {} : { visibleFromEntryId })}
+        {...(initialQuote === undefined ? {} : { initialQuote })}
+        {...(threads === undefined ? {} : { threads })}
+        {...(highlightsEntryId === undefined ? {} : { highlightsEntryId })}
+        {...(onReplyInThread === undefined ? {} : { onReplyInThread })}
         onFork={onFork}
         onRegenerate={onRegenerate}
         onEdit={onEdit}

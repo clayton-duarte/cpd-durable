@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { draftInputText, type DraftIntent } from "../src/shared/draft-intent.ts";
 import { draftAttemptFingerprint } from "../src/server/draft-attempts.ts";
+import { splitQuotedReply } from "../src/shared/quote.ts";
 
 const intent = (command: "tangent" | "side"): DraftIntent => ({
   kind: "tangent-handoff-request",
@@ -9,6 +10,14 @@ const intent = (command: "tangent" | "side"): DraftIntent => ({
 });
 
 describe("draft command intent", () => {
+  it("carries the excerpt in the input without treating commands in a quoted reply as actions", () => {
+    const quote = { kind: "quote", text: "first line\n\n!second line" } as const;
+    const input = draftInputText("!literal reply", quote);
+    expect(input).toBe("> first line\n> \n> !second line\n\n!literal reply");
+    expect(splitQuotedReply(input!)).toEqual({ quote: quote.text, reply: "!literal reply" });
+    expect(splitQuotedReply("plain input\n\nstill plain")).toBeUndefined();
+    expect(draftInputText("", quote)).toBeUndefined();
+  });
   it("derives both aliases and rejects escaped, mismatched, ambiguous, and empty commands", () => {
     expect(draftInputText("/tangent  find it", intent("tangent"))).toContain("Goal:\nfind it");
     expect(draftInputText("find it /side", intent("side"))).toContain("Goal:\nfind it");
