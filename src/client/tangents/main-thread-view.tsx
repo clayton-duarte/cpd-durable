@@ -302,6 +302,7 @@ export function MainThreadView({
             <WorkerPanel chatId={mainId} active={active && visible} readOnly={readOnly} />
             <ChatPage
               chatId={mainId}
+              modelRole="main"
               active={active && visible}
               readOnly={readOnly}
               settingsTarget={settingsTarget}
@@ -467,6 +468,7 @@ export function MainThreadView({
             />
             <ChatPage
               chatId={tangent.id}
+              modelRole="tangent"
               draftGuards={draftGuards}
               onUnsavedDraft={onUnsavedDraft}
               active={active && visible}

@@ -194,7 +194,7 @@ export function ModelTierSettings({ api }: { api: ModelTierSettingsApi }) {
                   aria-label={`${label} model`}
                   disabled={!data.choices.length}
                 />
-                <ModelSelectorContent searchable />
+                <ModelSelectorContent searchable aria-label={`${label} model choices`} />
               </ModelSelectorRoot>
             </div>
           );

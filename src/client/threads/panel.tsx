@@ -277,6 +277,7 @@ export function ThreadPanel({
         <div className="flex min-h-0 flex-1 flex-col">
           <ChatPage
             chatId={thread.id}
+            modelRole="tangent"
             active
             readOnly={readOnly}
             settingsTarget={settingsTarget}
