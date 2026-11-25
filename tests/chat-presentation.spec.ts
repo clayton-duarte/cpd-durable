@@ -2446,3 +2446,72 @@ test("resumed thread history fills reply gaps rather than loading hidden inherit
   ).toHaveCount(0);
   await expect(draft).toHaveValue("Keep reply draft");
 });
+
+test("switching indexed threads changes the rendered conversation and focuses its own composer", async ({
+  page,
+}) => {
+  const threads = [indexedThread(501, 2), indexedThread(502, 4)];
+  await page.route("**/api/chats/1/threads", (route) => route.fulfill({ json: { threads } }));
+  const states = {
+    "1": historyState(1, 6, 1, false),
+    "501": historyState(101, 110, 10, false),
+    "502": historyState(201, 210, 1, false),
+  };
+  await page.addInitScript((raw: string) => {
+    const states = JSON.parse(raw) as Record<string, ChatState>;
+    class ThreadEventSource extends EventTarget {
+      onerror: (() => void) | null = null;
+      constructor(raw: string) {
+        super();
+        const url = new URL(raw, location.href);
+        const id = url.pathname.split("/")[3] ?? "1";
+        const state = structuredClone(states[id]!);
+        state.conversationId = Number(id);
+        state.history!.view = url.searchParams.get("view")!;
+        queueMicrotask(() =>
+          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(state) })),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: ThreadEventSource });
+  }, JSON.stringify(states));
+  await page.goto("/");
+  const map = page.getByRole("navigation", { name: "Conversation threads" });
+  const panel = page.getByRole("complementary", { name: "Message thread", exact: true });
+  await map.getByRole("button", { name: "Indexed thread 501", exact: true }).click();
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(1);
+  const firstDraft = panel.getByRole("textbox", { name: "Message input", exact: true });
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/chats/501/draft") && response.request().method() !== "GET",
+  );
+  await firstDraft.fill("First thread's draft");
+  await saved;
+  await map.getByRole("button", { name: "Indexed thread 502", exact: true }).click();
+  await expect(page).toHaveURL(/\/threads\/502-indexed-thread$/);
+  await expect(panel.locator('[data-slot="thread-source"]')).toContainText("Source 4");
+  await expect(panel.locator('[data-durable-id="201:0"]')).toHaveCount(1);
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(0);
+  const secondDraft = panel.getByRole("textbox", { name: "Message input", exact: true });
+  await expect(secondDraft).toHaveValue("");
+  await expect(secondDraft).toBeFocused();
+  await expect(panel.getByRole("button", { name: "Close thread", exact: true })).not.toBeFocused();
+  const source = page
+    .getByRole("region", { name: "Main chat: Original chat" })
+    .locator('[data-durable-id="2:0"]');
+  await source.hover();
+  await source.getByRole("button", { name: "Open thread · 2 replies", exact: true }).click();
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(1);
+  await expect(panel.locator('[data-durable-id="201:0"]')).toHaveCount(0);
+  await expect(firstDraft).toHaveValue("First thread's draft");
+  await expect(firstDraft).toBeFocused();
+  await page.goBack();
+  await expect(panel.locator('[data-durable-id="201:0"]')).toHaveCount(1);
+  await expect(secondDraft).toHaveValue("");
+  await expect(secondDraft).toBeFocused();
+  await page.goForward();
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(1);
+  await expect(firstDraft).toHaveValue("First thread's draft");
+  await expect(firstDraft).toBeFocused();
+});

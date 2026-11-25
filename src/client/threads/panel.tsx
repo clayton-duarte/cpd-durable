@@ -302,6 +302,7 @@ export function ThreadPanel({
       {thread ? (
         <div className="flex min-h-0 flex-1 flex-col">
           <ChatPage
+            key={thread.id}
             chatId={thread.id}
             modelRole="tangent"
             focusComposer={1}

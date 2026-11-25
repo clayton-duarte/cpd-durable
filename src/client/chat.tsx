@@ -403,6 +403,8 @@ export function Chat(props: ChatProps) {
       active !== document.body &&
       active !== input &&
       !active.closest('[data-slot="sidebar"]') &&
+      !active.closest('[data-slot="conversation-map"]') &&
+      !active.closest('[data-slot="thread-navigation-action"]') &&
       !active.closest('[data-slot="thread-reply-composer"]') &&
       !active.closest('[data-slot="thread-close"]') &&
       !active.closest('[role="alert"]')

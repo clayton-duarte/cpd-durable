@@ -26,6 +26,7 @@ export function ReplyInThreadAction() {
       : `Open thread · ${replies} ${replies === 1 ? "reply" : "replies"}`;
   return (
     <TooltipIconButton
+      data-slot="thread-navigation-action"
       tooltip={label}
       aria-label={label}
       className={threads.length ? "relative outline-1 outline-foreground/25" : "relative"}
