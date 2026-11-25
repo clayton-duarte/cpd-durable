@@ -57,6 +57,7 @@ function ReplyComposer({
   disabled,
   onCreated,
   onRecheck,
+  closeButton,
 }: {
   parentId: string;
   entryId: string;
@@ -65,11 +66,23 @@ function ReplyComposer({
   disabled: boolean;
   onCreated: (thread: ThreadView) => void;
   onRecheck: () => void;
+  closeButton: React.RefObject<HTMLButtonElement | null>;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const request = useRef<string | null>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
+  const hasFocused = useRef(false);
+  useEffect(() => {
+    if (disabled || hasFocused.current || !input.current) return;
+    // Source lookup can be asynchronous: do not steal focus after the user
+    // has deliberately moved away from the initial panel controls.
+    const active = document.activeElement;
+    if (active !== document.body && active !== closeButton.current) return;
+    hasFocused.current = true;
+    input.current.focus({ preventScroll: true });
+  }, [disabled, closeButton]);
   async function submit() {
     const content = text.trim();
     if (!content || sending || disabled) return;
@@ -129,6 +142,7 @@ function ReplyComposer({
     >
       {quote !== undefined && <UnsentQuotePreview text={quote} onDismiss={onDismissQuote} />}
       <Textarea
+        ref={input}
         aria-label="Reply in thread"
         placeholder="Reply…"
         value={text}
@@ -220,8 +234,8 @@ export function ThreadPanel({
     return () => controller.abort();
   }, [parentId, entryId, known]);
   useEffect(() => {
-    close.current?.focus();
-  }, [thread?.id, entryId]);
+    if (!thread || readOnly || threadMissing) close.current?.focus();
+  }, [thread?.id, entryId, readOnly, threadMissing]);
   const source = known ?? fetched;
   if (threadMissing)
     return (
@@ -232,7 +246,13 @@ export function ThreadPanel({
       >
         <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
           <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Thread</h2>
-          <TooltipIconButton ref={close} type="button" tooltip="Close thread" onClick={onClose}>
+          <TooltipIconButton
+            ref={close}
+            data-slot="thread-close"
+            type="button"
+            tooltip="Close thread"
+            onClick={onClose}
+          >
             <XIcon />
           </TooltipIconButton>
         </header>
@@ -260,7 +280,13 @@ export function ThreadPanel({
           </span>
         )}
         {thread && <div ref={setSettingsTarget} className="shrink-0" />}
-        <TooltipIconButton ref={close} type="button" tooltip="Close thread" onClick={onClose}>
+        <TooltipIconButton
+          ref={close}
+          data-slot="thread-close"
+          type="button"
+          tooltip="Close thread"
+          onClick={onClose}
+        >
           <XIcon />
         </TooltipIconButton>
       </header>
@@ -277,6 +303,7 @@ export function ThreadPanel({
         <div className="flex min-h-0 flex-1 flex-col">
           <ChatPage
             chatId={thread.id}
+            focusComposer={1}
             active
             readOnly={readOnly}
             settingsTarget={settingsTarget}
@@ -304,6 +331,7 @@ export function ThreadPanel({
               disabled={readOnly || !source}
               onCreated={onCreated}
               onRecheck={onRecheck}
+              closeButton={close}
             />
           )}
         </div>

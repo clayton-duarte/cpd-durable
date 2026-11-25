@@ -8,6 +8,8 @@ import type { ThreadView } from "../shared/threads.ts";
 
 export interface ChatProps {
   chatId?: string | undefined;
+  /** Explicit navigation intent; changing this token requests composer focus once. */
+  focusComposer?: number | undefined;
   draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;
   onUnsavedDraft?: (chatId: string) => void;
   active?: boolean;

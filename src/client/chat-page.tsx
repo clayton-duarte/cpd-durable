@@ -4,6 +4,7 @@ import { useChat } from "./use-chat.ts";
 
 export function ChatPage({
   chatId,
+  focusComposer,
   active = true,
   readOnly = false,
   settingsTarget,
@@ -23,6 +24,7 @@ export function ChatPage({
   onUnsavedDraft,
 }: {
   chatId?: string;
+  focusComposer?: number | undefined;
   active?: boolean;
   readOnly?: boolean;
   settingsTarget?: HTMLElement | null | undefined;
@@ -46,6 +48,7 @@ export function ChatPage({
     <main className="h-full min-h-0">
       <Chat
         chatId={chatId}
+        focusComposer={focusComposer}
         active={active}
         readOnly={readOnly}
         settingsTarget={settingsTarget}

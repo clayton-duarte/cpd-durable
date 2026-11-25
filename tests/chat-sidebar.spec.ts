@@ -180,7 +180,19 @@ test("uncertain creation retries the same identity and navigates only on acknowl
   await workspace(page);
   const requests: unknown[] = [];
   await page.route("**/api/chats", async (route) => {
-    if (route.request().method() !== "POST") return route.fallback();
+    if (route.request().method() !== "POST") {
+      if (requests.length < 2) return route.fallback();
+      return route.fulfill({
+        json: {
+          rootId: "1",
+          chats: [
+            { id: "1", title: "Original chat", running: true },
+            { id: "2", title: "Second chat", running: false },
+            { id: "3", title: "New chat", running: false },
+          ],
+        },
+      });
+    }
     requests.push(route.request().postDataJSON());
     if (requests.length === 1) return route.abort();
     return route.fulfill({ status: 201, json: { id: "3", title: "New chat", running: false } });
@@ -193,8 +205,30 @@ test("uncertain creation retries the same identity and navigates only on acknowl
   await expect(draft(page)).toHaveValue("Keep this draft");
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page).toHaveURL(/\/chats\/3$/);
+  await expect(draft(page)).toBeFocused();
   expect(requests).toHaveLength(2);
   expect(requests[0]).toEqual(requests[1]);
+});
+
+test("a delayed new-chat response does not steal focus from a different control", async ({
+  page,
+}) => {
+  await workspace(page);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/chats", async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    await gate;
+    return route.fulfill({ status: 201, json: { id: "2", title: "Second chat", running: false } });
+  });
+  await page.goto("/chats/2");
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await draft(page).focus();
+  release();
+  await expect(page.getByRole("button", { name: "New chat", exact: true })).toBeEnabled();
+  await expect(draft(page)).toBeFocused();
 });
 
 test("deep links and unavailable chats do not silently open the original", async ({ page }) => {
@@ -298,6 +332,7 @@ test("New chat reselects the existing empty chat without clearing its draft", as
   await page.getByRole("button", { name: "New chat", exact: true }).click();
   await expect(page).toHaveURL(/\/chats\/2$/);
   await expect(draft(page)).toHaveValue("Unsent empty-chat draft");
+  await expect(draft(page)).toBeFocused();
 });
 
 test("chat context menus archive, restore and confirm deletion without resurrecting rows", async ({

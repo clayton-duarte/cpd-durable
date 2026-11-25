@@ -409,6 +409,37 @@ function PersistenceBridge({
 // Application code adapts host behavior; the official Thread owns presentation.
 export function Chat(props: ChatProps) {
   const runtimeRef = useRef<AssistantRuntime | null>(null);
+  const composerContainer = useRef<HTMLDivElement>(null);
+  const focusedRequest = useRef<number | undefined>(undefined);
+  useLayoutEffect(() => {
+    const request = props.focusComposer;
+    if (
+      request === undefined ||
+      request === focusedRequest.current ||
+      props.active === false ||
+      !props.onSend
+    )
+      return;
+    const input = composerContainer.current?.querySelector<HTMLTextAreaElement>(
+      '[data-slot="aui_thread-viewport"] .aui-composer-input',
+    );
+    if (!input || input.disabled || input.closest("[inert]")) return;
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLElement &&
+      active !== document.body &&
+      active !== input &&
+      !active.closest('[data-slot="sidebar"]') &&
+      !active.closest('[data-slot="thread-reply-composer"]') &&
+      !active.closest('[data-slot="thread-close"]') &&
+      !active.closest('[role="alert"]')
+    ) {
+      focusedRequest.current = request;
+      return;
+    }
+    focusedRequest.current = request;
+    input.focus({ preventScroll: true });
+  }, [props.focusComposer, props.active, props.onSend]);
   const revision = useRef(0);
   const selectionSnapshot = useRef<{ text: string; ids: string[]; after: string } | null>(null);
   const pendingUploads = useRef(0);
@@ -999,6 +1030,7 @@ export function Chat(props: ChatProps) {
             />
           )}
           <div
+            ref={composerContainer}
             className="min-h-0 flex-1"
             inert={!props.onSend && !!props.chatId && !persistenceReady}
           >
