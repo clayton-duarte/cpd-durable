@@ -308,6 +308,7 @@ test("selected text can quote in the main chat or stage a quoted thread without 
   await toolbar.getByRole("button", { name: "Thread", exact: true }).click();
   const panel = page.getByRole("complementary", { name: "Message thread" });
   await expect(panel.locator('[data-slot="composer-quote"]')).toContainText("History content");
+  await expect(panel.getByRole("textbox", { name: "Reply in thread" })).toBeFocused();
   const mainHeader = page.locator("#main-chat header").first();
   const threadHeader = panel.locator("header");
   const mainBounds = (await mainHeader.boundingBox())!;
@@ -352,11 +353,40 @@ test("selected text can quote in the main chat or stage a quoted thread without 
       quote: "History content",
     });
   await expect(page).toHaveURL(/\/threads\/3-thread-reply$/);
+  await expect(panel.getByRole("textbox", { name: "Message input" })).toBeFocused();
   await expect(main.getByRole("navigation", { name: "Conversation threads" })).toHaveCount(1);
   await expect(panel.getByRole("navigation", { name: "Conversation threads" })).toHaveCount(0);
   await page.setViewportSize({ width: 720, height: 800 });
   await expect(handle).toHaveCount(0);
   await expect.poll(panelWidth).toBe(720);
+});
+
+test("a delayed thread source does not steal focus from the main composer", async ({ page }) => {
+  await connect(page, historyState(1, 2, 1, false));
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route("**/api/chats/1/threads/source/2", async (route) => {
+    await gate;
+    return route.fulfill({
+      json: { source: { entryId: "2", role: "assistant", text: "Source", truncated: false } },
+    });
+  });
+  await page.route("**/api/chats/1/threads", (route) => route.fulfill({ json: { threads: [] } }));
+  await page.goto("/");
+  const main = page.getByRole("region", { name: "Main chat: Original chat" });
+  const row = main.locator('[data-durable-id="2:0"]');
+  await row.hover();
+  await row.getByRole("button", { name: /Reply in thread/ }).click();
+  const panel = page.getByRole("complementary", { name: "Message thread" });
+  const reply = panel.getByRole("textbox", { name: "Reply in thread" });
+  await expect(reply).toBeDisabled();
+  const mainInput = main.getByRole("textbox", { name: "Message input" });
+  await mainInput.focus();
+  release();
+  await expect(reply).toBeEnabled();
+  await expect(mainInput).toBeFocused();
 });
 
 test("details use chat/session SDK scopes and read retries never resend the draft", async ({
