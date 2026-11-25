@@ -6,6 +6,7 @@ import { useChat } from "./use-chat.ts";
 export function ChatPage({
   chatId,
   modelRole,
+  focusComposer,
   active = true,
   readOnly = false,
   settingsTarget,
@@ -26,6 +27,7 @@ export function ChatPage({
 }: {
   chatId?: string;
   modelRole?: ModelRole | undefined;
+  focusComposer?: number | undefined;
   active?: boolean;
   readOnly?: boolean;
   settingsTarget?: HTMLElement | null | undefined;
@@ -50,6 +52,7 @@ export function ChatPage({
       <Chat
         chatId={chatId}
         modelRole={modelRole}
+        focusComposer={focusComposer}
         active={active}
         readOnly={readOnly}
         settingsTarget={settingsTarget}

@@ -1,6 +1,6 @@
 # Design direction
 
-This document records the User's settled fresh-start decisions and still-open discussion as of 2026-11-18. “Settled” means selected direction, not implemented behavior. See the [repository status](../README.md#current-status) and [problem and learning](problem-and-learning.md) for context.
+This document records the User's settled fresh-start decisions and still-open discussion; individual sections identify later decisions. “Settled” means selected direction, not implemented behavior. See the [repository status](../README.md#current-status) and [problem and learning](problem-and-learning.md) for context.
 
 ## Settled baseline
 
@@ -106,7 +106,7 @@ The User described four panel purposes from the v0 Cockpit. Preserve the purpose
 | Inbox                   | Reactive, hierarchically owned requests for the User's attention, with navigation to the responsible owner                      |
 | Chat                    | The interaction surface at project or focused-work level                                                                        |
 
-Ownership, statuses and counts help visibility; they are not steps agents must ceremonially record. The Inbox should distinguish a User action from background activity, and dismissing an item from resolving the underlying need. No replacement palette or status enum is settled.
+Ownership, statuses and counts help visibility; they are not steps agents must ceremonially record. The Inbox should distinguish a User action from background activity, and dismissing an item from resolving the underlying need. The User subsequently selected the [navigator ownership and attention vocabulary](#navigator-ownership-and-attention); this does not select a universal status enum or Inbox implementation.
 
 External observation of artifacts/activity is a hypothesis, not an approved classifier architecture:
 
@@ -116,6 +116,56 @@ External observation of artifacts/activity is a hypothesis, not an approved clas
 
 Observations, freshness and unknowns should remain honest rather than becoming invented certainty.
 
+## Navigator ownership and attention
+
+On 2026-11-25 the User selected a two-axis status direction for the **left chat navigator**. This section records the intended experience and follow-up design work, not an implemented feature. A later adaptation to the conversation map, especially message threads, is possible but its layout and behavior are not selected yet. This is not a global attention Inbox or a new agent runtime.
+
+A single icon combines **whose turn it is** (shape/motion) with **the kind and priority of attention** (color). The actor may be the agent, the user, or a future participant; color does not determine the actor. Apply attention colors only to the icon, not the chat title or entire row. Use the existing neutral white/grey treatment by default to avoid attracting attention unnecessarily. Status must also be available as text and icons, not color alone; supply accessible names and a non-motion equivalent when reduced motion is requested.
+
+### Ownership: shape and motion
+
+| Appearance                      | Meaning                                                                                             |
+| ------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Hollow/empty circle             | The agent is idle and the user has read its messages.                                               |
+| Animated rotating dotted circle | The agent is busy/running; it is the agent's turn.                                                  |
+| Filled circle                   | It is the user's turn: the agent is idle or waiting for the user to read its reply or do something. |
+
+These shapes are the selected intent, not proof that the system can currently establish every condition. In particular, idle by itself neither proves the user read a reply nor proves work is complete. How to represent unknown or stale ownership, or a situation in which multiple actors have concurrent next actions, remains open; do not silently classify unknown as read or idle.
+
+### Status: icon color and attention priority
+
+The User's requested ordering from highest to lowest attention is:
+
+| Priority | Icon color | Category | Meaning for the actor                                                                                                                                                    |
+| -------- | ---------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1        | Red        | Blocker  | Highest attention: the actor must act to unblock work execution; failures, emergencies and incidents are examples.                                                       |
+| 2        | Yellow     | Delivery | Work is done but awaits release, merge, deployment, PR creation or another delivery action. Done work becomes valuable when it reaches its customer.                     |
+| 3        | Magenta    | Decision | Work is paused for an unclear requirement, question, confirmation, authorization or other decision.                                                                      |
+| 4        | Cyan       | Support  | External help is required or being given, such as a peer PR review or a Slack reply. This category is documented for future work; it is not currently supported.         |
+| 5        | White      | Default  | Everything else is proceeding as expected: no urgent attention or action is required, or the actor can look when nothing more important is pending.                      |
+| 6        | Grey       | Disabled | Something is unavailable, for example an archived chat. This category is documented for future work; the proposed disabled-status semantics are not currently supported. |
+
+These are meanings and relative priorities, not a promise to infer a status from a keyword or automatically sort the navigator. How to choose among simultaneous categories, and how disabled interacts with attention or stale information, remains to be designed. Archived chats exist today; that does not mean the proposed grey indicator is implemented.
+
+The axes must remain independent. For example, **red + rotating dotted** means the agent owns the turn and is working to unblock itself, perhaps by researching prior decisions, researching online, or resolving a rebase conflict. **Red + filled** means the user's action is needed for the blocker. A **magenta filled** icon can indicate a user decision; a **yellow filled** icon can indicate a user-owned delivery action, while **yellow + rotating dotted** can indicate the agent is performing delivery. A white filled circle can indicate an unread reply; a white hollow circle indicates idle and read. These examples describe intended meaning, not automatic classification rules or evidence that a given task is complete.
+
+### Current evidence and limitations
+
+At the base inspected for this design, the sidebar catalog exposes a per-chat `running` boolean and the existing sidebar renders a running spinner. It does not expose the two-axis vocabulary, a reliable per-chat read state, or a delivery/support classification. The selected chat's thread index reports `running`, `waiting`, `idle`, `interrupted` or `failed`; its `waiting` currently covers both a running `ask_user` tool and a nonempty inbox. Therefore `waiting` is not by itself evidence that the user must make a decision. A failed thread-index refresh retains the last list, and stale observations must not be presented as current facts. See [implemented chat and thread behavior](chat-components.md#message-threads).
+
+A saved reply, idle agent, admission receipt, local Git state, open PR, merge and deployment establish different facts. None alone should be promoted to read, completed, delivered or accepted. A disconnect means observation is unavailable, not that the agent stopped. A user viewing a chat is not automatically proof they read a particular reply until a read/acknowledgment contract is chosen. Cancellation/interruption is not automatically an urgent blocker. Pending queued input is not automatically a question or a user-owned action.
+
+### Follow-up plan and open decisions
+
+This is a proposed sequence for later work, not authorization to implement a specific schema or restart the host. The User has requested documentation and a PR now; feature implementation is follow-up work:
+
+1. **Specify the state contract.** Decide the authoritative facts, their source and freshness; who or what may set, update, clear or override each status; and how to distinguish observed state from an agent/user declaration. Define category priority when facts coexist and a truthful unknown/stale presentation. Separate execution, actual questions, inbox input, read state, lifecycle and delivery evidence rather than flattening them into one unqualified status.
+2. **Define read and ownership transitions.** Decide what constitutes read/acknowledged, its scope across chats, threads, browser sessions and devices, how new replies or simultaneous activity interact, and whether marking read is automatic or explicit. Specify behavior during reconnection, retries and concurrent changes. Do not conflate reading with acceptance, task completion or authorization.
+3. **Define delivery and support evidence.** Decide when an agent or user can declare a blocker, decision, delivery or support need, how that declaration is resolved, and how concrete artifacts and verification are linked. PR creation, merge and deployment are distinct. Support and disabled categories remain future states until their semantics and sources are agreed.
+4. **Design the projection before the presentation.** Inspect pi-durable's existing live/task/question APIs and the catalog/thread projections; retain pi-durable as execution and transcript authority. A navigator spanning chats needs scoped, bounded and freshness-aware observations for those chats, not the selected conversation's local state misapplied globally. Choose polling/subscription, data ownership, persistence and migration deliberately; no second runtime or universal ledger is selected.
+5. **Implement navigator presentation after contracts are agreed.** Reuse supplied assistant-ui elements, respecting the [component priority](#minimal-runtime-slice), keyboard and screen-reader access, non-color cues, reduced motion and narrow layouts. Preserve ordinary navigation; viewing or inspecting status must not start, stop or submit work. The conversation-map/thread adaptation is a later design step, including how to handle multiple source threads in one turn and unloaded history.
+6. **Verify before claiming delivery.** Cover independently varying ownership/color, all supported categories and priorities, real user questions versus queued input, read/unread transitions, simultaneous events, failures versus interruptions, archived/disabled behavior when supported, unknown/stale/disconnected observations, accessibility and reduced motion. Exercise navigation, focus, reconnect/reload and race conditions without starting paid requests. Attribute checks to the tested head/base; a PR, merge and deployed host are separate outcomes.
+
 ## Verification experiment
 
 One main thread, two tangents and workers finishing out of order exercise the selected design: the User can keep discussing intent, enter either tangent, send changed decisions and answer a visible request for input. Results return with evidence and explicit handoffs without flooding the main context with execution transcripts. Verification must include independent drafts and Stop scope, reopening, duplicate admission, stale responses and context changes during work.
@@ -124,4 +174,4 @@ This experiment is within the 2026-11-18 implementation authorization. It does n
 
 ## Decision provenance
 
-The fresh baseline, parallelism clarification, Cockpit purposes and earlier living-brief discussion come from the User's 2026-11-16–17 decisions. Main threads, tangents, workers, handoffs, model-tier defaults and the TaskCard/AgentStatus selection were settled in the 2026-11-18 conversation, followed by explicit implementation authorization. These sections state their substance so reading local records is not required. The [historical sources](problem-and-learning.md#historical-sources-and-interpretation) support the earlier lessons; they are not evidence that the fresh design is already operating.
+The fresh baseline, parallelism clarification, Cockpit purposes and earlier living-brief discussion come from the User's 2026-11-16–17 decisions. Main threads, tangents, workers, handoffs, model-tier defaults and the TaskCard/AgentStatus selection were settled in the 2026-11-18 conversation, followed by explicit implementation authorization. The navigator ownership/attention direction records the User's 2026-11-25 explanation; its data contracts and implementation remain open. These sections state their substance so reading local records is not required. The [historical sources](problem-and-learning.md#historical-sources-and-interpretation) support the earlier lessons; they are not evidence that the fresh design is already operating.
