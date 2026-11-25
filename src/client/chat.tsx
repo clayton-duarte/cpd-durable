@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ComposerModelSelector } from "./composer-model-selector.tsx";
 import {
   AssistantRuntimeProvider,
   useExternalMessageConverter,
@@ -164,7 +165,11 @@ function DurableToolFallback(props: ToolCallMessagePartProps) {
     />
   );
 }
-const threadComponents = { ComposerFooter: DurableControls, ToolFallback: DurableToolFallback };
+const threadComponents = {
+  ComposerFooter: DurableControls,
+  ComposerExtra: ComposerModelSelector,
+  ToolFallback: DurableToolFallback,
+};
 const interruptionUI = {
   name: "interruption",
   render: () => <AgentStatus state="waiting" label="Response interrupted." />,

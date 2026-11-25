@@ -1,9 +1,11 @@
 import { Chat } from "./chat.tsx";
 import type { ThreadView } from "../shared/threads.ts";
+import type { ModelRole } from "../shared/model-policy.ts";
 import { useChat } from "./use-chat.ts";
 
 export function ChatPage({
   chatId,
+  modelRole,
   focusComposer,
   active = true,
   readOnly = false,
@@ -24,6 +26,7 @@ export function ChatPage({
   onUnsavedDraft,
 }: {
   chatId?: string;
+  modelRole?: ModelRole | undefined;
   focusComposer?: number | undefined;
   active?: boolean;
   readOnly?: boolean;
@@ -48,6 +51,7 @@ export function ChatPage({
     <main className="h-full min-h-0">
       <Chat
         chatId={chatId}
+        modelRole={modelRole}
         focusComposer={focusComposer}
         active={active}
         readOnly={readOnly}

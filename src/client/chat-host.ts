@@ -5,9 +5,11 @@ import type { DraftAdmission } from "../shared/drafts.ts";
 import type { DirectShellStatusSchema } from "../shared/direct-shell.ts";
 import type { z } from "zod";
 import type { ThreadView } from "../shared/threads.ts";
+import type { ModelRole } from "../shared/model-policy.ts";
 
 export interface ChatProps {
   chatId?: string | undefined;
+  modelRole?: ModelRole | undefined;
   /** Explicit navigation intent; changing this token requests composer focus once. */
   focusComposer?: number | undefined;
   draftGuards?: React.RefObject<Map<string, () => Promise<boolean>>>;

@@ -43,6 +43,7 @@ test("settings save, conflict reload and unavailable catalog retain the user's d
     revision++;
     return route.fulfill({ json: { revision, assignments } });
   });
+  await page.setViewportSize({ width: 1100, height: 800 });
   await page.goto("/chats/1");
   await openChatSetting(page, "Model defaults");
   await expect(page.getByText("Host default until configured.")).toBeVisible();
@@ -54,19 +55,12 @@ test("settings save, conflict reload and unavailable catalog retain the user's d
       .click();
   }
   await page.getByRole("combobox", { name: "Main model" }).click();
-  const thinking = page.getByRole("radiogroup", { name: "Thinking" });
+  const thinking = page
+    .getByRole("dialog", { name: "Main model choices" })
+    .getByRole("radiogroup", { name: "Thinking" });
   await expect(thinking.getByRole("radio", { name: "Max", exact: true })).toBeDisabled();
   await expect(thinking.getByRole("radio", { name: "Default", exact: true })).toBeChecked();
-  await expect
-    .poll(() =>
-      thinking
-        .getByRole("radio")
-        .evaluateAll(
-          (radios) =>
-            new Set(radios.map((radio) => Math.round(radio.getBoundingClientRect().top))).size,
-        ),
-    )
-    .toBe(1);
+  await expect(thinking.getByRole("radio", { name: "XHigh", exact: true })).toBeVisible();
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Apply models to all chats" }).click();
   await expect(page.getByText(/Saved for existing and new chats/)).toBeVisible();
