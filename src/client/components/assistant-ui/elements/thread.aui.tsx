@@ -27,14 +27,16 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { ConversationMapAui } from "./conversation-map.aui";
-import { ThreadNavigation } from "@/thread-navigation";
-import { ChatDetails } from "@/chat-details";
+import { ComposerQuotePreview, QuoteBlock, SelectionToolbar } from "./quote.aui";
+import { ChatSettings } from "@/chat-settings";
 import { AgentQuestions } from "@/agent-questions";
 import { ForkMessageAction } from "@/fork-message-action";
+import { ReplyInThreadAction } from "@/reply-in-thread-action";
+import { useChatHost } from "@/chat-host";
 import { RegenerateMessageAction } from "@/regenerate-message-action";
 import { EditMessageAction } from "@/edit-message-action";
-import { FeedbackAction } from "@/feedback-action";
 import { ApplicationHandoffSchema } from "../../../../shared/application-handoff.ts";
+import { splitQuotedReply } from "../../../../shared/quote.ts";
 import { HandoffPreview } from "@/tangents/handoff-preview";
 import {
   ActionBarMorePrimitive,
@@ -212,14 +214,15 @@ export const Thread: FC<ThreadProps> = ({ components = EMPTY_COMPONENTS, autoFoc
 
 const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, autoFocus }) => {
   const { Welcome = ThreadWelcome } = useContext(ThreadComponentsContext);
+  const host = useChatHost();
+  const isReplyPane = host.visibleFromEntryId !== undefined;
 
   return (
     <ThreadPrimitive.Root
-      className="aui-root aui-thread-root bg-background @container flex h-full min-h-0 flex-col"
+      className="aui-root aui-thread-root bg-background @container flex h-full min-h-0 flex-col text-sm"
       style={{
-        ["--thread-max-width" as string]: "44rem",
         ["--composer-bg" as string]: "color-mix(in oklab, var(--color-muted) 30%, transparent)",
-        ["--composer-radius" as string]: "1rem",
+        ["--composer-radius" as string]: "0.625rem",
         ["--composer-padding" as string]: "8px",
       }}
     >
@@ -229,52 +232,72 @@ const ThreadRoot: FC<{ isEmpty: boolean; autoFocus: boolean }> = ({ isEmpty, aut
         data-slot="aui_thread-viewport"
         className="relative flex min-h-0 flex-1 flex-col overflow-x-auto overflow-y-scroll"
       >
-        <ConversationMapAui side="right" className="hidden md:block" />
+        <ChatSettings />
+        {!isReplyPane && <ConversationMapAui side="right" className="hidden md:block" />}
         <div
           className={cn(
-            "mx-auto flex w-full max-w-(--thread-max-width) flex-1 flex-col px-4 pt-4",
-            isEmpty && "justify-center",
+            "flex min-w-0 flex-1 flex-col",
+            isReplyPane ? "px-4 pt-3" : "px-4 pt-4 md:px-5",
+            isEmpty && !isReplyPane && "justify-center",
           )}
         >
-          <AuiIf condition={isNewChatView}>
-            <Welcome />
-          </AuiIf>
-          <AuiIf condition={isHistoryLoadingView}>
-            <ThreadHistorySkeleton />
-          </AuiIf>
-
-          <ThreadLoadEarlier />
-
-          <div data-slot="aui_message-group" className="mb-14 flex flex-col gap-y-6 empty:hidden">
-            <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
+          <div className={cn(!isReplyPane && "md:pe-10")}>
+            {!isReplyPane && (
+              <AuiIf condition={isNewChatView}>
+                <Welcome />
+              </AuiIf>
+            )}
+            <AuiIf condition={isHistoryLoadingView}>
+              <ThreadHistorySkeleton />
+            </AuiIf>
+            <ThreadLoadEarlier />
+            <div data-slot="aui_message-group" className="flex flex-col gap-y-6 empty:hidden">
+              <ThreadPrimitive.Messages>{() => <ThreadMessage />}</ThreadPrimitive.Messages>
+            </div>
           </div>
 
-          {/* Keep free space out of the measured footer inset. An auto margin
-              on ViewportFooter is cached as occluded content by its size handle. */}
-          {!isEmpty && <div aria-hidden="true" className="flex-1" />}
+          {/* Only the main composer docks; thread replies follow their content. */}
+          {!isEmpty && !isReplyPane && <div aria-hidden="true" className="flex-1" />}
           <ThreadPrimitive.ViewportFooter
             className={cn(
-              "aui-thread-viewport-footer bg-background flex flex-col gap-4 overflow-visible pb-4 md:pb-6",
-              !isEmpty && "sticky bottom-0 rounded-t-(--composer-radius)",
+              "aui-thread-viewport-footer bg-background mt-4 flex flex-col gap-3 overflow-visible pb-4 md:pb-5",
+              !isEmpty && !isReplyPane && "sticky bottom-0 rounded-t-(--composer-radius)",
             )}
           >
-            <ThreadScrollToBottom />
+            {!isReplyPane && <ThreadScrollToBottom />}
             <ThreadFollowupSuggestions />
-            <div className="flex flex-wrap items-center gap-1">
-              <ThreadNavigation />
-              <ChatDetails />
-            </div>
             <AgentQuestions />
-            <Composer autoFocus={autoFocus} />
-            <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
-              <ThreadSuggestions />
-            </AuiIf>
+            <Composer autoFocus={autoFocus} reply={isReplyPane} />
+            {!isReplyPane && (
+              <AuiIf condition={(s) => isNewChatView(s) && s.composer.isEmpty}>
+                <ThreadSuggestions />
+              </AuiIf>
+            )}
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
+      {!isReplyPane && host.active !== false && !host.readOnly && host.onSend && (
+        <SelectionToolbar onThread={host.onReplyInThread} />
+      )}
     </ThreadPrimitive.Root>
   );
 };
+
+/** The open thread panel highlights its exact source message in place. */
+const useThreadSource = () => {
+  const host = useChatHost();
+  const highlight = host.highlightsEntryId;
+  return useAuiState((state) => {
+    const entryId = state.message.metadata.custom["sourceEntryId"];
+    return highlight !== undefined && typeof entryId === "number" && String(entryId) === highlight;
+  });
+};
+
+const useQuoteEntry = () =>
+  useAuiState((state) => {
+    const id = state.message.metadata.custom["sourceEntryId"];
+    return typeof id === "number" ? id : undefined;
+  });
 
 const ThreadMessage: FC = () => {
   const { AssistantMessage: AssistantMessageComponent = AssistantMessage } =
@@ -506,7 +529,7 @@ const ThreadSuggestionItem: FC = () => {
   );
 };
 
-const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
+const Composer: FC<{ autoFocus: boolean; reply: boolean }> = ({ autoFocus, reply }) => {
   const { ComposerFooter } = useContext(ThreadComponentsContext);
   return (
     <ComposerPrimitive.TriggerPopoverRoot>
@@ -520,9 +543,10 @@ const Composer: FC<{ autoFocus: boolean }> = ({ autoFocus }) => {
           }
         >
           <ComposerAttachments />
+          <ComposerQuotePreview />
           <ComposerPrimitive.Input
-            placeholder="Send a message… Type / for commands"
-            className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base leading-6 outline-none"
+            placeholder={reply ? "Reply…" : "Send a message… Type / for commands"}
+            className="aui-composer-input caret-primary placeholder:text-muted-foreground/60 max-h-48 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-[13px]/5 outline-none"
             rows={1}
             autoFocus={autoFocus}
             enterKeyHint="send"
@@ -698,6 +722,7 @@ const AssistantMessage: FC = () => {
   } = useContext(ThreadComponentsContext);
   const groupBy = TaskGroupComponent ? taskAwareGroupBy : messageGroupBy;
 
+  const source = useThreadSource();
   const ACTION_BAR_PT = "pt-1.5";
   // Keep the action bar inside the contained root's paint box, then cancel its reserved space in flow.
   const ACTION_BAR_HEIGHT = `min-h-7.5 ${ACTION_BAR_PT}`;
@@ -708,12 +733,14 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
       data-message-id={useAuiState((s) => s.message.id)}
       data-durable-id={useAuiState(durableMessageId)}
+      data-quote-entry={useQuoteEntry()}
       data-message-status={useAuiState((s) => s.message.status?.type)}
+      data-thread-source={source ? "" : undefined}
       className="fade-in slide-in-from-bottom-1 animate-in relative -mb-7.5 pb-7.5 duration-150"
     >
       <div
         data-slot="aui_assistant-message-content"
-        className="text-foreground px-2 leading-relaxed wrap-break-word"
+        className="text-foreground px-2 leading-[1.6] wrap-break-word"
       >
         <MessagePrimitive.GroupedParts groupBy={groupBy}>
           {({ part, children }) => {
@@ -804,6 +831,7 @@ const AssistantActionBar: FC = () => {
         className="aui-assistant-action-bar-root animate-in fade-in flex gap-1 duration-200"
       >
         <ForkMessageAction />
+        <ReplyInThreadAction />
         <RegenerateMessageAction />
         <ActionBarPrimitive.Copy render={<TooltipIconButton tooltip="Copy" />}>
           <AuiIf condition={(s) => s.message.isCopied}>
@@ -842,7 +870,6 @@ const AssistantActionBar: FC = () => {
         </ActionBarMorePrimitive.Root>
       </ActionBarPrimitive.Root>
       {/* Keep the dialog and uncertain retry mounted when the native action bar autohides. */}
-      <FeedbackAction />
     </div>
   );
 };
@@ -875,6 +902,7 @@ const UserImagePart: ImageMessagePartComponent = (part) => (
 );
 
 const UserMessage: FC = () => {
+  const source = useThreadSource();
   const custom = useAuiState((s) => s.message.metadata.custom);
   const content = useAuiState((s) => s.message.content);
   const annotation = ApplicationHandoffSchema.safeParse(custom["applicationHandoff"]);
@@ -889,17 +917,19 @@ const UserMessage: FC = () => {
   return (
     <MessagePrimitive.Root
       data-slot="aui_user-message-root"
+      data-thread-source={source ? "" : undefined}
       className="fade-in slide-in-from-bottom-1 animate-in grid auto-rows-auto grid-cols-[minmax(72px,1fr)_auto] content-start gap-y-2 px-2 duration-150 [&:where(>*)]:col-start-2"
       data-role="user"
       data-message-id={useAuiState((s) => s.message.id)}
       data-durable-id={useAuiState(durableMessageId)}
+      data-quote-entry={useQuoteEntry()}
     >
       <UserMessageAttachments />
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div
           className={cn(
-            "aui-user-message-content peer text-foreground rounded-(--composer-radius) px-4 py-2 wrap-break-word empty:hidden",
+            "aui-user-message-content peer text-foreground rounded-(--composer-radius) px-4 py-2 leading-[22px] wrap-break-word empty:hidden",
             !handoff && "bg-muted",
           )}
         >
@@ -913,15 +943,24 @@ const UserMessage: FC = () => {
             />
           ) : (
             <MessagePrimitive.Parts>
-              {({ part }) =>
-                part.type === "text" ? (
-                  <MessagePartPrimitive.Text className="whitespace-pre-wrap" />
-                ) : part.type === "file" ? (
+              {({ part }) => {
+                if (part.type === "text") {
+                  const quoted = splitQuotedReply(part.text);
+                  return quoted ? (
+                    <>
+                      <QuoteBlock text={quoted.quote} />
+                      <span className="whitespace-pre-wrap">{quoted.reply}</span>
+                    </>
+                  ) : (
+                    <MessagePartPrimitive.Text className="whitespace-pre-wrap" />
+                  );
+                }
+                return part.type === "file" ? (
                   <UserFilePart {...part} />
                 ) : part.type === "image" ? (
                   <UserImagePart {...part} />
-                ) : null
-              }
+                ) : null;
+              }}
             </MessagePrimitive.Parts>
           )}
         </div>
@@ -946,6 +985,7 @@ const UserActionBar: FC = () => {
       className="aui-user-action-bar-root flex flex-col items-end"
     >
       <ForkMessageAction />
+      <ReplyInThreadAction />
       <EditMessageAction />
     </ActionBarPrimitive.Root>
   );
@@ -956,7 +996,7 @@ const EditComposer: FC = () => {
     <MessagePrimitive.Root data-slot="aui_edit-composer-wrapper" className="flex flex-col px-2">
       <ComposerPrimitive.Root className="aui-edit-composer-root border-foreground/10 focus-within:border-foreground/25 ms-auto flex w-full max-w-[85%] cursor-text flex-col rounded-(--composer-radius) border bg-(--composer-bg) transition-[border-color]">
         <ComposerPrimitive.Input
-          className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-base outline-none"
+          className="aui-edit-composer-input text-foreground min-h-14 w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[13px]/5 outline-none"
           autoFocus
         />
         <div className="aui-edit-composer-footer mx-2.5 mb-2.5 flex items-center gap-1.5 self-end">

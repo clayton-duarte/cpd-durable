@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { z } from "zod";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { TangentViewSchema, type TangentView } from "../../shared/tangents.ts";
+import type { ThreadView } from "../../shared/threads.ts";
 import { ChatPage } from "../chat-page.tsx";
 import { tangentChildView } from "./adapter.ts";
 import { TangentWorkspace } from "./workspace.tsx";
@@ -111,6 +112,10 @@ export function MainThreadView({
   title,
   active,
   readOnly,
+  settingsTarget,
+  threads,
+  highlightsEntryId,
+  onReplyInThread,
   selectedTangent,
   onSelectTangent,
   onCloseTangent,
@@ -124,6 +129,10 @@ export function MainThreadView({
   title: string;
   active: boolean;
   readOnly: boolean;
+  settingsTarget: HTMLElement | null;
+  threads: readonly ThreadView[] | null | undefined;
+  highlightsEntryId: string | undefined;
+  onReplyInThread: (entryId: number, quote?: string) => void;
   selectedTangent: string | undefined;
   onSelectTangent: (id: string) => void;
   onCloseTangent: () => void;
@@ -295,7 +304,12 @@ export function MainThreadView({
               chatId={mainId}
               active={active && visible}
               readOnly={readOnly}
+              settingsTarget={settingsTarget}
+              settingsIncludeDefaults
               canRequestTangent={configured}
+              threads={threads}
+              highlightsEntryId={highlightsEntryId}
+              onReplyInThread={onReplyInThread}
               onFork={onFork}
               onRegenerate={onRegenerate}
               onEdit={onEdit}

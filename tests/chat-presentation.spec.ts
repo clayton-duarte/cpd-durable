@@ -1,3 +1,4 @@
+import { openChatSetting } from "./fixtures/chat-settings.ts";
 import { test, expect, type Page, type Locator } from "@playwright/test";
 import { HistoryLoadSchema, type ChatState, type HistoryGap } from "../src/shared/chat.ts";
 import { ConfigurationChangeSchema } from "../src/shared/configuration.ts";
@@ -157,94 +158,12 @@ test.beforeEach(async ({ page }) => {
   await page.route("**/api/chats/*/compact/reservation", (route) => route.fulfill({ json: null }));
   await page.route("**/api/chats", (route) =>
     route.fulfill({
-      json: { rootId: "1", chats: [{ id: "1", title: "Original chat", running: false }] },
+      json: {
+        rootId: "1",
+        chats: [{ id: "1", slug: "1-original-chat", title: "Original chat", running: false }],
+      },
     }),
   );
-});
-
-test("private feedback ignores late reads, preserves edits on conflict and late save", async ({
-  page,
-}) => {
-  const state = historyState(1, 4, 1, false);
-  state.messages[1]!.source!.feedbackModelIndex = 0;
-  state.messages[3]!.source!.feedbackModelIndex = 3;
-  await connect(page, state);
-  let releaseFirst: (() => void) | undefined;
-  let releaseSave: (() => void) | undefined;
-  let revision = 0;
-  let current: { vote: string; comment: string | null } | null = null;
-  let posts = 0;
-  await page.route("**/api/chats/1/feedback/*/*", async (route) => {
-    const segments = new URL(route.request().url()).pathname.split("/");
-    const entryId = Number(segments[5]);
-    const modelIndex = Number(segments[6]);
-    const result = () => ({
-      conversationId: "1",
-      target: { entryId, modelIndex },
-      revision: entryId === 4 ? revision : 0,
-      value: entryId === 4 ? current : null,
-      readOnly: false,
-    });
-    if (entryId === 2) {
-      await new Promise<void>((resolve) => {
-        releaseFirst = resolve;
-      });
-      return route.fulfill({ json: result() });
-    }
-    if (route.request().method() === "GET") return route.fulfill({ json: result() });
-    posts++;
-    if (posts === 1) {
-      revision = 1;
-      current = { vote: "helpful", comment: "Other writer" };
-      return route.fulfill({ status: 409, json: { error: "Conflict" } });
-    }
-    if (posts === 3) {
-      expect(route.request().postDataJSON()).toMatchObject({ expectedRevision: 2, value: null });
-      revision = 3;
-      current = null;
-      return route.fulfill({ json: result() });
-    }
-    const payload = route.request().postDataJSON() as {
-      expectedRevision: number;
-      value: { vote: string; comment: string };
-    };
-    expect(payload.expectedRevision).toBe(1);
-    await new Promise<void>((resolve) => {
-      releaseSave = resolve;
-    });
-    revision = 2;
-    current = payload.value;
-    return route.fulfill({ json: result() });
-  });
-  await page.goto("/");
-  const second = page.locator('[data-durable-id="4:0"]');
-  await second.getByRole("button", { name: "Not helpful" }).click();
-  const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Optional comment").fill("Keep my draft");
-  releaseFirst?.();
-  await dialog.getByRole("button", { name: "Save feedback" }).click();
-  await expect(dialog).toContainText("Feedback changed");
-  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Keep my draft");
-  await expect(dialog.getByRole("button", { name: "Save feedback" })).toBeDisabled();
-  await dialog.getByRole("button", { name: "Refresh feedback" }).click();
-  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Keep my draft");
-  await dialog.getByRole("button", { name: "Save feedback" }).click();
-  await expect.poll(() => posts).toBe(2);
-  await dialog.getByLabel("Optional comment").fill("Edited while saving");
-  releaseSave?.();
-  await expect(dialog).toContainText("Saved revision 2");
-  await expect(dialog.getByLabel("Optional comment")).toHaveValue("Edited while saving");
-  await expect(dialog).toContainText("does not promise physical erasure");
-  await dialog.getByRole("button", { name: "Clear feedback" }).click();
-  await expect(dialog).toContainText("No current feedback.");
-  await dialog.getByRole("button", { name: "Close" }).click();
-  await expect(second.getByRole("button", { name: "Not helpful" })).toHaveAttribute(
-    "aria-pressed",
-    "false",
-  );
-  await expect(
-    page.locator('[data-durable-id="2:0"]').getByRole("button", { name: "Not helpful" }),
-  ).toHaveAttribute("aria-pressed", "false");
 });
 
 test("native earlier loading prepends history while preserving draft, row identity and scroll anchor", async ({
@@ -285,7 +204,7 @@ test("loaded-history search steps and wraps real text hits without searching hid
   initial.messages[3]!.text = "";
   await connect(page, initial);
   await page.goto("/");
-  await page.getByRole("button", { name: "Find in loaded history" }).click();
+  await openChatSetting(page, "Find in loaded history");
   const search = page.locator('[data-slot="conversation-search"]');
   await search.getByRole("textbox", { name: "Find in conversation" }).fill("needle");
   await expect(search).toContainText("1/3");
@@ -323,6 +242,135 @@ test("conversation map selects actual loaded turns and preserves the native draf
     )
     .toBeLessThan(5);
   await expect(draft).toHaveValue("Keep navigation draft");
+});
+
+test("selected text can quote in the main chat or stage a quoted thread without creating it", async ({
+  page,
+}) => {
+  await connect(page, historyState(1, 2, 1, false));
+  let mainInput: unknown;
+  let newThread: unknown;
+  const source = {
+    entryId: "2",
+    role: "assistant",
+    text: "History content for turn 2.",
+    truncated: false,
+  };
+  await page.route("**/api/chats/1/input", (route) => {
+    mainInput = route.request().postDataJSON();
+    return route.fulfill({ status: 202, json: { accepted: true, submissionId: "7" } });
+  });
+  await page.route("**/api/chats/1/threads/source/2", (route) =>
+    route.fulfill({ json: { source } }),
+  );
+  await page.route("**/api/chats/1/threads", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: { threads: [] } });
+    newThread = route.request().postDataJSON();
+    return route.fulfill({
+      status: 201,
+      json: {
+        thread: {
+          id: "3",
+          parentId: "1",
+          sourceEntryId: "2",
+          slug: "3-thread-reply",
+          title: "Thread reply",
+          replyCount: 1,
+          replyCountCapped: false,
+          activity: "idle",
+          source,
+        },
+        admitted: true,
+      },
+    });
+  });
+  await page.goto("/");
+  const main = page.getByRole("region", { name: "Main chat: Original chat" });
+  const composer = main.getByRole("textbox", { name: "Message input" });
+  const sourceRow = main.locator('[data-durable-id="2:0"]');
+  await expect(sourceRow.locator("p").first()).toHaveCSS("font-size", "14px");
+  await expect(composer).toHaveCSS("font-size", "13px");
+  await expect(sourceRow.getByRole("button", { name: /^(Not )?helpful$/i })).toHaveCount(0);
+  const toolbar = page.locator('[data-slot="selection-toolbar"]');
+  const select = async () => {
+    await main.getByText("History content for turn 2.", { exact: false }).evaluate((element) => {
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !node.textContent?.includes("History content")) node = walker.nextNode();
+      if (!node) throw new Error("No text to select.");
+      element.scrollIntoView({ block: "center" });
+      const start = node.textContent!.indexOf("History content");
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + "History content".length);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange"));
+    });
+  };
+  await select();
+  await toolbar.getByRole("button", { name: "Quote", exact: true }).click();
+  await expect(main.locator('[data-slot="composer-quote"]')).toContainText("History content");
+  await composer.fill("Main reply");
+  await main.getByRole("button", { name: "Send message" }).click();
+  await expect.poll(() => mainInput).toMatchObject({ text: "> History content\n\nMain reply" });
+  expect(newThread).toBeUndefined();
+
+  const parentUrl = page.url();
+  await select();
+  await toolbar.getByRole("button", { name: "Thread", exact: true }).click();
+  const panel = page.getByRole("complementary", { name: "Message thread" });
+  await expect(panel.locator('[data-slot="composer-quote"]')).toContainText("History content");
+  const mainHeader = page.locator("#main-chat header").first();
+  const threadHeader = panel.locator("header");
+  const mainBounds = (await mainHeader.boundingBox())!;
+  const threadBounds = (await threadHeader.boundingBox())!;
+  const sidebarBounds = (await page.locator('[data-slot="sidebar-header"]:visible').boundingBox())!;
+  expect(mainBounds.y).toBe(threadBounds.y);
+  expect(mainBounds.y).toBe(sidebarBounds.y);
+  expect(mainBounds.height).toBe(threadBounds.height);
+  expect(mainBounds.height).toBe(sidebarBounds.height);
+  expect(mainBounds.x + mainBounds.width).toBeLessThanOrEqual(threadBounds.x);
+  expect(mainBounds.width).toBeGreaterThan(threadBounds.width);
+  await expect(mainHeader.getByRole("button", { name: "Toggle Sidebar" })).toHaveCount(0);
+  const gear = (await mainHeader.getByRole("button", { name: "Chat settings" }).boundingBox())!;
+  expect(mainBounds.x + mainBounds.width - (gear.x + gear.width)).toBeCloseTo(20);
+  await expect(sourceRow).toHaveAttribute("data-thread-source", "");
+  await expect(sourceRow).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await expect(page).toHaveURL(parentUrl);
+  expect(newThread).toBeUndefined();
+  const handle = page.getByRole("separator", { name: "Resize main chat and thread" });
+  const sourceBounds = (await panel.locator('[data-slot="thread-source"]').boundingBox())!;
+  const replyBounds = (await panel.locator('[data-slot="thread-reply-composer"]').boundingBox())!;
+  expect(replyBounds.y - (sourceBounds.y + sourceBounds.height)).toBeLessThanOrEqual(20);
+  const panelWidth = () => panel.evaluate((element) => element.getBoundingClientRect().width);
+  const startingWidth = await panelWidth();
+  await handle.press("ArrowLeft");
+  await expect.poll(panelWidth).toBeGreaterThan(startingWidth);
+  const keyboardWidth = await panelWidth();
+  const divider = (await handle.boundingBox())!;
+  await page.mouse.move(divider.x + divider.width / 2, divider.y + divider.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(divider.x + 45, divider.y + divider.height / 2, { steps: 6 });
+  await page.mouse.up();
+  await expect.poll(panelWidth).toBeLessThan(keyboardWidth);
+  await expect(panel.locator('[data-slot="composer-quote"]')).toContainText("History content");
+  await panel.getByRole("textbox", { name: "Reply in thread" }).fill("Thread reply");
+  await panel.getByRole("button", { name: "Reply", exact: true }).click();
+  await expect
+    .poll(() => newThread)
+    .toMatchObject({
+      sourceEntryId: "2",
+      text: "Thread reply",
+      quote: "History content",
+    });
+  await expect(page).toHaveURL(/\/threads\/3-thread-reply$/);
+  await expect(main.getByRole("navigation", { name: "Conversation map" })).toHaveCount(1);
+  await expect(panel.getByRole("navigation", { name: "Conversation map" })).toHaveCount(0);
+  await page.setViewportSize({ width: 720, height: 800 });
+  await expect(handle).toHaveCount(0);
+  await expect.poll(panelWidth).toBe(720);
 });
 
 test("details use chat/session SDK scopes and read retries never resend the draft", async ({
@@ -393,7 +441,7 @@ test("details use chat/session SDK scopes and read retries never resend the draf
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Unsent accounting draft");
-  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  await openChatSetting(page, "Chat details");
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Details unavailable");
   await dialog.getByRole("button", { name: "Retry", exact: true }).click();
@@ -439,7 +487,7 @@ test("context compaction reports admission rather than placement and never retri
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Preserve compact draft");
-  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  await openChatSetting(page, "Chat details");
   const context = page.getByRole("region", { name: "Active context" });
   await expect(context).toContainText("Token occupancy and headroom are unknown");
   await expect(context).toContainText("threshold compaction 5");
@@ -502,7 +550,7 @@ test("context inspector reports unsupported estimates and missing counters as un
     }),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  await openChatSetting(page, "Chat details");
   const context = page.getByRole("region", { name: "Active context" });
   await expect(context).toContainText("Unknown (images or opaque reasoning/signatures");
   await expect(context).toContainText("Selected model: unknown");
@@ -541,7 +589,7 @@ test("context inspector distinguishes a capped request scan from an absent obser
     }),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  await openChatSetting(page, "Chat details");
   const context = page.getByRole("region", { name: "Active context" });
   await expect(context).toContainText("Observation unknown: the scan stopped after 200 entries.");
   await expect(context).not.toContainText("No durable request observation found");
@@ -568,7 +616,7 @@ test("supplied model picker saves scoped choices and supported thinking without 
   await page.goto("/");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Keep model draft");
-  await page.getByRole("button", { name: "Chat details", exact: true }).click();
+  await openChatSetting(page, "Chat details");
   const config = page.getByRole("region", { name: "Model configuration" });
   await config.getByRole("combobox").click();
   await page.getByRole("option", { name: /Second model/ }).click();

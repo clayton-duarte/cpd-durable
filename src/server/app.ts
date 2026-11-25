@@ -83,6 +83,7 @@ export function createApp(
         | "savedPrompts"
         | "modelPolicy"
         | "tangents"
+        | "threads"
         | "workers"
         | "handoffs"
         | "projectApplicationHandoffs"
@@ -136,6 +137,7 @@ export function createApp(
       createFeedbackRoutes(async (id) => (await chat.chats?.resolve(id))?.conversation),
     );
   if (chat.tangents) app.route("/", chat.tangents.routes);
+  if (chat.threads) app.route("/", chat.threads.routes);
   if (chat.workers) app.route("/", chat.workers);
   if (chat.handoffs) app.route("/", chat.handoffs);
 

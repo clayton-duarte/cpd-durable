@@ -1,12 +1,13 @@
+import { openChatSetting } from "./fixtures/chat-settings.ts";
 import { expect, test, type Page } from "@playwright/test";
 import { syntheticDrafts } from "./fixtures/synthetic-drafts.ts";
 
 const catalog = {
   rootId: "1",
   chats: [
-    { id: "1", title: "First", running: false, status: "regular" },
-    { id: "2", title: "Second", running: false, status: "regular" },
-    { id: "3", title: "Old", running: false, status: "archived" },
+    { id: "1", slug: "1", title: "First", running: false, status: "regular" },
+    { id: "2", slug: "2", title: "Second", running: false, status: "regular" },
+    { id: "3", slug: "3", title: "Old", running: false, status: "archived" },
   ],
 };
 async function setup(page: Page) {
@@ -112,7 +113,7 @@ test("search and logical export use explicit selected scope and preserve the com
   await page.goto("/chats/1");
   const draft = page.getByRole("textbox", { name: "Message input", exact: true });
   await draft.fill("Keep draft");
-  await page.getByRole("button", { name: "Chat details" }).click();
+  await openChatSetting(page, "Chat details");
   await page.getByRole("button", { name: "Search or export saved history" }).click();
   await page.getByLabel("Search saved text").fill("needle");
   await page.getByRole("button", { name: "Search saved history" }).click();
@@ -168,7 +169,7 @@ test("multiple and catalog scopes explicitly include archived and label navigati
     });
   });
   await page.goto("/chats/1");
-  await page.getByRole("button", { name: "Chat details" }).click();
+  await openChatSetting(page, "Chat details");
   await page.getByRole("button", { name: "Search or export saved history" }).click();
   await page.getByRole("combobox", { name: "Scope" }).click();
   await page.getByRole("option", { name: "Choose chats" }).click();
@@ -213,7 +214,7 @@ test("cancelling a pending read discards a late result without stopping the run"
       .catch(() => {});
   });
   await page.goto("/chats/1");
-  await page.getByRole("button", { name: "Chat details" }).click();
+  await openChatSetting(page, "Chat details");
   await page.getByRole("button", { name: "Search or export saved history" }).click();
   await page.getByLabel("Search saved text").fill("needle");
   await page.getByRole("button", { name: "Search saved history" }).click();
@@ -240,7 +241,7 @@ test("rejects a wrong-scope response and closes the inspector when changing chat
     });
   });
   await page.goto("/chats/1");
-  await page.getByRole("button", { name: "Chat details" }).click();
+  await openChatSetting(page, "Chat details");
   await page.getByRole("button", { name: "Search or export saved history" }).click();
   await page.getByLabel("Search saved text").fill("needle");
   await page.getByRole("button", { name: "Search saved history" }).click();

@@ -9,6 +9,8 @@ export const ChatSummarySchema = z.strictObject({
   title: z.string(),
   running: z.boolean(),
   status: z.enum(["regular", "archived"]).default("regular"),
+  /** Readable URL fragment; a catalog without one still resolves by numeric id. */
+  slug: z.string().min(1).max(120).optional(),
   parentId: ChatIdSchema.optional(),
   forkEntryId: ChatIdSchema.optional(),
   branchRootId: ChatIdSchema.optional(),

@@ -3,13 +3,25 @@
 import { useCallback, useRef, useState, type ComponentProps, type KeyboardEvent } from "react";
 import { PreviewCard } from "@base-ui/react/preview-card";
 import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import { floating } from "./surfaces";
 import { clamp } from "../utils/range";
+
+/** Threads attached to one turn: found by the map, not created by it. */
+export interface ConversationMapThread {
+  /** Canonical saved entry the thread replies to. */
+  entryId: string;
+  replies: number;
+  repliesCapped: boolean;
+  needsYou: boolean;
+  running: boolean;
+}
 
 export interface ConversationMapEntry {
   id: string;
   title: string;
   preview?: string;
+  thread?: ConversationMapThread;
 }
 
 const TICK = '[data-slot="conversation-map-tick"]';
@@ -19,6 +31,7 @@ export function ConversationMap({
   activeId,
   visibleIds,
   onSelect,
+  onOpenThread,
   side = "right",
   className,
   onKeyDown,
@@ -28,6 +41,7 @@ export function ConversationMap({
   activeId?: string | undefined;
   visibleIds?: readonly string[] | undefined;
   onSelect?: ((id: string) => void) | undefined;
+  onOpenThread?: ((entryId: string) => void) | undefined;
   side?: "left" | "right";
 }) {
   const railRef = useRef<HTMLElement>(null);
@@ -90,6 +104,7 @@ export function ConversationMap({
             data-slot="conversation-map-tick"
             data-active={current ? "" : undefined}
             data-in-view={onScreen ? "" : undefined}
+            data-thread={entry.thread ? "" : undefined}
             aria-label={entry.title}
             aria-current={current ? "true" : undefined}
             tabIndex={index === tabbableIndex ? 0 : -1}
@@ -108,13 +123,15 @@ export function ConversationMap({
                 "w-3 rounded-full transition-[width,height,background-color] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
                 current
                   ? "bg-foreground/90 h-[3px] group-focus-within/rail:w-6 group-hover/rail:w-6"
-                  : cn(
-                      "group-hover:bg-foreground/70 group-focus-visible:bg-foreground/70 h-0.5",
-                      "group-hover:w-6! group-focus-visible:w-6!",
-                      onScreen
-                        ? "bg-foreground/50 group-focus-within/rail:w-[18px] group-hover/rail:w-[18px]"
-                        : "bg-foreground/15",
-                    ),
+                  : entry.thread
+                    ? "bg-foreground/80 h-1 ring-1 ring-foreground/40 ring-offset-1 ring-offset-background group-focus-within/rail:w-[18px] group-hover/rail:w-[18px]"
+                    : cn(
+                        "group-hover:bg-foreground/70 group-focus-visible:bg-foreground/70 h-0.5",
+                        "group-hover:w-6! group-focus-visible:w-6!",
+                        onScreen
+                          ? "bg-foreground/50 group-focus-within/rail:w-[18px] group-hover/rail:w-[18px]"
+                          : "bg-foreground/15",
+                      ),
               )}
             />
           </PreviewCard.Trigger>
@@ -141,6 +158,28 @@ export function ConversationMap({
                   <p className="text-muted-foreground mt-1 line-clamp-3 text-[13px] leading-relaxed">
                     {payload.preview}
                   </p>
+                )}
+                {payload?.thread && (
+                  <div className="border-foreground/10 mt-2 flex items-center gap-2 border-t pt-2">
+                    <p className="text-muted-foreground min-w-0 flex-1 text-xs">
+                      {payload.thread.needsYou
+                        ? "Thread needs you"
+                        : payload.thread.running
+                          ? "Thread is replying…"
+                          : `${payload.thread.replies}${payload.thread.repliesCapped ? "+" : ""} ${
+                              payload.thread.replies === 1 ? "reply" : "replies"
+                            }`}
+                    </p>
+                    <Button
+                      type="button"
+                      size="xs"
+                      variant="outline"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => onOpenThread?.(payload.thread!.entryId)}
+                    >
+                      Open thread
+                    </Button>
+                  </div>
                 )}
               </PreviewCard.Popup>
             </PreviewCard.Positioner>

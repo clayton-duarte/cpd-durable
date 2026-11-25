@@ -692,9 +692,7 @@ test("retry saving persists the latest text and retained image after a network f
   expect(uploads).toBe(0);
 });
 
-test("recovery identifies each unknown attempt and displays admitted receipts without retry", async ({
-  page,
-}) => {
+test("recovery shows unconfirmed attempts without showing admitted receipts", async ({ page }) => {
   await syntheticEvents(page);
   const fullText = `second payload ${"x".repeat(200)}`;
   const records = ["first payload", fullText, "admitted payload"].map((text, i) => ({
@@ -712,7 +710,7 @@ test("recovery identifies each unknown attempt and displays admitted receipts wi
       return route.fulfill({
         json: {
           rootId: "1",
-          chats: [{ id: "1", title: "First", running: false }],
+          chats: [{ id: "1", slug: "1", title: "First", running: false }],
         },
       });
     if (path.endsWith("/draft"))
@@ -742,10 +740,8 @@ test("recovery identifies each unknown attempt and displays admitted receipts wi
     .click();
   await expect(page.getByRole("textbox", { name: "Full original text" })).toHaveValue(fullText);
   await expect(page.getByText(/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/)).toBeVisible();
-  await page.getByRole("button", { name: "Send history" }).click();
-  await expect(page.getByText("admitted payload")).toBeVisible();
-  await page.getByRole("button", { name: "admitted payload" }).click();
-  await expect(page.getByText("Submission: 7")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Send history" })).toHaveCount(0);
+  await expect(page.getByText("admitted payload")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Retry original" })).toHaveCount(2);
   await expect(page.getByRole("button", { name: "Load older attempts" })).toBeVisible();
   expect(inputs).toBe(0);

@@ -8,6 +8,7 @@ import {
   redirect,
 } from "@tanstack/react-router";
 import { ChatWorkspace } from "./chat-workspace.tsx";
+import { CHATS_PATH } from "./paths.ts";
 import "./index.css";
 
 const rootRoute = createRootRoute();
@@ -15,12 +16,14 @@ const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/chats/{-$chatId}", params: {} });
+    throw redirect({ to: CHATS_PATH, params: {} });
   },
 });
+// The chat route stays mounted while a message thread opens below it, so the
+// transcript, drafts and scroll position survive opening and closing the panel.
 const chatsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/chats/{-$chatId}",
+  path: CHATS_PATH,
   validateSearch: (search: Record<string, unknown>): { tangent?: string | number } => {
     const value = search["tangent"];
     return value === undefined
@@ -29,7 +32,14 @@ const chatsRoute = createRoute({
   },
   component: ChatWorkspace,
 });
-const router = createRouter({ routeTree: rootRoute.addChildren([indexRoute, chatsRoute]) });
+const threadRoute = createRoute({
+  getParentRoute: () => chatsRoute,
+  path: "/threads/{-$threadSlug}",
+  component: ChatWorkspace,
+});
+const router = createRouter({
+  routeTree: rootRoute.addChildren([indexRoute, chatsRoute.addChildren([threadRoute])]),
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

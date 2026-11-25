@@ -7,8 +7,15 @@ import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { MODEL_ID, PROVIDER_ID } from "../shared/chat.ts";
 import { createExecution, workingDirectory } from "./execution.ts";
-import { assertInteractiveChat, createTangentCatalogHooks, modelKey, openChats } from "./chats.ts";
+import {
+  assertInteractiveChat,
+  createTangentCatalogHooks,
+  createThreadCatalogHooks,
+  modelKey,
+  openChats,
+} from "./chats.ts";
 import { createTangentRoutes } from "./tangent-routes.ts";
+import { createThreadRoutes } from "./thread-routes.ts";
 import type { TangentHooks } from "./tangents/index.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
 import type { Tx } from "@earendil-works/pi-durable";
@@ -181,6 +188,14 @@ export async function openChat(
     });
     boundTangentHooks = tangentHooks;
     const tangents = { routes: createTangentRoutes(harness, tangentHooks, models) };
+    const threadHooks = createThreadCatalogHooks({
+      resolveModel: async () => policy.resolveModel(),
+      assertResolvedModel: async (tx, resolved) => {
+        await policy.assertResolvedModel(tx, resolved);
+      },
+      cwd: (source) => workingDirectory(source ?? cwd),
+    });
+    const threads = { routes: createThreadRoutes(harness, threadHooks) };
     const workers = createWorkerRoutes({
       harness,
       resolve: async (id) => {
@@ -239,6 +254,7 @@ export async function openChat(
       attachments,
       savedPrompts: createSavedPrompts(harness),
       tangents,
+      threads,
       workers,
       handoffs,
       projectApplicationHandoffs: (view: ConversationId, entries: readonly EntryRecord[]) =>
