@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { floating } from "./surfaces";
 import { clamp } from "../utils/range";
 
-/** Threads attached to one turn: found by the map, not created by it. */
+/** Indexed thread metadata: navigation never creates or starts a thread. */
 export interface ConversationMapThread {
   /** Canonical saved entry the thread replies to. */
   entryId: string;
@@ -87,7 +87,10 @@ export function ConversationMap({
       ref={railRef}
       aria-label="Conversation map"
       onKeyDown={handleKeyDown}
-      className={cn("group/rail flex h-full w-6 flex-col justify-center", className)}
+      className={cn(
+        "group/rail flex h-full w-8 flex-col justify-center-safe overflow-y-auto px-1 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        className,
+      )}
       {...props}
     >
       {entries.map((entry, index) => {
@@ -110,9 +113,9 @@ export function ConversationMap({
             tabIndex={index === tabbableIndex ? 0 : -1}
             onFocus={() => setFocusedIndex(index)}
             onClick={onSelect ? () => onSelect(entry.id) : undefined}
-            // The cap keeps a short thread packed instead of spread over the
-            // whole gutter; a long one outgrows it and the share decides.
-            className="pointer-events-auto group flex max-h-3.5 min-h-0 flex-1 items-center outline-none"
+            // Keep every indexed thread keyboard-reachable. A large index
+            // scrolls within the rail rather than shrinking ticks to zero.
+            className="pointer-events-auto group flex h-3.5 shrink-0 items-center outline-none"
           >
             {/* At rest every tick is the same short length and only weight and
                 depth separate the tiers. Pointing at the rail grows them out by

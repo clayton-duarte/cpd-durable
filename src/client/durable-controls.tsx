@@ -3,7 +3,6 @@ import { unstable_useSlashCommandAdapter, type Unstable_SlashCommand } from "@as
 import { AgentStatus } from "@/components/assistant-ui/elements/agent-status";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/elements/composer-trigger-popover.aui";
 import { ErrorState } from "@/components/assistant-ui/elements/error-state";
-import { MessageQueue } from "@/components/assistant-ui/elements/message-queue";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,7 +37,6 @@ export function DurableControls() {
   const cancelRef = useRef<HTMLButtonElement>(null);
   const resetInFlight = useRef(false);
   const busy = host.state?.busy ?? false;
-  const queue = host.state?.controls?.queue ?? [];
   const locked = !host.available;
   const error = host.localError ?? host.error ?? host.state?.failure;
   const status = host.inputBlockedReason
@@ -148,7 +146,7 @@ export function DurableControls() {
           role="note"
         />
       )}
-      {host.historyError && host.onLoadEarlier && host.historyGap === undefined && (
+      {host.historyError && host.onLoadEarlier && (
         <ErrorState
           title="History unavailable"
           detail={host.historyError}
@@ -181,26 +179,6 @@ export function DurableControls() {
       ) : null}
       {host.notice && (
         <AgentStatus state="waiting" label={host.notice} title={host.notice} role="note" />
-      )}
-      {queue.length > 0 && (
-        <MessageQueue
-          queued={queue.map((item) => ({
-            id: item.id,
-            text: `${item.mode === "steer" ? "Steer at boundary" : "Follow-up"}: ${item.text}`,
-          }))}
-          queueDescription={
-            busy
-              ? "Steering: next boundary · Follow-up: next run"
-              : "Pending placement; not yet delivered"
-          }
-          {...(!locked && host.onWithdraw
-            ? {
-                onCancel: (id: string) => {
-                  void host.onWithdraw?.(id);
-                },
-              }
-            : {})}
-        />
       )}
       <AlertDialog open={resetOpen && host.active !== false} onOpenChange={setResetOpen}>
         <AlertDialogContent

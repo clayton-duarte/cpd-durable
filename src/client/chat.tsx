@@ -1,3 +1,4 @@
+import { historyNavigation } from "./history-navigation.ts";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ComposerModelSelector } from "./composer-model-selector.tsx";
 import {
@@ -17,17 +18,11 @@ import {
   ToolFallback,
   ToolFallbackWithResult,
 } from "@/components/assistant-ui/elements/tool-fallback.aui";
-import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { Image } from "@/components/assistant-ui/elements/image";
 import { DataTable } from "@/components/assistant-ui/elements/data-table";
 import { TableDetailsSchema } from "../shared/structured-table.ts";
 import { CodeDiff } from "@/components/assistant-ui/elements/code-diff";
-import {
-  ToolResultPartSchema,
-  ToolStateSchema,
-  type SendMode,
-  type HistoryGap,
-} from "../shared/chat.ts";
+import { ToolResultPartSchema, ToolStateSchema, type SendMode } from "../shared/chat.ts";
 import { AttachmentIdSchema } from "../shared/attachments.ts";
 import { z } from "zod";
 import { createImageAttachmentAdapter, restoreDetachedImages } from "./attachment-adapter.ts";
@@ -195,35 +190,8 @@ const omittedUI = {
 function OfficialThread() {
   useAssistantDataUI(interruptionUI);
   useAssistantDataUI(omittedUI);
-  useAssistantDataUI(historyGapUI);
   return <Thread components={threadComponents} autoFocus={false} />;
 }
-
-const historyGapUI = {
-  name: "history-gap",
-  render: function HistoryGapNotice({ data }: { data: HistoryGap }) {
-    const host = useChatHost();
-    const selected = host.historyGap?.after === data.after && host.historyGap.upTo === data.upTo;
-    const error = selected ? host.historyError : null;
-    if (!host.connected || !host.onFillGap)
-      return (
-        <AgentStatus state="waiting" label="History gap. Reconnect to load missing messages." />
-      );
-    return (
-      <ErrorState
-        title="History gap"
-        detail={error ?? "Messages between these entries are not loaded."}
-        actionLabel={error ? "Retry" : "Load missing messages"}
-        pendingLabel="Loading missing messages"
-        retrying={!!host.historyLoading && selected}
-        disabled={host.historyLoading}
-        onRetry={() => {
-          void host.onFillGap?.(data);
-        }}
-      />
-    );
-  },
-};
 
 type DraftWriter = ReturnType<typeof createDraftAutosave>;
 function PersistenceBridge({
@@ -435,6 +403,8 @@ export function Chat(props: ChatProps) {
       active !== document.body &&
       active !== input &&
       !active.closest('[data-slot="sidebar"]') &&
+      !active.closest('[data-slot="conversation-map"]') &&
+      !active.closest('[data-slot="thread-navigation-action"]') &&
       !active.closest('[data-slot="thread-reply-composer"]') &&
       !active.closest('[data-slot="thread-close"]') &&
       !active.closest('[role="alert"]')
@@ -446,6 +416,8 @@ export function Chat(props: ChatProps) {
     input.focus({ preventScroll: true });
   }, [props.focusComposer, props.active, props.onSend]);
   const revision = useRef(0);
+  const restoredWithdrawals = useRef(new Set<string>());
+  const submittingDraft = useRef(false);
   const selectionSnapshot = useRef<{ text: string; ids: string[]; after: string } | null>(null);
   const pendingUploads = useRef(0);
   const persistence = useRef<DraftWriter | null>(null);
@@ -466,8 +438,9 @@ export function Chat(props: ChatProps) {
   }, [projection]);
   const visibleMessages = useMemo(() => {
     const from = props.visibleFromEntryId;
-    if (from === undefined) return projection.messages;
     return projection.messages.filter((message) => {
+      if (message.metadata?.custom?.["historyMarker"]) return false;
+      if (from === undefined) return true;
       const entryId = message.metadata?.custom?.["sourceEntryId"];
       return typeof entryId !== "number" || entryId > from;
     });
@@ -600,6 +573,10 @@ export function Chat(props: ChatProps) {
       setLocalError(null);
       const tangent = intent?.kind === "tangent-handoff-request";
       const shell = nativeSend && !intent ? parseDirectShell(draft) : undefined;
+      if (shell && props.state?.busy) {
+        setLocalError("Wait for the current response before running a direct shell command.");
+        return false;
+      }
       if (tangent && !props.canRequestTangent) {
         setLocalError("Choose an available / command from the list; command text was not sent.");
         return false;
@@ -795,6 +772,7 @@ export function Chat(props: ChatProps) {
     [admit, props.chatId, props.state?.conversationId],
   );
 
+  const navigation = historyNavigation(props.state, props.visibleFromEntryId);
   const runtime = useExternalStoreRuntime({
     messages,
     onNew,
@@ -826,8 +804,17 @@ export function Chat(props: ChatProps) {
     isDisabled: !props.onSend && (!props.chatId || persistenceReady),
     isSendDisabled: !available || (props.state?.busy ?? false) || !!props.shell,
     ...(adapter ? { adapters: { attachments: adapter } } : {}),
-    hasEarlier: !!props.onLoadEarlier && props.connected && (props.state?.hasEarlier ?? false),
-    ...(props.onLoadEarlier ? { onLoadEarlier: props.onLoadEarlier } : {}),
+    hasEarlier:
+      props.connected &&
+      (navigation.gap && props.onFillGap ? true : !!props.onLoadEarlier && navigation.hasEarlier),
+    ...(props.onLoadEarlier
+      ? {
+          onLoadEarlier: () =>
+            navigation.gap && props.onFillGap
+              ? props.onFillGap(navigation.gap)
+              : props.onLoadEarlier!(),
+        }
+      : {}),
     ...(props.shell && props.connected && !props.pending && props.onShellStop
       ? { onCancel: props.onShellStop }
       : available && !props.shell && props.onStop
@@ -901,6 +888,24 @@ export function Chat(props: ChatProps) {
     <ChatHostContext.Provider
       value={{
         ...props,
+        ...(props.onWithdraw
+          ? {
+              onWithdraw: async (id: string) => {
+                const item = props.state?.controls?.queue.find((queued) => queued.id === id);
+                if (!available || !item) return;
+                await props.onWithdraw?.(id, () => {
+                  if (restoredWithdrawals.current.has(id)) return;
+                  const composer = runtimeRef.current?.thread.composer;
+                  if (!composer) return;
+                  const current = composer.getState().text;
+                  // Read at confirmation time: do not overwrite edits made while
+                  // withdrawal was pending. Native attachment/quote state is retained.
+                  composer.setText(current ? `${current}\n\n${item.text}` : item.text);
+                  restoredWithdrawals.current.add(id);
+                });
+              },
+            }
+          : {}),
         readDraft: () => runtimeRef.current?.thread.composer.getState().text ?? "",
         draftVersion: () => revision.current,
         applyPrompt: (version, text, mode) => {
@@ -932,24 +937,30 @@ export function Chat(props: ChatProps) {
         available,
         localError,
         clearLocalError: () => setLocalError(null),
-        submitDraft: async (mode) => {
-          const composer = runtime.thread.composer;
-          const { text, quote } = composer.getState();
-          const checked = QuoteTextSchema.safeParse(quote?.text);
-          if (quote && !checked.success) {
-            setLocalError("Select a quote of at most 4,000 characters.");
-            return false;
+        submitDraft: async (mode, nativeInput = false) => {
+          if (submittingDraft.current || pendingUploads.current > 0 || props.shell) return false;
+          submittingDraft.current = true;
+          try {
+            const composer = runtime.thread.composer;
+            const { text, quote } = composer.getState();
+            const checked = QuoteTextSchema.safeParse(quote?.text);
+            if (quote && !checked.success) {
+              setLocalError("Select a quote of at most 4,000 characters.");
+              return false;
+            }
+            const admitted = await admit(
+              text,
+              mode,
+              nativeInput,
+              undefined,
+              checked.success ? { kind: "quote", text: checked.data } : undefined,
+            );
+            if (admitted && quote && composer.getState().quote === quote)
+              composer.setQuote(undefined);
+            return admitted;
+          } finally {
+            submittingDraft.current = false;
           }
-          const admitted = await admit(
-            text,
-            mode,
-            false,
-            undefined,
-            checked.success ? { kind: "quote", text: checked.data } : undefined,
-          );
-          if (admitted && quote && composer.getState().quote === quote)
-            composer.setQuote(undefined);
-          return admitted;
         },
         requestTangent: (command) => {
           const snapshot = selectionSnapshot.current;

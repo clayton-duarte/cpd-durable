@@ -222,26 +222,16 @@ test("loaded-history search steps and wraps real text hits without searching hid
   await expect(search).toHaveAttribute("aria-label", /unloaded messages are not searched/);
 });
 
-test("conversation map selects actual loaded turns and preserves the native draft", async ({
-  page,
-}) => {
+test("a chat without threads has no map and no reserved right gutter", async ({ page }) => {
   await connect(page, historyState(1, 50, 1));
+  await page.route("**/api/chats/1/threads", (route) => route.fulfill({ json: { threads: [] } }));
   await page.goto("/");
-  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
-  await draft.fill("Keep navigation draft");
-  const map = page.getByRole("navigation", { name: "Conversation map" });
-  await expect(map.getByRole("button")).toHaveCount(25);
-  await map.getByRole("button", { name: "Turn 1", exact: true }).click();
-  const row = page.locator('[data-durable-id="1:0"]');
-  await expect
-    .poll(() =>
-      row.evaluate((element) => {
-        const viewport = element.closest('[data-slot="aui_thread-viewport"]')!;
-        return Math.abs(element.getBoundingClientRect().top - viewport.getBoundingClientRect().top);
-      }),
-    )
-    .toBeLessThan(5);
-  await expect(draft).toHaveValue("Keep navigation draft");
+  await expect(page.locator("[data-durable-id]")).toHaveCount(50);
+  await expect(page.locator('[data-slot="conversation-map-rail"]')).toHaveCount(0);
+  await expect(page.locator('[data-slot="aui_transcript-content"]')).toHaveCSS(
+    "padding-right",
+    "0px",
+  );
 });
 
 test("selected text can quote in the main chat or stage a quoted thread without creating it", async ({
@@ -250,7 +240,6 @@ test("selected text can quote in the main chat or stage a quoted thread without 
   await connect(page, historyState(1, 2, 1, false));
   let mainInput: unknown;
   let newThread: unknown;
-  let threadCreated = false;
   const source = {
     entryId: "2",
     role: "assistant",
@@ -265,52 +254,28 @@ test("selected text can quote in the main chat or stage a quoted thread without 
     route.fulfill({ json: { source } }),
   );
   await page.route("**/api/chats/1/threads", (route) => {
+    const thread = {
+      id: "3",
+      parentId: "1",
+      sourceEntryId: "2",
+      slug: "3-thread-reply",
+      title: "Thread reply",
+      replyCount: 1,
+      replyCountCapped: false,
+      activity: "idle",
+      source,
+    };
     if (route.request().method() === "GET")
-      return route.fulfill({
-        json: {
-          threads: threadCreated
-            ? [
-                {
-                  id: "3",
-                  parentId: "1",
-                  sourceEntryId: "2",
-                  slug: "3-thread-reply",
-                  title: "Thread reply",
-                  replyCount: 1,
-                  replyCountCapped: false,
-                  activity: "idle",
-                  source,
-                },
-              ]
-            : [],
-        },
-      });
-    threadCreated = true;
+      return route.fulfill({ json: { threads: newThread ? [thread] : [] } });
     newThread = route.request().postDataJSON();
-    return route.fulfill({
-      status: 201,
-      json: {
-        thread: {
-          id: "3",
-          parentId: "1",
-          sourceEntryId: "2",
-          slug: "3-thread-reply",
-          title: "Thread reply",
-          replyCount: 1,
-          replyCountCapped: false,
-          activity: "idle",
-          source,
-        },
-        admitted: true,
-      },
-    });
+    return route.fulfill({ status: 201, json: { thread, admitted: true } });
   });
   await page.goto("/");
   const main = page.getByRole("region", { name: "Main chat: Original chat" });
   const composer = main.getByRole("textbox", { name: "Message input" });
   const sourceRow = main.locator('[data-durable-id="2:0"]');
   await expect(sourceRow.locator("p").first()).toHaveCSS("font-size", "14px");
-  await expect(composer).toHaveCSS("font-size", "13px");
+  await expect(composer).toHaveCSS("font-size", "14px");
   await expect(sourceRow.getByRole("button", { name: /^(Not )?helpful$/i })).toHaveCount(0);
   const toolbar = page.locator('[data-slot="selection-toolbar"]');
   const select = async () => {
@@ -389,8 +354,8 @@ test("selected text can quote in the main chat or stage a quoted thread without 
     });
   await expect(page).toHaveURL(/\/threads\/3-thread-reply$/);
   await expect(panel.getByRole("textbox", { name: "Message input" })).toBeFocused();
-  await expect(main.getByRole("navigation", { name: "Conversation map" })).toHaveCount(1);
-  await expect(panel.getByRole("navigation", { name: "Conversation map" })).toHaveCount(0);
+  await expect(main.getByRole("navigation", { name: "Conversation threads" })).toHaveCount(1);
+  await expect(panel.getByRole("navigation", { name: "Conversation threads" })).toHaveCount(0);
   await page.setViewportSize({ width: 720, height: 800 });
   await expect(handle).toHaveCount(0);
   await expect.poll(panelWidth).toBe(720);
@@ -780,7 +745,7 @@ test("history errors retry independently of uncertain message delivery", async (
   expect(historyRequests).toBe(2);
 });
 
-test("explicit gap recovery is ordered and never exposes message actions for a gap", async ({
+test("Load earlier silently fills missing sections without rendering a routine gap card", async ({
   page,
 }) => {
   const initial = historyState(1, 10, 1, false, [{ after: 10, upTo: 100 }]);
@@ -796,9 +761,9 @@ test("explicit gap recovery is ordered and never exposes message actions for a g
   });
   await page.goto("/");
   const marker = page.locator('[data-message-id="history-gap:10:100"]');
-  await expect(marker).toHaveCount(1);
-  await expect(marker.locator('[data-slot="aui_assistant-message-footer"]')).toHaveCount(0);
-  await marker.getByRole("button", { name: "Load missing messages", exact: true }).click();
+  await expect(marker).toHaveCount(0);
+  await expect(page.locator('[data-slot="error-state"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
   await expect(marker).toHaveCount(0);
   await expect(page.locator("[data-durable-id]")).toHaveCount(110);
   expect(requests).toHaveLength(1);
@@ -857,10 +822,13 @@ test("failed gap reads retry their original bounds without adding a second recov
   });
   await page.goto("/");
   const marker = page.locator('[data-message-id="history-gap:10:100"]');
-  await marker.getByRole("button", { name: "Load missing messages", exact: true }).click();
-  await expect(marker).toContainText("History could not be loaded");
+  await expect(marker).toHaveCount(0);
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect(page.locator('[data-slot="error-state"]')).toContainText(
+    "History could not be loaded",
+  );
   await expect(page.locator('[data-slot="error-state"]')).toHaveCount(1);
-  await marker.getByRole("button", { name: "Retry", exact: true }).click();
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(marker).toHaveCount(0);
   expect(requests).toHaveLength(2);
   expect(requests[0]).toEqual(requests[1]);
@@ -1025,11 +993,13 @@ test("mobile durable queue is visible, honest after failure, and bounded to the 
     },
   });
   await page.goto("/");
-  const queue = page.locator('[data-slot="message-queue"]');
-  await expect(queue).toContainText("2 queued");
-  await expect(queue).toContainText("Pending placement; not yet delivered");
+  const queue = page.locator('[data-slot="aui_message-group"] [data-slot="pending-inputs"]');
+  await expect(queue.locator('[data-slot="pending-user-message"]')).toHaveCount(2);
+  await expect(queue).toContainText("Steering · pending");
+  await expect(queue).toContainText("Queued · pending");
   await expect(queue).not.toContainText("sends when this finishes");
-  await expect(queue.getByRole("button", { name: /Remove/ })).toHaveCount(2);
+  await expect(queue.getByRole("button", { name: /Withdraw pending message:/ })).toHaveCount(2);
+  await expect(page.locator('[data-slot="message-queue"]')).toHaveCount(0);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await actions(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -1130,7 +1100,8 @@ test("slash command queues a draft while busy without erasing newer edits", asyn
   await expect(draft).toHaveValue("Follow-up\n  with indentation");
   await draft.fill("Another draft");
   release();
-  await expect(page.getByRole("note")).toContainText("Follow-up input admitted.");
+  await expect(page.getByRole("button", { name: "Steer message", exact: true })).toBeEnabled();
+  await expect(page.getByText("Follow-up input admitted.", { exact: false })).toHaveCount(0);
   await expect(draft).toHaveValue("Another draft");
   expect(requests[0]).toMatchObject({ mode: "followUp", text: "Follow-up\n  with indentation" });
 });
@@ -1151,7 +1122,7 @@ test("steering disappears rather than silently becoming ordinary input after a r
   await expect(page.getByRole("button", { name: "Send message", exact: true })).toBeEnabled();
 });
 
-test("queued input stays separate from messages and withdrawal reports a placement race", async ({
+test("pending input uses a user bubble without a committed identity and withdrawal reports a placement race", async ({
   page,
 }) => {
   await connect(page, {
@@ -1171,15 +1142,39 @@ test("queued input stays separate from messages and withdrawal reports a placeme
       hasText: "Queued synthetic direction",
     }),
   ).toHaveCount(0);
+  const pending = page.locator('[data-slot="pending-user-message"]');
+  await expect(pending).toContainText("Steering · pending");
+  await expect(pending).not.toHaveAttribute("data-durable-id");
+  await expect(pending).not.toHaveAttribute("data-quote-entry");
   await page
     .getByRole("button", {
-      name: 'Remove "Steer at boundary: Queued synthetic direction" from the queue',
+      name: "Withdraw pending message: Queued synthetic direction",
       exact: true,
     })
     .click();
   await expect(page.getByRole("note")).toContainText(
     "Input was already placed; it was not withdrawn.",
   );
+  // Admission/withdrawal receipts alone cannot erase an inbox observation.
+  await expect(pending).toHaveCount(1);
+  await update(page, {
+    ...empty,
+    controls,
+    messages: [
+      {
+        id: "2:0",
+        role: "user",
+        text: "Queued synthetic direction",
+        interrupted: false,
+        source: { entryId: 2 },
+      },
+    ],
+  });
+  await expect(pending).toHaveCount(0);
+  await expect(page.locator('[data-slot="aui_user-message-root"]')).toContainText(
+    "Queued synthetic direction",
+  );
+  await expect(page.getByText("Queued synthetic direction", { exact: true })).toHaveCount(1);
 });
 
 test("Continue retries the same control without consuming the composer draft", async ({ page }) => {
@@ -1587,7 +1582,7 @@ test("invalid identity frames preserve history and draft, then recover without s
   await expect(draft).toHaveValue("Retained draft");
 });
 
-test("native Reasoning follows live streaming and collapses when reasoning completes", async ({
+test("timeline contains live and settled thinking while the final answer stays outside", async ({
   page,
 }) => {
   const streaming: ChatState = {
@@ -1606,16 +1601,14 @@ test("native Reasoning follows live streaming and collapses when reasoning compl
   };
   await connect(page, streaming);
   await page.goto("/");
-  const root = page.locator('[data-slot="reasoning-root"]');
-  await expect(root).toHaveAttribute("data-variant", "ghost");
-  await expect(root).toHaveCSS("border-top-width", "0px");
-  const trigger = root.getByRole("button", { name: "Reasoning", exact: true });
-  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  const timeline = page.locator('[data-slot="tool-timeline"]');
+  await expect(
+    timeline.getByRole("button", { name: "Thinking · working", exact: true }),
+  ).toHaveAttribute("aria-expanded", "false");
+  await timeline.getByRole("button", { name: "Thinking · working", exact: true }).click();
+  const root = timeline.locator('[data-slot="timeline-reasoning"]');
   await expect(root).toContainText("Provider reasoning stream");
-  await expect(root.locator('[data-slot="reasoning-content"]')).toHaveAttribute(
-    "aria-busy",
-    "true",
-  );
+  await expect(root).toHaveAttribute("aria-busy", "true");
   await update(page, {
     ...empty,
     controls,
@@ -1637,13 +1630,15 @@ test("native Reasoning follows live streaming and collapses when reasoning compl
       },
     ],
   });
-  await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  const settledTrigger = timeline.getByRole("button", { name: "Thinking", exact: true });
+  await expect(settledTrigger).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByText("Answer", { exact: true })).toBeVisible();
-  await trigger.click();
+  await settledTrigger.click();
   await expect(root.getByText("Provider reasoning stream", { exact: true })).toBeVisible();
+  await expect(root).toHaveAttribute("aria-busy", "false");
 });
 
-test("provider reasoning uses the supplied Reasoning disclosure, not a paused status notice", async ({
+test("provider thinking is inside the timeline, not a separate disclosure or paused status notice", async ({
   page,
 }) => {
   await connect(page, {
@@ -1675,12 +1670,13 @@ test("provider reasoning uses the supplied Reasoning disclosure, not a paused st
     ],
   });
   await page.goto("/");
-  const reasoning = page.locator('[data-slot="reasoning-root"]');
-  await expect(reasoning).toHaveCount(1);
-  await expect(reasoning).toHaveAttribute("data-variant", "ghost");
-  await expect(reasoning).toHaveCSS("border-top-width", "0px");
-  await reasoning.getByRole("button", { name: "Reasoning", exact: true }).click();
-  await expect(reasoning).toContainText("Actual provider reasoning");
+  const timeline = page.locator('[data-slot="tool-timeline"]');
+  await expect(timeline).toHaveCount(1);
+  await timeline.getByRole("button", { name: "Thinking", exact: true }).click();
+  await expect(timeline.locator('[data-slot="timeline-reasoning"]')).toContainText(
+    "Actual provider reasoning",
+  );
+  await expect(page.locator('[data-slot="reasoning-root"]')).toHaveCount(0);
   await expect(page.getByText("Final answer", { exact: true })).toBeVisible();
   await expect(page.getByText("Legacy answer", { exact: true })).toBeVisible();
   await expect(page.getByText(/Reasoning content is not shown/)).toHaveCount(0);
@@ -1849,6 +1845,13 @@ test("collapsed reasoning/tool rows use their actual compact height, including o
     })),
   });
   await page.goto("/");
+  const timeline = page.locator('[data-slot="tool-timeline"]');
+  await expect(timeline).toHaveCount(1);
+  await expect(timeline).toContainText("Thinking · 20 tool calls");
+  await expect
+    .poll(() => timeline.evaluate((el) => el.getBoundingClientRect().height))
+    .toBeLessThan(40);
+  await timeline.getByRole("button", { name: "Thinking · 20 tool calls", exact: true }).click();
   await expect(page.locator('[data-slot="aui_assistant-message-root"]')).toHaveCount(20);
   await expect
     .poll(() =>
@@ -1894,7 +1897,7 @@ for (const finalState of ["complete", "error", "cancelled"] as const) {
     };
     await connect(page, state);
     await page.goto("/");
-    await page.getByRole("button", { name: "1 tool call", exact: true }).click();
+    await page.getByRole("button", { name: "1 tool call · working", exact: true }).click();
     const tool = page.locator('[data-slot="tool-fallback-root"]');
     await expect(tool).toHaveCount(1);
     await tool.getByRole("button", { name: /Running tool: bash/ }).click();
@@ -1959,4 +1962,556 @@ test("two official Threads keep their native drafts and action panels independen
   await expect(second.getByRole("textbox", { name: "Message input", exact: true })).toHaveValue(
     "Independent second draft",
   );
+});
+
+for (const width of [1100, 375]) {
+  test(`activity timelines preserve interleaved updates, details and compact mobile layout (${width}px)`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 850 });
+    const toolMessage = (
+      entry: number,
+      state: "complete" | "error" = "complete",
+    ): ChatState["messages"][number] => ({
+      id: `${entry}:0`,
+      role: "assistant",
+      text: "",
+      interrupted: false,
+      source: { entryId: entry },
+      parts: [
+        {
+          id: `${entry}:0:0`,
+          type: "tool-call",
+          callId: `read-${entry}`,
+          name: "read",
+          arguments: { path: "sample.txt" },
+          state,
+          output: `Output ${entry}`,
+        },
+      ],
+    });
+    await connect(page, {
+      ...empty,
+      controls,
+      conversationId: 1,
+      messages: [
+        {
+          id: "1:0",
+          role: "user",
+          text: "Make it compact",
+          interrupted: false,
+          source: { entryId: 1 },
+        },
+        toolMessage(2),
+        toolMessage(3),
+        {
+          id: "4:0",
+          role: "assistant",
+          text: "A short progress update",
+          interrupted: false,
+          source: { entryId: 4 },
+        },
+        toolMessage(5, "error"),
+        {
+          id: "6:0",
+          role: "assistant",
+          text: "The final answer",
+          interrupted: false,
+          source: { entryId: 6 },
+        },
+      ],
+    });
+    await page.goto("/");
+    const timelines = page.locator('[data-slot="tool-timeline"]');
+    await expect(timelines).toHaveCount(2);
+    await expect(page.getByText("A short progress update", { exact: true })).toBeVisible();
+    await expect(page.getByText("The final answer", { exact: true })).toBeVisible();
+    await expect(timelines.nth(1)).toContainText("1 failed, cancelled or unavailable");
+    const trigger = timelines.first().getByRole("button", { name: "2 tool calls", exact: true });
+    await trigger.focus();
+    await page.keyboard.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
+    await expect(timelines.first().locator('[data-durable-id="2:0"]')).toBeVisible();
+    await expect(timelines.first().locator('[data-durable-id="3:0"]')).toBeVisible();
+    await timelines
+      .first()
+      .getByRole("button", { name: /Used tool: read/ })
+      .first()
+      .click();
+    await expect(timelines.first().getByText("Output 2", { exact: true })).toBeVisible();
+    const viewport = page.locator('[data-slot="aui_thread-viewport"]');
+    expect(await viewport.evaluate((el) => el.scrollWidth - el.clientWidth)).toBeLessThan(2);
+    await trigger.click();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+}
+
+for (const action of ["Enter", "Meta+Enter", "button"] as const) {
+  test(`busy composer ${action} admits steering or queue without a routine banner`, async ({
+    page,
+  }) => {
+    await connect(page, { ...empty, busy: true, controls });
+    const requests: unknown[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/chats/1/input", async (route) => {
+      requests.push(route.request().postDataJSON());
+      await gate;
+      await route.fulfill({ status: 202, json: { id: "busy-shortcut" } });
+    });
+    await page.goto("/");
+    const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+    await draft.fill("Change direction");
+    if (action === "button")
+      await page.getByRole("button", { name: "Steer message", exact: true }).click();
+    else await draft.press(action);
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0]).toMatchObject({
+      text: "Change direction",
+      mode: action === "Meta+Enter" ? "followUp" : "steer",
+    });
+    await expect(draft).toHaveValue("Change direction");
+    await draft.press("Enter");
+    expect(requests).toHaveLength(1);
+    await draft.fill("Keep this newer draft");
+    release();
+    await expect(page.getByRole("button", { name: "Steer message", exact: true })).toBeEnabled();
+    await expect(draft).toHaveValue("Keep this newer draft");
+    await expect(page.getByText(/(?:Steering|Follow-up) input admitted\./)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Stop generating", exact: true })).toBeVisible();
+  });
+}
+
+test("busy composer keeps Shift Enter and IME as editing, and clears only confirmed unchanged input", async ({
+  page,
+}) => {
+  await connect(page, { ...empty, busy: true, controls });
+  const requests: unknown[] = [];
+  await page.route("**/api/chats/1/input", async (route) => {
+    requests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { id: "busy-ime" } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("First line");
+  await draft.press("Shift+Enter");
+  await draft.pressSequentially("second line");
+  await draft.dispatchEvent("compositionstart");
+  await draft.press("Enter");
+  expect(requests).toHaveLength(0);
+  await draft.dispatchEvent("compositionend");
+  await draft.press("Enter");
+  await expect.poll(() => requests.length).toBe(1);
+  expect(requests[0]).toMatchObject({ mode: "steer", text: "First line\nsecond line" });
+  await expect(draft).toHaveValue("");
+});
+
+for (const mode of ["native", "missing", "rejected", "throws"] as const) {
+  test(`code-block copy writes exact text with ${mode} clipboard access`, async ({ page }) => {
+    const code = "  first line\n\tsecond line\n";
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await connect(page, {
+      ...empty,
+      controls,
+      messages: [
+        { id: "1:0", role: "assistant", text: `\`\`\`text\n${code}\`\`\``, interrupted: false },
+      ],
+    });
+    await page.goto("/");
+    await page.evaluate((mode) => {
+      const clipboard = navigator.clipboard;
+      Object.defineProperty(window, "readTestClipboard", { value: () => clipboard.readText() });
+      if (mode === "native") return;
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value:
+          mode === "missing"
+            ? undefined
+            : {
+                writeText:
+                  mode === "throws"
+                    ? () => {
+                        throw new Error("Clipboard blocked");
+                      }
+                    : () => Promise.reject(new Error("Clipboard blocked")),
+              },
+      });
+    }, mode);
+    const header = page.locator(".aui-code-header-root");
+    await header.getByRole("button", { name: "Copy", exact: true }).click();
+    await expect(header.getByRole("button", { name: "Copied", exact: true })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const read = Reflect.get(window, "readTestClipboard") as () => Promise<string>;
+          return read();
+        }),
+      )
+      .toBe(code);
+    await expect(page.locator("textarea[readonly]")).toHaveCount(0);
+    await expect(header.getByRole("status")).toHaveText("Copied");
+  });
+}
+
+test("copy failure is visible, never claims success, and permits a successful retry", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    controls,
+    messages: [
+      { id: "1:0", role: "assistant", text: "```text\nCopy this path\n```", interrupted: false },
+    ],
+  });
+  await page.goto("/");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    Object.defineProperty(document, "execCommand", { configurable: true, value: () => false });
+  });
+  const header = page.locator(".aui-code-header-root");
+  await header.getByRole("button", { name: "Copy", exact: true }).click();
+  await expect(header.getByRole("status")).toHaveText(
+    "Could not copy. Select the text and copy it manually.",
+  );
+  await expect(header.getByRole("status")).toBeVisible();
+  await expect(header.getByRole("button", { name: "Copied", exact: true })).toHaveCount(0);
+  await expect(page.locator("textarea[readonly]")).toHaveCount(0);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: (text: string) => {
+          document.body.dataset["copied"] = text;
+          return Promise.resolve();
+        },
+      },
+    });
+  });
+  await header.getByRole("button", { name: "Copy", exact: true }).click();
+  await expect(header.getByRole("status")).toHaveText("Copied");
+  await expect(page.locator("body")).toHaveAttribute("data-copied", "Copy this path\n");
+});
+
+test("clipboard fallback restores composer text, focus, selection and viewport scroll", async ({
+  page,
+}) => {
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await connect(page, {
+    ...empty,
+    controls,
+    messages: [{ id: "1:0", role: "assistant", text: "```text\nSample\n```", interrupted: false }],
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep this draft unchanged");
+  await draft.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(2, 10, "backward"));
+  const viewport = page.locator('[data-slot="aui_thread-viewport"]');
+  const top = await viewport.evaluate((el) => el.scrollTop);
+  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { value: undefined }));
+  // Programmatic click keeps focus in the composer, exercising restoration.
+  await page
+    .locator(".aui-code-header-root button")
+    .evaluate((el: HTMLButtonElement) => el.click());
+  await expect(page.locator(".aui-code-header-root").getByRole("status")).toHaveText("Copied");
+  await expect(draft).toBeFocused();
+  await expect(draft).toHaveValue("Keep this draft unchanged");
+  expect(
+    await draft.evaluate((el: HTMLTextAreaElement) => [
+      el.selectionStart,
+      el.selectionEnd,
+      el.selectionDirection,
+    ]),
+  ).toEqual([2, 10, "backward"]);
+  expect(await viewport.evaluate((el) => el.scrollTop)).toBe(top);
+});
+
+for (const mode of ["steer", "followUp"] as const) {
+  test(`withdrawing ${mode} restores its exact text after confirmation without overwriting newer draft edits`, async ({
+    page,
+  }) => {
+    const text = "Bring this back\n  keep indentation";
+    const state: ChatState = {
+      ...empty,
+      busy: true,
+      controls: { ...controls, queue: [{ id: "123", mode, text }] },
+    };
+    await connect(page, state);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/chats/1/withdraw", async (route) => {
+      await gate;
+      await route.fulfill({ json: { status: "aborted" } });
+    });
+    await page.goto("/");
+    const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+    await draft.fill("Existing draft");
+    await page.getByRole("button", { name: /Withdraw pending message:/ }).click();
+    await expect(draft).toHaveValue("Existing draft");
+    await draft.fill("Newer draft typed during withdrawal");
+    // Queue observation may disappear before the POST acknowledgement arrives.
+    await update(page, { ...state, controls });
+    release();
+    await expect(draft).toHaveValue(`Newer draft typed during withdrawal\n\n${text}`);
+  });
+}
+
+for (const status of ["aborted", "already_placed", "settled", "not_found"] as const) {
+  test(`withdrawal ${status} restores only confirmed cancelled input`, async ({ page }) => {
+    await connect(page, {
+      ...empty,
+      busy: true,
+      controls: { ...controls, queue: [{ id: "123", mode: "steer", text: "Recover me" }] },
+    });
+    await page.route("**/api/chats/1/withdraw", (route) => route.fulfill({ json: { status } }));
+    await page.goto("/");
+    const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+    await page.getByRole("button", { name: /Withdraw pending message:/ }).click();
+    await expect(page.getByRole("note")).toBeVisible();
+    await expect(draft).toHaveValue(status === "aborted" ? "Recover me" : "");
+    if (status === "aborted") {
+      // A stale queue observation and repeated success must not duplicate recovery.
+      await page.getByRole("button", { name: /Withdraw pending message:/ }).click();
+      await expect(draft).toHaveValue("Recover me");
+    }
+  });
+}
+
+test("uncertain withdrawal retains its recovery callback through explicit retry", async ({
+  page,
+}) => {
+  await connect(page, {
+    ...empty,
+    busy: true,
+    controls: {
+      ...controls,
+      queue: [{ id: "123", mode: "followUp", text: "Keep this queued text" }],
+    },
+  });
+  const bodies: unknown[] = [];
+  await page.route("**/api/chats/1/withdraw", (route) => {
+    bodies.push(route.request().postDataJSON());
+    return bodies.length === 1
+      ? route.fulfill({ status: 500, json: { error: "Withdrawal unavailable" } })
+      : route.fulfill({ json: { status: "aborted" } });
+  });
+  await page.goto("/");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await page.getByRole("button", { name: /Withdraw pending message:/ }).click();
+  await expect(page.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+  await expect(draft).toHaveValue("");
+  await draft.fill("Draft during recovery");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(draft).toHaveValue("Draft during recovery\n\nKeep this queued text");
+  expect(bodies).toEqual([{ id: "123" }, { id: "123" }]);
+});
+
+function indexedThread(id: number, sourceEntryId: number) {
+  return {
+    id: String(id),
+    parentId: "1",
+    sourceEntryId: String(sourceEntryId),
+    slug: `${id}-indexed-thread`,
+    title: `Indexed thread ${id}`,
+    replyCount: 2,
+    replyCountCapped: false,
+    activity: "idle" as const,
+    source: {
+      entryId: String(sourceEntryId),
+      role: "assistant" as const,
+      text: `Source ${sourceEntryId} from the full thread index`,
+      truncated: false,
+    },
+  };
+}
+
+for (const width of [1100, 375]) {
+  test(`thread map includes every indexed thread outside loaded history (${width}px)`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 850 });
+    const initial = historyState(101, 110, 1);
+    const threads = [indexedThread(501, 2), indexedThread(502, 4), indexedThread(503, 106)];
+    await connect(page, initial);
+    let mutations = 0;
+    let historyLoads = 0;
+    await page.route("**/api/chats/1/history", (route) => {
+      historyLoads++;
+      return route.abort();
+    });
+    await page.route("**/api/chats/1/threads", (route) => {
+      if (route.request().method() !== "GET") mutations++;
+      return route.fulfill({ json: { threads } });
+    });
+    await page.goto("/");
+    const main = page.getByRole("region", { name: "Main chat: Original chat" });
+    const draft = main.getByRole("textbox", { name: "Message input", exact: true });
+    await draft.fill("Keep main navigation draft");
+    const map = main.getByRole("navigation", { name: "Conversation threads" });
+    await expect(map).toBeVisible();
+    await expect(map.locator('[data-slot="conversation-map-tick"]')).toHaveCount(3);
+    await expect(page.locator('[data-durable-id="2:0"]')).toHaveCount(0);
+    await update(page, { ...initial, messages: initial.messages.slice(-2) });
+    await expect(map.locator('[data-slot="conversation-map-tick"]')).toHaveCount(3);
+    await map.getByRole("button", { name: "Indexed thread 501", exact: true }).click();
+    await expect(page).toHaveURL(/\/threads\/501-indexed-thread$/);
+    expect(historyLoads).toBe(0);
+    expect(mutations).toBe(0);
+    if (width > 768) {
+      await expect(
+        map.getByRole("button", { name: "Indexed thread 501", exact: true }),
+      ).toHaveAttribute("aria-current", "true");
+      await expect(draft).toHaveValue("Keep main navigation draft");
+    }
+  });
+}
+
+test("thread map survives failed index refreshes and a large index stays keyboard-reachable", async ({
+  page,
+}) => {
+  await connect(page, historyState(101, 102, 1));
+  let reads = 0;
+  const threads = Array.from({ length: 120 }, (_, i) => indexedThread(501 + i, 1000 + i));
+  await page.route("**/api/chats/1/threads", (route) => {
+    reads++;
+    return reads === 1
+      ? route.fulfill({ json: { threads } })
+      : route.fulfill({ status: 503, json: {} });
+  });
+  await page.goto("/");
+  const map = page.getByRole("navigation", { name: "Conversation threads" });
+  await expect(map.locator('[data-slot="conversation-map-tick"]')).toHaveCount(120);
+  const first = map.getByRole("button", { name: "Indexed thread 501", exact: true });
+  await first.focus();
+  await first.press("End");
+  const last = map.getByRole("button", { name: "Indexed thread 620", exact: true });
+  await expect(last).toBeFocused();
+  await expect.poll(() => map.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => reads).toBeGreaterThan(1);
+  await expect(map.locator('[data-slot="conversation-map-tick"]')).toHaveCount(120);
+});
+
+test("thread-map outlines and expanded ticks fit inside the scroll rail", async ({ page }) => {
+  await connect(page, historyState(101, 102, 1));
+  await page.route("**/api/chats/1/threads", (route) =>
+    route.fulfill({ json: { threads: [indexedThread(501, 2), indexedThread(502, 4)] } }),
+  );
+  await page.goto("/");
+  const map = page.getByRole("navigation", { name: "Conversation threads" });
+  const tick = map.getByRole("button", { name: "Indexed thread 501", exact: true });
+  const inset = () =>
+    map.evaluate((el) => {
+      const rail = el.getBoundingClientRect();
+      const marker = el
+        .querySelector('[data-slot="conversation-map-tick"] > span')!
+        .getBoundingClientRect();
+      return Math.min(marker.left - rail.left, rail.right - marker.right);
+    });
+  // The ring plus its offset paints two pixels outside the marker box.
+  await expect.poll(inset).toBeGreaterThanOrEqual(2);
+  await tick.hover();
+  await expect.poll(inset).toBeGreaterThanOrEqual(2);
+  await tick.focus();
+  await expect.poll(inset).toBeGreaterThanOrEqual(2);
+});
+
+test("resumed thread history fills reply gaps rather than loading hidden inherited parent pages", async ({
+  page,
+}) => {
+  const initial = historyState(1, 10, 1, true, [{ after: 10, upTo: 100 }]);
+  initial.messages.push(...historyState(100, 110, 1).messages);
+  await connect(page, initial);
+  const requests: unknown[] = [];
+  await page.route("**/api/chats/1/history", async (route) => {
+    const request = HistoryLoadSchema.parse(route.request().postDataJSON());
+    requests.push(request);
+    const next = historyState(1, 110, 2, true);
+    next.history!.view = request.view;
+    await route.fulfill({ json: next });
+  });
+  await page.goto("/tests/fixtures/thread-history.html");
+  const draft = page.getByRole("textbox", { name: "Message input", exact: true });
+  await draft.fill("Keep reply draft");
+  await expect(page.locator("[data-durable-id]")).toHaveCount(11);
+  await expect(page.locator('[data-slot="error-state"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Load earlier messages", exact: true }).click();
+  await expect(page.locator("[data-durable-id]")).toHaveCount(100);
+  expect(requests).toHaveLength(1);
+  expect(requests[0]).toMatchObject({ gap: { after: 10, upTo: 100 } });
+  await expect(page.locator('[data-durable-id="1:0"]')).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Load earlier messages", exact: true }),
+  ).toHaveCount(0);
+  await expect(draft).toHaveValue("Keep reply draft");
+});
+
+test("switching indexed threads changes the rendered conversation and focuses its own composer", async ({
+  page,
+}) => {
+  const threads = [indexedThread(501, 2), indexedThread(502, 4)];
+  await page.route("**/api/chats/1/threads", (route) => route.fulfill({ json: { threads } }));
+  const states = {
+    "1": historyState(1, 6, 1, false),
+    "501": historyState(101, 110, 10, false),
+    "502": historyState(201, 210, 1, false),
+  };
+  await page.addInitScript((raw: string) => {
+    const states = JSON.parse(raw) as Record<string, ChatState>;
+    class ThreadEventSource extends EventTarget {
+      onerror: (() => void) | null = null;
+      constructor(raw: string) {
+        super();
+        const url = new URL(raw, location.href);
+        const id = url.pathname.split("/")[3] ?? "1";
+        const state = structuredClone(states[id]!);
+        state.conversationId = Number(id);
+        state.history!.view = url.searchParams.get("view")!;
+        queueMicrotask(() =>
+          this.dispatchEvent(new MessageEvent("state", { data: JSON.stringify(state) })),
+        );
+      }
+      close() {}
+    }
+    Object.defineProperty(window, "EventSource", { value: ThreadEventSource });
+  }, JSON.stringify(states));
+  await page.goto("/");
+  const map = page.getByRole("navigation", { name: "Conversation threads" });
+  const panel = page.getByRole("complementary", { name: "Message thread", exact: true });
+  await map.getByRole("button", { name: "Indexed thread 501", exact: true }).click();
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(1);
+  const firstDraft = panel.getByRole("textbox", { name: "Message input", exact: true });
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/chats/501/draft") && response.request().method() !== "GET",
+  );
+  await firstDraft.fill("First thread's draft");
+  await saved;
+  await map.getByRole("button", { name: "Indexed thread 502", exact: true }).click();
+  await expect(page).toHaveURL(/\/threads\/502-indexed-thread$/);
+  await expect(panel.locator('[data-slot="thread-source"]')).toContainText("Source 4");
+  await expect(panel.locator('[data-durable-id="201:0"]')).toHaveCount(1);
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(0);
+  const secondDraft = panel.getByRole("textbox", { name: "Message input", exact: true });
+  await expect(secondDraft).toHaveValue("");
+  await expect(secondDraft).toBeFocused();
+  await expect(panel.getByRole("button", { name: "Close thread", exact: true })).not.toBeFocused();
+  const source = page
+    .getByRole("region", { name: "Main chat: Original chat" })
+    .locator('[data-durable-id="2:0"]');
+  await source.hover();
+  await source.getByRole("button", { name: "Open thread · 2 replies", exact: true }).click();
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(1);
+  await expect(panel.locator('[data-durable-id="201:0"]')).toHaveCount(0);
+  await expect(firstDraft).toHaveValue("First thread's draft");
+  await expect(firstDraft).toBeFocused();
+  await page.goBack();
+  await expect(panel.locator('[data-durable-id="201:0"]')).toHaveCount(1);
+  await expect(secondDraft).toHaveValue("");
+  await expect(secondDraft).toBeFocused();
+  await page.goForward();
+  await expect(panel.locator('[data-durable-id="101:0"]')).toHaveCount(1);
+  await expect(firstDraft).toHaveValue("First thread's draft");
+  await expect(firstDraft).toBeFocused();
 });

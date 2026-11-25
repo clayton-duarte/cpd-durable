@@ -66,14 +66,14 @@ export interface ChatProps {
   onStop?: () => Promise<void>;
   onContinue?: () => Promise<boolean>;
   onReset?: (handoff: string) => Promise<boolean>;
-  onWithdraw?: (id: string) => Promise<void>;
+  onWithdraw?: (id: string, onWithdrawn?: () => void) => Promise<void>;
 }
 
 type ChatHost = ChatProps & {
   available: boolean;
   localError: string | null;
   clearLocalError: () => void;
-  submitDraft: (mode: SendMode) => Promise<boolean>;
+  submitDraft: (mode: SendMode, nativeInput?: boolean) => Promise<boolean>;
   readDraft: () => string;
   draftVersion: () => number;
   applyPrompt: (version: number, text: string, mode: "append" | "replace") => boolean;
