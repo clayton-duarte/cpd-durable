@@ -22,14 +22,6 @@ describe("draft attempt recovery list", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
-      expect(
-        (
-          await json("/draft", "PUT", {
-            expectedRevision: 0,
-            content: { text: "  test  ", images: [] },
-          })
-        ).status,
-      ).toBe(200);
       const attempts = Array.from({ length: 23 }, () => ({
         requestId: crypto.randomUUID(),
         draftRevision: 1,
@@ -70,14 +62,6 @@ describe("draft attempt recovery list", () => {
       );
       expect(page.attempts.every((entry) => entry.admission === "unknown")).toBe(true);
       // A new attempt inserted between page reads must not shift the anchored older page.
-      expect(
-        (
-          await json("/draft", "PUT", {
-            expectedRevision: 2,
-            content: { text: "new draft", images: [] },
-          })
-        ).status,
-      ).toBe(200);
       expect(
         (
           await json("/draft/attempt", "POST", {

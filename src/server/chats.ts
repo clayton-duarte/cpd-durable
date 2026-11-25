@@ -39,7 +39,6 @@ import { inspectParentTangents, TangentsDoc, type TangentHooks } from "./tangent
 import type { ThreadHooks } from "./threads.ts";
 import type { ResolvedTangentModel } from "../shared/tangents.ts";
 import { helperHasUnsettled, retierWorkers } from "./helpers.ts";
-import { DraftDoc } from "./drafts.ts";
 import type { DraftAdmission } from "../shared/drafts.ts";
 import { DraftAttemptConflict, readDraftAttempt } from "./draft-attempts.ts";
 import { draftInputText } from "../shared/draft-intent.ts";
@@ -673,13 +672,6 @@ export async function openChats(
             if (modelKey(current) !== options.expectedModelKey)
               throw new ChatLifecycleError("Model changed. Refresh and try again.", 409);
           }
-          const prior = draft.requestId
-            ? await tx.submissionByRequest(conversation.id, draft.requestId)
-            : undefined;
-          const savedDraft =
-            attempt && options?.draft && !prior && draft.type === "input"
-              ? await tx.doc(DraftDoc, conversation.id)
-              : undefined;
           const record = draft.requestId
             ? await checkAdmissionRequest(
                 tx,
@@ -690,20 +682,6 @@ export async function openChats(
             : undefined;
           const submission = await conversation.submit(tx, draft);
           record?.();
-          let clearedDraftRevision: number | undefined;
-          if (
-            savedDraft &&
-            options?.draft &&
-            savedDraft.revision === options.draft.revision &&
-            savedDraft.revision < Number.MAX_SAFE_INTEGER &&
-            savedDraft.content.text === options.draft.text &&
-            JSON.stringify(savedDraft.content.images.map((image) => image.id)) ===
-              JSON.stringify(options.draft.images)
-          ) {
-            savedDraft.content = { text: "", images: [] };
-            savedDraft.revision++;
-            clearedDraftRevision = savedDraft.revision;
-          }
           const title =
             options?.title ??
             (draft.type === "input" && typeof draft.content === "string" ? draft.content : "");
@@ -712,10 +690,7 @@ export async function openChats(
             item.named = true;
             ensureChatSlug(item);
           }
-          return {
-            id: submission,
-            ...(clearedDraftRevision === undefined ? {} : { clearedDraftRevision }),
-          };
+          return { id: submission };
         }, BACKGROUND_CONTEXT),
     };
   }

@@ -31,14 +31,6 @@ it("keeps shell and draft-attempt request identities distinct in both directions
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     });
-  expect(
-    (
-      await json("/draft", "PUT", {
-        expectedRevision: 0,
-        content: { text: "draft", images: [] },
-      })
-    ).status,
-  ).toBe(200);
   const requestId = crypto.randomUUID();
   const attempt = { requestId, draftRevision: 1, text: "draft", images: [], mode: "reject" };
   expect((await json("/draft/attempt", "POST", attempt)).status).toBe(200);

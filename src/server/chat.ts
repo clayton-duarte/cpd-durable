@@ -243,12 +243,7 @@ export async function openChat(
           title,
           ...(savedDraft ? { draft: savedDraft } : {}),
         });
-        return {
-          id: String(result.id),
-          ...(result.clearedDraftRevision === undefined
-            ? {}
-            : { clearedDraftRevision: result.clearedDraftRevision }),
-        };
+        return { id: String(result.id) };
       },
     });
     harness.resume();

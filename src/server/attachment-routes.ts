@@ -55,7 +55,7 @@ export type AttachmentBackendOptions = {
     expectedModelKey: string | null,
     digest: string,
     savedDraft?: DraftAdmission,
-  ): Promise<{ id: string; clearedDraftRevision?: number }>;
+  ): Promise<{ id: string }>;
 };
 const RequestSchema = z.strictObject({
   text: z.string(),

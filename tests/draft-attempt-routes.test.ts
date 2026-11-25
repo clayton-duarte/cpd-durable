@@ -5,12 +5,38 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { createApp } from "../src/server/app.ts";
 import { openChat } from "../src/server/chat.ts";
-import { DraftDoc } from "../src/server/drafts.ts";
 import { imageRequestDigest } from "../src/server/attachment-catalog.ts";
 import { testModels } from "./models.ts";
 import { draftInputText } from "../src/shared/draft-intent.ts";
 
 describe("draft attempt HTTP integration", () => {
+  it("does not expose an endpoint to read or autosave composer drafts", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "no-server-drafts-"));
+    const provider = testModels();
+    const host = await openChat(dir, provider.models, dir);
+    try {
+      const app = createApp(host);
+      const url = `http://localhost:3000/api/chats/${host.conversation.id}/draft`;
+      expect((await app.request(url)).status).toBe(404);
+      expect(
+        (
+          await app.request(url, {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              expectedRevision: 0,
+              content: { text: "not sent", images: [] },
+            }),
+          })
+        ).status,
+      ).toBe(404);
+      expect(provider.calls).toHaveLength(0);
+    } finally {
+      await host.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("binds tangent intent to the original draft and admits its deterministic input once", async () => {
     const dir = await mkdtemp(join(tmpdir(), "attempt-tangent-"));
     const provider = testModels();
@@ -27,10 +53,6 @@ describe("draft attempt HTTP integration", () => {
       const text = "/tangent investigate";
       const intent = { kind: "tangent-handoff-request", version: 1, command: "tangent" } as const;
       const requestId = crypto.randomUUID();
-      expect(
-        (await send("/draft", "PUT", { expectedRevision: 0, content: { text, images: [] } }))
-          .status,
-      ).toBe(200);
       const attempt = { requestId, draftRevision: 1, text, images: [], mode: "reject", intent };
       expect((await send("/draft/attempt", "POST", attempt)).status).toBe(200);
       expect(
@@ -49,8 +71,12 @@ describe("draft attempt HTTP integration", () => {
       expect((await send("/input", "POST", { ...input, text: "arbitrary" })).status).toBe(409);
       const admitted = await send("/input", "POST", input);
       expect(admitted.status).toBe(202);
-      expect(await admitted.json()).toMatchObject({ clearedDraftRevision: 2 });
-      expect((await send("/input", "POST", input)).status).toBe(202);
+      const receipt = (await admitted.json()) as { id: string };
+      expect(Object.keys(receipt)).toEqual(["id"]);
+      expect(receipt.id).toMatch(/^[1-9]\d*$/);
+      const retried = await send("/input", "POST", input);
+      expect(retried.status).toBe(202);
+      expect(await retried.json()).toEqual(receipt);
       await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
       provider.calls[0]!.finish("done");
       await host.conversation.waitForIdle(BACKGROUND_CONTEXT);
@@ -74,10 +100,6 @@ describe("draft attempt HTTP integration", () => {
         });
       const text = "\\!literal";
       const requestId = crypto.randomUUID();
-      expect(
-        (await post("/draft", "PUT", { expectedRevision: 0, content: { text, images: [] } }))
-          .status,
-      ).toBe(200);
       expect(
         (
           await post("/draft/attempt", "POST", {
@@ -106,7 +128,7 @@ describe("draft attempt HTTP integration", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
-  it("does not clear a newer draft on the original first admission", async () => {
+  it("admits a pinned send without reading or clearing any composer draft", async () => {
     const dir = await mkdtemp(join(tmpdir(), "attempt-late-"));
     const provider = testModels();
     const host = await openChat(dir, provider.models, dir);
@@ -119,14 +141,6 @@ describe("draft attempt HTTP integration", () => {
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
-      expect(
-        (
-          await send("/draft", "PUT", {
-            expectedRevision: 0,
-            content: { text: "original", images: [] },
-          })
-        ).status,
-      ).toBe(200);
       const attempt = {
         requestId: crypto.randomUUID(),
         draftRevision: 1,
@@ -135,14 +149,6 @@ describe("draft attempt HTTP integration", () => {
         mode: "reject",
       };
       expect((await send("/draft/attempt", "POST", attempt)).status).toBe(200);
-      expect(
-        (
-          await send("/draft", "PUT", {
-            expectedRevision: 1,
-            content: { text: "newer", images: [] },
-          })
-        ).status,
-      ).toBe(200);
       const input = {
         requestId: attempt.requestId,
         text: "original",
@@ -161,10 +167,6 @@ describe("draft attempt HTTP integration", () => {
       const admitted = await send("/input", "POST", input);
       expect(admitted.status).toBe(202);
       expect(await admitted.json()).not.toHaveProperty("clearedDraftRevision");
-      expect(await (await app.request(base + "/draft")).json()).toEqual({
-        revision: 2,
-        content: { text: "newer", images: [] },
-      });
       await vi.waitFor(() => expect(provider.calls).toHaveLength(1));
       provider.calls[0]!.finish("done");
       await host.conversation.waitForIdle(BACKGROUND_CONTEXT);
@@ -174,7 +176,7 @@ describe("draft attempt HTTP integration", () => {
     }
   });
 
-  it("reopens unknown, admits once, and preserves a newer draft across retries", async () => {
+  it("reopens unknown, admits once, and rejects a different retry payload", async () => {
     const dir = await mkdtemp(join(tmpdir(), "attempt-http-"));
     const provider = testModels();
     let host = await openChat(dir, provider.models, dir);
@@ -190,18 +192,13 @@ describe("draft attempt HTTP integration", () => {
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         });
-      const draft = { expectedRevision: 0, content: { text: "  hello  ", images: [] } };
       const attempt = {
         requestId: crypto.randomUUID(),
         draftRevision: 1,
-        text: draft.content.text,
+        text: "  hello  ",
         images: [],
         mode: "reject",
       };
-      expect((await request("/draft", "PUT", draft)).status).toBe(200);
-      expect(
-        (await request("/draft/attempt", "POST", { ...attempt, draftRevision: 0 })).status,
-      ).toBe(409);
       expect((await request("/draft/attempt", "POST", { ...attempt, extra: "x" })).status).toBe(
         400,
       );
@@ -214,6 +211,9 @@ describe("draft attempt HTTP integration", () => {
           .status,
       ).toBe(403);
       expect((await request("/draft/attempt", "POST", attempt)).status).toBe(200);
+      expect(
+        (await request("/draft/attempt", "POST", { ...attempt, draftRevision: 0 })).status,
+      ).toBe(409);
       await host.close();
       host = await openChat(dir, provider.models, dir);
       app = createApp(host);
@@ -249,14 +249,6 @@ describe("draft attempt HTTP integration", () => {
         admission: "admitted",
         submissionId: result.id,
       });
-      expect(
-        (
-          await request("/draft", "PUT", {
-            expectedRevision: 2,
-            content: { text: "newer", images: [] },
-          })
-        ).status,
-      ).toBe(200);
       expect((await request("/draft/attempt", "POST", attempt)).status).toBe(200);
       expect(
         (await request("/draft/attempt", "POST", { ...attempt, text: "changed" })).status,
@@ -271,10 +263,6 @@ describe("draft attempt HTTP integration", () => {
           })
         ).status,
       ).toBe(409);
-      expect(await (await request("/draft")).json()).toEqual({
-        revision: 3,
-        content: { text: "newer", images: [] },
-      });
       expect(provider.calls).toHaveLength(1);
       provider.calls[0]!.finish("done");
       await host.conversation.waitForIdle(BACKGROUND_CONTEXT);
@@ -309,11 +297,6 @@ describe("draft attempt HTTP integration", () => {
         body: png,
       });
       const image = (await upload.json()) as { id: string; mimeType: string; size: number };
-      const content = {
-        text: "  ",
-        images: [{ id: image.id, mimeType: image.mimeType, size: image.size, name: "a.png" }],
-      };
-      expect((await json(id, "/draft", "PUT", { expectedRevision: 0, content })).status).toBe(200);
       const attempt = {
         requestId: crypto.randomUUID(),
         draftRevision: 1,
@@ -322,13 +305,7 @@ describe("draft attempt HTTP integration", () => {
         mode: "reject",
       };
       const other = await host.chats.create(crypto.randomUUID());
-      const scope = (await host.chats.resolve(other.id))!;
-      // Simulate a stale draft reference: admission must check the transaction's pending catalog.
-      await scope.conversation.commit(async (tx) => {
-        const draft = await tx.doc(DraftDoc, scope.conversation.id);
-        draft.revision = 1;
-        draft.content = content as typeof draft.content;
-      }, BACKGROUND_CONTEXT);
+      // The send record cannot reference a different chat's pending upload.
       expect((await json(other.id, "/draft/attempt", "POST", attempt)).status).toBe(409);
       expect((await json(id, "/draft/attempt", "POST", attempt)).status).toBe(200);
       const input = {
