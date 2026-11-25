@@ -941,8 +941,7 @@ test("production route keeps native chats and drafts through tangent navigation"
     .getByRole("option", { name: /test\/cheap/ })
     .last()
     .click();
-  await page.getByRole("button", { name: "Confirm thinking off" }).click();
-  await page.getByRole("button", { name: "Save model tiers" }).click();
+  await page.getByRole("button", { name: "Apply models to all chats" }).click();
   await expect.poll(() => policyRevision).toBe(2);
   await page.keyboard.press("Escape");
   await expect(unstartedPane.getByRole("heading", { name: "Idle child · Model 3" })).toBeVisible();

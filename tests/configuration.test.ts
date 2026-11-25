@@ -44,7 +44,7 @@ describe("durable model configuration", () => {
     const next = {
       provider: choice.provider,
       modelId: choice.modelId,
-      thinkingLevel: choice.thinkingLevels.at(-1)!,
+      thinkingLevel: choice.thinkingLevels.filter((level) => level !== "max").at(-1)!,
     };
     const second = await chat.chats.create(crypto.randomUUID());
     expect((await save(initial.selection, next)).status).toBe(200);
@@ -137,5 +137,38 @@ describe("durable model configuration", () => {
     models.setProvider(opencodeGoProvider());
     chat = await openChat(directory, models, directory);
     expect((await read()).choices).toEqual([]);
+  });
+  it("advertises Max for display but rejects it even when the provider supports it", async () => {
+    const model = provider.models.getModels()[0]!;
+    const spy = vi
+      .spyOn(provider.models, "getAvailable")
+      .mockResolvedValue([{ ...model, reasoning: true, thinkingLevelMap: { max: "max" } }]);
+    try {
+      const { selection, choices } = await read();
+      const choice = choices[0]!;
+      expect(choice.thinkingLevels).toContain("max");
+      expect(
+        (
+          await save(selection, {
+            provider: choice.provider,
+            modelId: choice.modelId,
+            thinkingLevel: "max",
+          })
+        ).status,
+      ).toBe(409);
+      const { revision, assignments } = await chat.modelPolicy.read();
+      await expect(
+        chat.modelPolicy.save({
+          expected: { revision, assignments },
+          assignments: {
+            ...assignments,
+            main: { provider: choice.provider, modelId: choice.modelId, thinkingLevel: "max" },
+          },
+        }),
+      ).rejects.toThrow("unavailable");
+      expect(provider.calls).toHaveLength(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

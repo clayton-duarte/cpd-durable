@@ -14,6 +14,7 @@ import {
   type Tx,
 } from "@earendil-works/pi-durable";
 import { admissionDigest, checkAdmissionRequest } from "./attachment-catalog.ts";
+import { modelChange } from "./configuration.ts";
 import { slugaWithId } from "../shared/slugs.ts";
 import { quotedReply } from "../shared/quote.ts";
 import { ResolvedTangentModelSchema, type ResolvedTangentModel } from "../shared/tangents.ts";
@@ -97,7 +98,7 @@ export function entrySource(entry: EntryRecord, entryId: EntryId): ThreadSource 
   });
 }
 
-async function sourceOf(tx: Tx, parentId: ConversationId, entryId: EntryId) {
+export async function threadSource(tx: Tx, parentId: ConversationId, entryId: EntryId) {
   const page = await tx.scanEntries(
     { conversationId: parentId, minEntryId: entryId, maxEntryId: entryId },
     1,
@@ -107,7 +108,7 @@ async function sourceOf(tx: Tx, parentId: ConversationId, entryId: EntryId) {
   return entrySource(entry, entryId);
 }
 
-async function activityOf(tx: Tx, id: ConversationId) {
+export async function threadActivity(tx: Tx, id: ConversationId) {
   const live = await tx.doc(LiveDoc, id);
   const inbox = await tx.doc(InboxDoc, id);
   const failure = live.runFailure?.reason;
@@ -145,8 +146,8 @@ async function viewOf(tx: Tx, item: ThreadRecord) {
     title: item.title,
     replyCount: replies.count,
     replyCountCapped: replies.capped,
-    activity: await activityOf(tx, item.id as ConversationId),
-    source: await sourceOf(tx, item.parentId as ConversationId, item.sourceEntryId as EntryId),
+    activity: await threadActivity(tx, item.id as ConversationId),
+    source: await threadSource(tx, item.parentId as ConversationId, item.sourceEntryId as EntryId),
   };
 }
 
@@ -175,7 +176,7 @@ export async function readThreadSource(
 ) {
   return driver.commit(async (tx) => {
     await hooks.assertMainReadable(tx, parentId);
-    return sourceOf(tx, parentId, entryId);
+    return threadSource(tx, parentId, entryId);
   }, context);
 }
 
@@ -215,7 +216,7 @@ export async function createMessageThread(
       (item) => item.parentId === parentId && item.sourceEntryId === at,
     );
     if (existing) throw new ThreadExists(existing.id);
-    await sourceOf(tx, parentId, at);
+    await threadSource(tx, parentId, at);
     const sourceAgent = await tx.doc(AgentDoc, parentId);
     await hooks.assertResolvedModel(tx, resolved);
     const model = resolved.selection;
@@ -226,8 +227,7 @@ export async function createMessageThread(
       ownership: { kind: "ownerless" },
     });
     await configure(tx, forked.id, {
-      model: { provider: model.provider, modelId: model.modelId },
-      thinkingLevel: model.thinkingLevel,
+      ...modelChange(model),
       cwd,
     });
     const title = request.text.replace(/\s+/g, " ").slice(0, 80);

@@ -19,7 +19,7 @@ pnpm install --frozen-lockfile
 cp .env.example .env
 ```
 
-Set `OPENCODE_API_KEY` in your local `.env` or inject it into the server environment from your secret manager, then:
+CPD Durable uses Pi’s model runtime and shares its provider credentials and model configuration (`~/.pi/agent` by default, or `PI_CODING_AGENT_DIR`). Use `pi` → `/login` to connect a subscription, or configure your provider as you normally would in Pi. If you’re already signed in there, no separate CPD login is needed. An OpenCode Go key (`OPENCODE_API_KEY`) is optional and can still be supplied to the server. Then:
 
 ```sh
 pnpm dev
@@ -56,7 +56,7 @@ Close the SSH process when finished. A tunnel disconnect only detaches browser o
 
 ## Chat capabilities
 
-Use the **Chat settings** gear in the header. **Model defaults** assigns main, tangent and worker model/thinking defaults from the server's authenticated catalog. A genuinely new main chat uses the configured main assignment; until configured it uses the host default, OpenCode Go's `deepseek-v4.1-flash`. Reusing an existing empty chat does not reconfigure it. Tangents and workers require their configured assignments; unavailable assignments do not silently fall back. The role labels express intent, not guaranteed model capability. **Chat details** independently offers a per-chat picker; Save persists across reopen and applies to subsequent requests. It also exposes SDK usage/recovery, committed context boundaries and manual compaction; occupancy/headroom remain unknown. See [context, configuration and usage](docs/chat-components.md#4-context-configuration-and-usage) for scope and retry limits.
+Use **Chat settings → Model defaults** to choose models and thinking levels for Main, Tangent (including message threads), and Worker from Pi’s available chat models. **Apply models to all chats** updates existing and new chats by role, without restarting requests already in flight. **Reload saved tiers and model list** reads the latest settings and models without applying them. Until Main is configured, a fresh main chat starts with OpenCode Go’s `deepseek-v4.1-flash`; if it isn’t available in your Pi setup, configure Main before sending. See [context, configuration and usage](docs/chat-components.md#4-context-configuration-and-usage) for scope and retry limits.
 
 Chat uses assistant-ui's external-store runtime, native thread/message/composer primitives and Markdown renderer; pi-durable remains authoritative through Hono/SSE. Host tools include **read, write, edit, bash, powershell, grep, find and ls**. Calls, streaming output, results and failures appear in supplied tool disclosures. PowerShell needs `pwsh` or `powershell` installed; grep/find need host `rg` (ripgrep), while ls uses the SDK directory reader. Search-tool output limits are not command deadlines or filesystem boundaries; see [tool semantics](docs/chat-components.md#3-agent-activity-tools-and-tasks). Assistant Cloud and LAN access remain unimplemented. User text stays literal; assistant Markdown supports lists, tables and copyable code, without executing rendered code/raw HTML or fetching remote Markdown images. The existing dark theme remains the default.
 
@@ -157,7 +157,7 @@ Run only one application host against a data directory. The fixed loopback liste
 
 This repository is public; its package remains marked private to prevent accidental npm publication. Keep `.env`, credentials, database files, conversations, logs and browser traces out of commits. The ignore rules cover default local artifacts, but are not a substitute for reviewing a change. Keep any custom data directory outside tracked source.
 
-Provider credentials are server-only. Requests go to OpenCode Go and the selected model provider; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics. Consult [OpenCode Go's privacy settings](https://opencode.ai/docs/go/#privacy); access to DeepSeek may require the workspace to allow Global regions. The application does not change those settings.
+Provider credentials are server-only. Model requests go to the provider selected for the conversation; conversation storage contains sensitive input/output. Protect that directory and any backups accordingly. The server applies an owner-only creation mask. API responses expose a small presentation schema, not raw SDK documents or provider diagnostics. If you use OpenCode Go, consult [its privacy settings](https://opencode.ai/docs/go/#privacy); access to DeepSeek may require the workspace to allow Global regions. The application does not change those settings.
 
 The server binds to loopback and rejects foreign hosts/origins; it is not an authenticated service. The SSH loopback forward above is full-control access for a trusted user, not a sharing boundary. LAN/public binds, other tunnels and reverse proxies require a separate access-control decision.
 

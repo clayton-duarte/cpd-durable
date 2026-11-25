@@ -9,6 +9,8 @@ import { ErrorState } from "@/components/assistant-ui/elements/error-state";
 import { Button } from "@/components/ui/button";
 import {
   ConfigurationSchema,
+  supportsThinking,
+  thinkingLabel,
   type Configuration,
   type Selection,
 } from "../shared/configuration.ts";
@@ -94,7 +96,7 @@ export function ChatConfiguration() {
           <AgentStatus
             trailing={null}
             state="waiting"
-            label={`Saved: ${data.selection.provider}/${data.selection.modelId} · thinking ${data.selection.thinkingLevel}`}
+            label={`Saved: ${data.selection.provider}/${data.selection.modelId} · thinking: ${thinkingLabel(data.selection.thinkingLevel)}`}
           />
           {!host.readOnly && host.onSend && (
             <>
@@ -103,26 +105,36 @@ export function ChatConfiguration() {
                   id: key(choice),
                   name: choice.name,
                   description: choice.provider,
-                  efforts: choice.thinkingLevels.map((level) => ({ id: level, name: level })),
+                  efforts: (["default", ...choice.thinkingLevels] as const).map((level) => ({
+                    id: level,
+                    name: thinkingLabel(level),
+                    disabled: !supportsThinking(choice.thinkingLevels, level),
+                  })),
                   disabled: pending || error,
                 }))}
                 value={key(draft)}
                 effort={draft.thinkingLevel}
                 onValueChange={(value) => {
                   const choice = data.choices.find((choice) => key(choice) === value);
-                  if (choice)
+                  if (choice && key(draft) !== value)
                     setDraft({
                       provider: choice.provider,
                       modelId: choice.modelId,
-                      thinkingLevel: choice.thinkingLevels.includes(draft.thinkingLevel)
-                        ? draft.thinkingLevel
-                        : (choice.thinkingLevels[0] ?? "off"),
+                      thinkingLevel: "default",
                     });
                 }}
                 onEffortChange={(level) => {
                   const choice = data.choices.find((choice) => key(choice) === key(draft));
-                  const supported = choice?.thinkingLevels.find((value) => value === level);
-                  if (supported && !pending && !error)
+                  const supported =
+                    level === "default"
+                      ? level
+                      : choice?.thinkingLevels.find((value) => value === level);
+                  if (
+                    supported &&
+                    supportsThinking(choice?.thinkingLevels ?? [], supported) &&
+                    !pending &&
+                    !error
+                  )
                     setDraft({ ...draft, thinkingLevel: supported });
                 }}
               >

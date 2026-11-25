@@ -9,7 +9,12 @@ test("settings save, conflict reload and unavailable catalog retain the user's d
   let available = true;
   let conflict = false;
   const choices = [
-    { provider: "example", modelId: "one", name: "One", thinkingLevels: ["off"] },
+    {
+      provider: "example",
+      modelId: "one",
+      name: "One",
+      thinkingLevels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
     { provider: "example", modelId: "two", name: "Two", thinkingLevels: ["off"] },
   ];
   await page.route("**/api/**", (route) => route.abort());
@@ -47,28 +52,42 @@ test("settings save, conflict reload and unavailable catalog retain the user's d
       .getByRole("option", { name: /example\/one/ })
       .last()
       .click();
-    await page.getByRole("button", { name: "Confirm thinking off" }).click();
   }
-  await page.getByRole("button", { name: "Save model tiers" }).click();
-  await expect(page.getByText(/Saved for new threads/)).toBeVisible();
+  await page.getByRole("combobox", { name: "Main model" }).click();
+  const thinking = page.getByRole("radiogroup", { name: "Thinking" });
+  await expect(thinking.getByRole("radio", { name: "Max", exact: true })).toBeDisabled();
+  await expect(thinking.getByRole("radio", { name: "Default", exact: true })).toBeChecked();
+  await expect
+    .poll(() =>
+      thinking
+        .getByRole("radio")
+        .evaluateAll(
+          (radios) =>
+            new Set(radios.map((radio) => Math.round(radio.getBoundingClientRect().top))).size,
+        ),
+    )
+    .toBe(1);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Apply models to all chats" }).click();
+  await expect(page.getByText(/Saved for existing and new chats/)).toBeVisible();
   await page.getByRole("combobox", { name: "Worker model" }).click();
   await page
     .getByRole("option", { name: /example\/two/ })
     .last()
     .click();
   conflict = true;
-  await page.getByRole("button", { name: "Save model tiers" }).click();
+  await page.getByRole("button", { name: "Apply models to all chats" }).click();
   await expect(page.getByRole("alert")).toContainText("Save unconfirmed");
   available = false;
   await page.getByRole("button", { name: "Reload saved settings" }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByText("example/two · thinking off")).toBeVisible();
+  await expect(page.getByText("example/two · thinking: Default")).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Worker model" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Save model tiers" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Apply models to all chats" })).toBeDisabled();
   available = true;
-  await page.getByRole("button", { name: "Refresh saved settings" }).click();
-  await expect(page.getByRole("button", { name: "Save model tiers" })).toBeEnabled();
-  await page.getByRole("button", { name: "Save model tiers" }).click();
+  await page.getByRole("button", { name: "Reload saved tiers and model list" }).click();
+  await expect(page.getByRole("button", { name: "Apply models to all chats" })).toBeEnabled();
+  await page.getByRole("button", { name: "Apply models to all chats" }).click();
   await expect.poll(() => revision).toBe(3);
 });
 
@@ -109,8 +128,7 @@ test("late save acknowledgements preserve newer edits and are ignored after clos
     .getByRole("option", { name: /example\/one/ })
     .last()
     .click();
-  await page.getByRole("button", { name: "Confirm thinking off" }).click();
-  await page.getByRole("button", { name: "Save model tiers" }).click();
+  await page.getByRole("button", { name: "Apply models to all chats" }).click();
   await expect.poll(() => !!release).toBe(true);
   await page.getByRole("combobox", { name: "Main model" }).click();
   await page
@@ -118,13 +136,13 @@ test("late save acknowledgements preserve newer edits and are ignored after clos
     .last()
     .click();
   release!();
-  await expect(page.getByText("example/two · thinking off")).toBeVisible();
-  await expect(page.getByText(/Saved for new threads/)).toBeVisible();
+  await expect(page.getByText("example/two · thinking: Default")).toBeVisible();
+  await expect(page.getByText(/Saved for existing and new chats/)).toBeVisible();
   release = undefined;
-  await page.getByRole("button", { name: "Save model tiers" }).click();
+  await page.getByRole("button", { name: "Apply models to all chats" }).click();
   await expect.poll(() => !!release).toBe(true);
   await page.getByRole("button", { name: "Close", exact: true }).click();
   release!();
   await openChatSetting(page, "Model defaults");
-  await expect(page.getByText("example/two · thinking off")).toBeVisible();
+  await expect(page.getByText("example/two · thinking: Default")).toBeVisible();
 });

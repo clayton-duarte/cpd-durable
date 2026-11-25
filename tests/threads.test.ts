@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { openChat } from "../src/server/chat.ts";
 import { createApp } from "../src/server/app.ts";
@@ -69,6 +70,128 @@ async function setup() {
 }
 
 describe("message threads", () => {
+  it("applies a tier save to an existing main and thread without rerunning either", async () => {
+    const f = await setup();
+    try {
+      await f.turn("Main task", "Shared source");
+      const source = await f.saved("Shared source");
+      const created = CreateThreadResponseSchema.parse(
+        await (
+          await f.post(f.base, {
+            requestId: "retier-thread",
+            parentId: f.main,
+            sourceEntryId: source,
+            text: "Thread work",
+          })
+        ).json(),
+      ).thread;
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      const child = (await f.chat.chats.resolve(created.id))!.conversation;
+      const state = await f.chat.modelPolicy.read();
+      const [main, tangent] = state.choices.filter((choice) => choice.modelId !== MODEL_ID);
+      if (!main || !tangent) throw new Error("Need two alternate mock models");
+      const next = (model: typeof main) => ({
+        provider: model.provider,
+        modelId: model.modelId,
+        thinkingLevel: model.thinkingLevels[0]!,
+      });
+      const response = await f.post("http://localhost:3000/api/model-policy", {
+        expected: { revision: state.revision, assignments: state.assignments },
+        assignments: { main: next(main), tangent: next(tangent), worker: null },
+      });
+      expect(response.status).toBe(200);
+      expect(f.provider.calls.map((call) => call.modelId)).toEqual([MODEL_ID, MODEL_ID]);
+      f.provider.calls[1]!.finish("Original thread reply");
+      await child.waitForIdle(BACKGROUND_CONTEXT);
+      await f.turn("Follow up in main", "Follow-up reply");
+      await child.submit({ type: "input", content: "Follow up in the thread" }, BACKGROUND_CONTEXT);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(4));
+      expect(f.provider.calls.map((call) => call.modelId)).toEqual([
+        MODEL_ID,
+        MODEL_ID,
+        main.modelId,
+        tangent.modelId,
+      ]);
+      f.provider.calls[3]!.finish("Follow-up thread reply");
+      await child.waitForIdle(BACKGROUND_CONTEXT);
+      const fork = await f.chat.chats.fork(f.main, "retier-fork", source);
+      const forkConfig = await (await f.chat.chats.resolve(fork.id))!.configuration();
+      expect(forkConfig.selection).toEqual(next(main));
+    } finally {
+      await f.chat.close();
+    }
+  });
+
+  it("orients both agents without waking the parent, and exposes owned thread evidence on demand", async () => {
+    const f = await setup();
+    function scope(context: TranscriptContext) {
+      return context.messages
+        .flatMap((message) =>
+          message.role === "system" && typeof message.sections?.["conversation-scope"] === "string"
+            ? [message.sections["conversation-scope"]]
+            : [],
+        )
+        .at(-1);
+    }
+    try {
+      await f.turn("Main task", "Shared source");
+      expect(scope(f.provider.calls[0]!.context)).toContain('"threadCount":0');
+      const source = await f.saved("Shared source");
+      const created = CreateThreadResponseSchema.parse(
+        await (
+          await f.post(f.base, {
+            requestId: "aware-thread",
+            parentId: f.main,
+            sourceEntryId: source,
+            quote: "Shared source",
+            text: "Investigate only the tangent",
+          })
+        ).json(),
+      ).thread;
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(2));
+      const childScope = scope(f.provider.calls[1]!.context);
+      expect(childScope).toContain(`"role":"thread","id":"${created.id}"`);
+      expect(childScope).toContain(`"fork":{"conversationId":${f.main},"at":${source}}`);
+      expect(childScope).toContain('"taskOwner":null');
+      expect(childScope).toContain('"focusExcerpt":"Investigate only the tangent"');
+      expect(childScope).toContain("Use inherited history only as background");
+      expect(childScope).not.toContain('"threadCount"');
+      f.provider.calls[1]!.finish("The tangent found its own answer.");
+      const child = (await f.chat.chats.resolve(created.id))!.conversation;
+      await child.waitForIdle(BACKGROUND_CONTEXT);
+      expect(f.provider.calls).toHaveLength(2);
+
+      await f.chat.conversation.submit(
+        { type: "input", content: "What have the threads addressed?" },
+        BACKGROUND_CONTEXT,
+      );
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(3));
+      const parent = f.provider.calls[2]!;
+      expect(scope(parent.context)).toContain('"threadCount":1');
+      expect(scope(parent.context)).toContain(`"sourceEntryId":"${source}"`);
+      expect(JSON.stringify(parent.context.messages)).not.toContain("The tangent found");
+      parent.tools([
+        { id: "list", name: "inspect_threads", arguments: {} },
+        { id: "check", name: "inspect_threads", arguments: { threadId: created.id } },
+        { id: "wrong", name: "inspect_threads", arguments: { threadId: f.main } },
+      ]);
+      await vi.waitFor(() => expect(f.provider.calls).toHaveLength(4));
+      const next = f.provider.calls[3]!;
+      const results = JSON.stringify(
+        next.context.messages.filter((message) => message.role === "toolResult"),
+      );
+      expect(results).toContain('\\\"activity\\\":\\\"idle\\\"');
+      expect(results).toContain("Shared source");
+      expect(results).toContain("The tangent found its own answer.");
+      expect(results).toContain("not tracked");
+      expect(results).toContain("That thread is not owned by this chat.");
+      next.finish("One idle thread; completion is not tracked.");
+      await f.chat.conversation.waitForIdle(BACKGROUND_CONTEXT);
+    } finally {
+      await f.chat.close();
+    }
+  });
+
   it("forks the exact saved message with the tangent model and admits the first reply", async () => {
     const f = await setup();
     try {

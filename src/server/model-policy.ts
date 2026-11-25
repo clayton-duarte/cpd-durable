@@ -1,7 +1,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { defineDoc, type Harness, type Tx } from "@earendil-works/pi-durable";
 import type { Models } from "@earendil-works/pi-ai/models";
-import type { Selection } from "../shared/configuration.ts";
+import { supportsThinking, type Selection } from "../shared/configuration.ts";
 import {
   AssignmentsSchema,
   ModelChoicesSchema,
@@ -41,7 +41,7 @@ function validate(selection: Selection, choices: readonly ModelChoice[]) {
   const choice = choices.find(
     (item) => item.provider === selection.provider && item.modelId === selection.modelId,
   );
-  if (!choice || !choice.thinkingLevels.includes(selection.thinkingLevel))
+  if (!choice || !supportsThinking(choice.thinkingLevels, selection.thinkingLevel))
     throw new ModelPolicyError(
       "Model or thinking level is unavailable. Select an available model in Settings.",
     );
@@ -80,7 +80,11 @@ export async function assertMainModelDecisionTx(tx: Tx, decision: MainModelDecis
     throw new ModelPolicyError("Model settings changed. Refresh and try again.");
 }
 
-export function createModelPolicy(harness: Harness, models: Models) {
+export function createModelPolicy(
+  harness: Harness,
+  models: Models,
+  apply: (tx: Tx, policy: ModelPolicy) => Promise<void>,
+) {
   async function choices() {
     return ModelChoicesSchema.parse(await modelChoices(models));
   }
@@ -108,7 +112,9 @@ export function createModelPolicy(harness: Harness, models: Models) {
           throw new ModelPolicyError("Model settings revision exhausted.");
         current.assignments = next;
         current.revision++;
-        return ModelPolicySchema.parse(current);
+        const saved = ModelPolicySchema.parse(current);
+        await apply(tx, saved);
+        return saved;
       }, BACKGROUND_CONTEXT);
     },
     async resolveModelForRole(

@@ -261,6 +261,7 @@ describe("stdio MCP adapter", () => {
         "collect_handoff",
         "review_handoff",
         "display_table",
+        "inspect_threads",
       ]);
       await chat.conversation.submit(
         { type: "input", content: "Synthetic request" },

@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ModelTierSettings } from "../src/client/model-tier-settings.tsx";
+import { applyModelTiers, CatalogDoc } from "../src/server/chats.ts";
 import {
   assertMainModelDecisionTx,
   assertModelPolicyTx,
@@ -21,11 +22,11 @@ describe("model tier policy", () => {
     const api = { read: vi.fn(), save: vi.fn() };
     const html = renderToStaticMarkup(createElement(ModelTierSettings, { api }));
     expect(html).toContain("Model tiers");
-    expect(html).toContain("Existing conversations are unchanged");
+    expect(html).toContain("Saving updates existing chats");
     expect(api.read).not.toHaveBeenCalled();
     expect(api.save).not.toHaveBeenCalled();
   });
-  it("persists, rejects stale writes and admissions, and never changes existing agents", async () => {
+  it("persists role selections on existing agents and rejects stale writes and admissions", async () => {
     const dir = await mkdtemp(join(tmpdir(), "model-policy-"));
     const provider = testModels();
     const open = async () =>
@@ -40,8 +41,15 @@ describe("model tier policy", () => {
     let harness = await open();
     try {
       const chat = await harness.root(context);
-      const before = await chat.agent(context);
-      let policy = createModelPolicy(harness, provider.models);
+      await harness.commit(async (tx) => {
+        (await tx.doc(CatalogDoc)).items.push({
+          id: chat.id,
+          title: "Main",
+          named: true,
+          requestId: null,
+        });
+      }, context);
+      let policy = createModelPolicy(harness, provider.models, applyModelTiers);
       const first = await policy.read();
       const hostDefault = await policy.prepareMainCreation();
       expect(hostDefault.selection).toBeNull();
@@ -58,6 +66,9 @@ describe("model tier policy", () => {
       const expected = { revision: first.revision, assignments: first.assignments };
       const saved = await policy.save({ expected, assignments });
       expect(saved.revision).toBe(1);
+      const agent = await chat.agent(context);
+      expect(agent.model).toMatchObject({ provider: one.provider, modelId: one.modelId });
+      expect(agent.thinkingLevel).toBe(one.thinkingLevel);
       await expect(
         harness.commit((tx) => assertMainModelDecisionTx(tx, hostDefault), context),
       ).rejects.toThrow("changed");
@@ -68,7 +79,6 @@ describe("model tier policy", () => {
       ]);
       expect(outcomes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       expect(outcomes.filter((result) => result.status === "rejected")).toHaveLength(1);
-      expect(await chat.agent(context)).toEqual(before);
       const economical = await policy.resolveModelForRole("worker");
       expect(economical.selection).toEqual(one);
       expect((await policy.resolveModelForRole("worker", { workerTier: "mid" })).selection).toEqual(
@@ -90,7 +100,7 @@ describe("model tier policy", () => {
       );
       await harness.close(context);
       harness = await open();
-      policy = createModelPolicy(harness, provider.models);
+      policy = createModelPolicy(harness, provider.models, applyModelTiers);
       expect((await policy.read()).revision).toBe(3);
       expect((await policy.read()).assignments.worker).toBeNull();
       const spy = vi.spyOn(provider.models, "getAvailable").mockResolvedValue([]);

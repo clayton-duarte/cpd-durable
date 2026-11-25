@@ -6,6 +6,7 @@ This document records the User's settled fresh-start decisions and still-open di
 
 Methodology comes first; the platform enables it. Skills carry the methodology. The platform remains necessary for model access, interaction, approvals and human control; methodology-first does not mean tooling-free.
 
+- **Convention over configuration.** Follow the upstream default unless the user explicitly chooses an override. Do not make users confirm a choice they did not make. For thinking effort, **Default** means the provider request omits the effort setting so the provider can choose. It is not **Off** or a Pi-selected effort.
 - New CPD tooling is full TypeScript; no Rust-retention carve-out was selected.
 - WebUI/Cockpit and upstream pi-durable are the only retained platform foundations. Cockpit is the target human control interface.
 - pi-agent+tmux and the TUI are dropped from the target; their removal from the legacy runtime is not claimed.
@@ -38,7 +39,7 @@ The User subsequently requested one active empty new chat at a time and per-chat
 
 ## Native execution and pi TUI parity
 
-Global Settings now stores user-assigned main, tangent and worker model tiers; those labels do not guarantee capability. Configured main selections apply to genuinely new main chats, while an unconfigured main retains the host default and reused or existing chats are unchanged. Tangent and worker creation integration remains pending; the stored assignments alone do not implement those workflows.
+Model tiers are role-wide so a provider change carries existing conversations along. See [model configuration semantics](chat-components.md#4-context-configuration-and-usage).
 
 On 2026-11-17, after Batch 2, the User authorized making cpd fully usable with pi TUI's tools and features, without cpd-added approval prompts or sandbox restrictions, and selected `~/` as the default working directory. It is a starting context, not a filesystem boundary. Tools execute with the server account's OS permissions and inherited environment; cpd does not bypass OS access controls or supply unavailable external programs.
 

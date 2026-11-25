@@ -621,10 +621,10 @@ test("supplied model picker saves scoped choices and supported thinking without 
   await config.getByRole("combobox").click();
   await page.getByRole("option", { name: /Second model/ }).click();
   await config.getByRole("combobox").click();
-  await page.getByRole("radio", { name: "high", exact: true }).click();
+  await page.getByRole("radio", { name: "High", exact: true }).click();
   await page.keyboard.press("Escape");
   await config.getByRole("button", { name: "Save model settings" }).click();
-  await expect(config).toContainText("Saved: test/two · thinking high");
+  await expect(config).toContainText("Saved: test/two · thinking: High");
   expect(posts).toEqual([
     {
       expected: { provider: "test", modelId: "one", thinkingLevel: "off" },

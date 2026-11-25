@@ -8,7 +8,7 @@ import { ModelPolicyViewSchema } from "../src/shared/model-policy.ts";
 import { testModels } from "./models.ts";
 
 describe("model settings host integration", () => {
-  it("protects settings and persists new-main defaults without changing or reconfiguring existing chats", async () => {
+  it("protects settings and applies new tiers to existing, archived and new chats", async () => {
     const dir = await mkdtemp(join(tmpdir(), "policy-host-"));
     const provider = testModels();
     let host = await openChat(dir, provider.models, dir);
@@ -43,6 +43,9 @@ describe("model settings host integration", () => {
       const root = await host.chats.resolve(String(host.conversation.id));
       const before = await root!.configuration();
       const empty = await host.chats.create("first");
+      await host.chats.rename(empty.id, "Archived", empty.title);
+      await host.chats.change(empty.id, "archive");
+      const reusable = await host.chats.create("reusable");
       const option = initial.choices.find((choice) => choice.modelId !== before.selection.modelId)!;
       const selection = {
         provider: option.provider,
@@ -53,26 +56,44 @@ describe("model settings host integration", () => {
       const assignments = { ...initial.assignments, main: selection };
       expect((await post({ expected, assignments })).status).toBe(200);
       expect((await post({ expected, assignments })).status).toBe(409);
-      expect((await root!.configuration()).selection).toEqual(before.selection);
-      expect((await host.chats.create("reuse")).id).toBe(empty.id);
+      expect((await root!.configuration()).selection).toEqual(selection);
+      expect((await host.chats.create("reuse")).id).toBe(reusable.id);
       expect((await (await host.chats.resolve(empty.id))!.configuration()).selection).toEqual(
-        before.selection,
+        selection,
       );
-      await host.chats.rename(empty.id, "Named", "New chat");
+      await host.chats.rename(reusable.id, "Named", "New chat");
       const created = await host.chats.create("new");
-      expect(created.id).not.toBe(empty.id);
+      expect(created.id).not.toBe(reusable.id);
       expect((await (await host.chats.resolve(created.id))!.configuration()).selection).toEqual(
         selection,
       );
+      const saved = ModelPolicyViewSchema.parse(await (await get()).json());
+      const { provider: providerId, modelId } = selection;
+      expect(
+        (
+          await post({
+            expected: { revision: saved.revision, assignments: saved.assignments },
+            assignments: { ...saved.assignments, main: { provider: providerId, modelId } },
+          })
+        ).status,
+      ).toBe(200);
+      expect((await (await host.chats.resolve(created.id))!.configuration()).selection).toEqual({
+        provider: providerId,
+        modelId,
+        thinkingLevel: "default",
+      });
+      expect(provider.calls).toHaveLength(0);
       await host.close();
       host = await openChat(dir, provider.models, dir);
       app = createApp(host);
-      expect(ModelPolicyViewSchema.parse(await (await get()).json()).assignments.main).toEqual(
-        selection,
-      );
-      expect((await (await host.chats.resolve(created.id))!.configuration()).selection).toEqual(
-        selection,
-      );
+      expect(ModelPolicyViewSchema.parse(await (await get()).json()).assignments.main).toEqual({
+        ...selection,
+        thinkingLevel: "default",
+      });
+      expect((await (await host.chats.resolve(created.id))!.configuration()).selection).toEqual({
+        ...selection,
+        thinkingLevel: "default",
+      });
     } finally {
       await host.close();
       await rm(dir, { recursive: true, force: true });

@@ -219,7 +219,7 @@ function ModelSelectorContent({
       side={renderedSide ?? side ?? "bottom"}
       sideOffset={sideOffset}
       className={cn(
-        "bg-popover w-72 min-w-(--anchor-width) overflow-hidden rounded-xl p-0",
+        "bg-popover w-96 max-w-(--available-width) overflow-hidden rounded-xl p-0",
         className,
       )}
       {...props}
@@ -370,10 +370,7 @@ function ModelSelectorEffort({
   return (
     <div
       data-slot="model-selector-effort"
-      className={cn(
-        "flex cursor-default items-center justify-between gap-3 border-t px-3 py-2",
-        className,
-      )}
+      className={cn("flex cursor-default flex-col gap-1 border-t px-3 py-2", className)}
       onKeyDownCapture={(e) => {
         onKeyDownCapture?.(e);
         if (e.defaultPrevented) return;
@@ -416,15 +413,17 @@ function ModelSelectorEffort({
         value={effort ?? ""}
         onValueChange={setEffort}
         aria-label={typeof label === "string" ? label : "Reasoning effort"}
-        className="flex items-center gap-0.5"
+        className="flex flex-wrap items-center gap-0.5"
       >
         {efforts.map((option) => (
           <Radio.Root
             key={option.id}
             value={option.id}
+            disabled={option.disabled ?? false}
             className={cn(
-              "focus-visible:ring-ring/50 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md px-2 py-1 text-xs transition-colors outline-none focus-visible:ring-1",
+              "focus-visible:ring-ring/50 text-muted-foreground hover:bg-muted hover:text-foreground rounded-md px-1.5 py-1 text-xs whitespace-nowrap transition-colors outline-none focus-visible:ring-1",
               "data-checked:bg-accent data-checked:text-accent-foreground data-checked:font-medium",
+              "data-disabled:cursor-not-allowed data-disabled:opacity-40 data-disabled:hover:bg-transparent",
             )}
           >
             {option.name}

@@ -7,7 +7,7 @@ export function selection(state: Readonly<AgentState> | undefined): Selection {
   return {
     provider: state?.model?.provider ?? PROVIDER_ID,
     modelId: state?.model?.modelId ?? MODEL_ID,
-    thinkingLevel: state?.thinkingLevel ?? "off",
+    thinkingLevel: state?.thinkingLevel ?? "default",
   };
 }
 export async function modelChoices(models: Models) {
@@ -22,4 +22,11 @@ export function sameSelection(a: Selection, b: Selection) {
   return (
     a.provider === b.provider && a.modelId === b.modelId && a.thinkingLevel === b.thinkingLevel
   );
+}
+
+export function modelChange(value: Selection) {
+  return {
+    model: { provider: value.provider, modelId: value.modelId },
+    thinkingLevel: value.thinkingLevel === "default" ? null : value.thinkingLevel,
+  };
 }

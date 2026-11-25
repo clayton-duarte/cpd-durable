@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-durable";
 import { z } from "zod";
 import { admissionDigest, checkAdmissionRequest } from "../attachment-catalog.ts";
+import { modelChange } from "../configuration.ts";
 import {
   assertIdleHandoffDestination,
   currentHandoffHead,
@@ -201,8 +202,7 @@ export async function prepareTangent(
       throw new Error("Tangent model and absolute cwd policy are required");
     const created = await tx.createConversation({ ownership: { kind: "ownerless" } });
     await configure(tx, created.id, {
-      model: { provider: model.provider, modelId: model.modelId },
-      thinkingLevel: model.thinkingLevel,
+      ...modelChange(model),
       cwd,
     });
     const initialAgent = JSON.stringify(await tx.doc(AgentDoc, created.id));
@@ -288,7 +288,7 @@ export async function startPreparedTangent(
         throw new Error("Tangent start identity conflicts with prior request");
       return copy(item);
     }
-    // Creation pinned this agent; subsequent global defaults apply only to new tangents.
+    // The saved preparation includes any authorized global retier.
     const childId = item.id as ConversationId;
     const agent = await tx.doc(AgentDoc, childId);
     const inbox = await tx.doc(InboxDoc, childId);

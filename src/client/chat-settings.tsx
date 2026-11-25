@@ -71,7 +71,7 @@ function ChatSettingsMenu({ includeDefaults }: { includeDefaults: boolean }) {
               <DialogHeader>
                 <DialogTitle>Model defaults</DialogTitle>
                 <DialogDescription>
-                  Application-wide defaults for future conversations and workers.
+                  Application-wide model assignments for existing and new chats and workers.
                 </DialogDescription>
               </DialogHeader>
               <Settings />
